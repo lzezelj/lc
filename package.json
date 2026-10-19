@@ -9,19 +9,31 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "format": "eslint . --fix"
+    "format": "eslint . --fix",
+    "test": "node --test tests/signaling.test.mjs",
+    "test:db": "node --test tests/database.test.mjs",
+    "test:all": "npm run test && npm run test:db",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
+    "@auth/drizzle-adapter": "^1.11.3",
+    "dotenv": "^18.0.8",
     "drizzle-orm": "^0.45.4",
     "next": "16.1.1",
+    "next-auth": "^5.0.0-beta.32",
+    "pg": "^8.23.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "ws": "8.18.3"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
+    "@types/pg": "^8.23.1",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
+    "drizzle-kit": "^0.31.11",
     "eslint": "9.39.1",
     "eslint-config-next": "16.1.1",
     "eslint-config-prettier": "^10.1.8",

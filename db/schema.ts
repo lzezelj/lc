@@ -12,13 +12,14 @@ import {
 } from "drizzle-orm/pg-core";
 
 export const userRole = pgEnum("user_role", ["owner", "demo"]);
-export const roomRole = pgEnum("room_role", ["owner", "member"]);
+export const serverRole = pgEnum("server_role", ["owner", "member"]);
+export const channelType = pgEnum("channel_type", ["text", "voice"]);
 
 export const users = pgTable(
   "users",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    role: userRole("role").notNull(),
+    role: userRole("role").default("owner").notNull(),
     name: text("name").notNull(),
     email: text("email"),
     emailVerified: timestamp("email_verified", { withTimezone: true }),
@@ -49,13 +50,13 @@ export const accounts = pgTable(
     type: text("type").notNull(),
     provider: text("provider").notNull(),
     providerAccountId: text("provider_account_id").notNull(),
-    refreshToken: text("refresh_token"),
-    accessToken: text("access_token"),
-    expiresAt: integer("expires_at"),
-    tokenType: text("token_type"),
+    refresh_token: text("refresh_token"),
+    access_token: text("access_token"),
+    expires_at: integer("expires_at"),
+    token_type: text("token_type"),
     scope: text("scope"),
-    idToken: text("id_token"),
-    sessionState: text("session_state"),
+    id_token: text("id_token"),
+    session_state: text("session_state"),
   },
   (table) => [
     primaryKey({ columns: [table.provider, table.providerAccountId] }),
@@ -99,8 +100,8 @@ export const demoInvites = pgTable(
   ],
 );
 
-export const rooms = pgTable(
-  "rooms",
+export const servers = pgTable(
+  "servers",
   {
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
@@ -111,36 +112,52 @@ export const rooms = pgTable(
       .defaultNow()
       .notNull(),
   },
-  (table) => [index("rooms_created_by_idx").on(table.createdBy)],
+  (table) => [index("servers_created_by_idx").on(table.createdBy)],
 );
 
-export const roomMembers = pgTable(
-  "room_members",
+export const serverMembers = pgTable(
+  "server_members",
   {
-    roomId: uuid("room_id")
+    serverId: uuid("server_id")
       .notNull()
-      .references(() => rooms.id, { onDelete: "cascade" }),
+      .references(() => servers.id, { onDelete: "cascade" }),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    role: roomRole("role").default("member").notNull(),
+    role: serverRole("role").default("member").notNull(),
     joinedAt: timestamp("joined_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.roomId, table.userId] }),
-    index("room_members_user_id_idx").on(table.userId),
+    primaryKey({ columns: [table.serverId, table.userId] }),
+    index("server_members_user_id_idx").on(table.userId),
   ],
+);
+
+export const channels = pgTable(
+  "channels",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    serverId: uuid("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    type: channelType("type").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("channels_server_id_idx").on(table.serverId)],
 );
 
 export const messages = pgTable(
   "messages",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    roomId: uuid("room_id")
+    channelId: uuid("channel_id")
       .notNull()
-      .references(() => rooms.id, { onDelete: "cascade" }),
+      .references(() => channels.id, { onDelete: "cascade" }),
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -152,8 +169,8 @@ export const messages = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (table) => [
-    index("messages_room_timeline_idx").on(
-      table.roomId,
+    index("messages_channel_timeline_idx").on(
+      table.channelId,
       table.createdAt,
       table.id,
     ),
