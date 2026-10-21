@@ -41,10 +41,14 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const body = (await request.json()) as {
     name?: string;
-    type?: "text" | "voice";
+    type?: "text" | "voice_direct" | "voice_group";
   };
   const name = body.name?.trim();
-  if (!name || name.length > 60 || !["text", "voice"].includes(body.type ?? ""))
+  if (
+    !name ||
+    name.length > 60 ||
+    !["text", "voice_direct", "voice_group"].includes(body.type ?? "")
+  )
     return NextResponse.json(
       { error: "Valid name and channel type are required" },
       { status: 400 },

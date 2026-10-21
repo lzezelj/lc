@@ -17,5 +17,15 @@ services:
     volumes:
       - lc_postgres_data:/var/lib/postgresql/data
 
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    container_name: lc-livekit
+    restart: unless-stopped
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
 volumes:
   lc_postgres_data:

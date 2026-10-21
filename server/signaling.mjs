@@ -1,17 +1,134 @@
+import "dotenv/config";
+import { timingSafeEqual } from "node:crypto";
+import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { verifySignalingToken } from "./signaling-auth.mjs";
 
-export function createSignalingServer({ port = 3001, maxPeers = 2 } = {}) {
-  const server = new WebSocketServer({ port });
+export function createSignalingServer({
+  port = 3001,
+  maxPeers = 2,
+  authSecret = process.env.AUTH_SECRET,
+  internalSecret = process.env.SIGNALING_INTERNAL_SECRET ?? authSecret,
+} = {}) {
+  if (!authSecret) throw new Error("AUTH_SECRET is required");
+  if (!internalSecret) throw new Error("SIGNALING_INTERNAL_SECRET is required");
+  const server = createServer((request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({ status: "ok", websocketClients: ws.clients.size }),
+      );
+      return;
+    }
+    if (request.method === "POST" && request.url === "/internal/text-message") {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret)) {
+        response.writeHead(401).end("Unauthorized");
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.channelId !== "string" ||
+            !body.message ||
+            typeof body.message.id !== "string" ||
+            typeof body.message.text !== "string" ||
+            typeof body.message.author !== "string"
+          ) {
+            response.writeHead(400).end("Invalid message");
+            return;
+          }
+          broadcastTextMessage(body.channelId, body.message);
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
+    response.writeHead(426, { "Content-Type": "text/plain" });
+    response.end("Upgrade Required");
+  });
+  const ws = new WebSocketServer({ noServer: true });
   const rooms = new Map();
+
+  server.on("upgrade", (request, socket, head) => {
+    const token = new URL(
+      request.url ?? "/",
+      "ws://signaling.local",
+    ).searchParams.get("token");
+    const identity = verifySignalingToken(token, authSecret);
+    if (!identity) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    request.signalingIdentity = identity;
+    ws.handleUpgrade(request, socket, head, (client) => {
+      ws.emit("connection", client, request);
+    });
+  });
 
   const peersFor = (roomId) => {
     if (!rooms.has(roomId)) rooms.set(roomId, new Set());
     return rooms.get(roomId);
   };
 
-  server.on("connection", (socket) => {
+  const presenceFor = (roomId) => [
+    ...[...peersFor(roomId)].map((peer) => ({
+      name: peer.participantName ?? "Guest",
+      muted: Boolean(peer.mediaState?.muted),
+      camera: Boolean(peer.mediaState?.camera),
+      screen: Boolean(peer.mediaState?.screen),
+      speaking: Boolean(peer.mediaState?.speaking),
+    })),
+    ...[...ws.clients]
+      .filter((client) => client.groupPresence?.has(roomId))
+      .map((client) => client.groupPresence.get(roomId)),
+  ];
+
+  const broadcastPresence = (roomId) => {
+    const message = JSON.stringify({
+      type: "presence",
+      roomId,
+      participants: presenceFor(roomId),
+    });
+    for (const client of ws.clients) {
+      if (
+        client.subscribedRoomIds?.has(roomId) &&
+        client.readyState === WebSocket.OPEN
+      ) {
+        client.send(message);
+      }
+    }
+  };
+
+  const broadcastTextMessage = (channelId, message) => {
+    const outgoing = JSON.stringify({
+      type: "text-message",
+      channelId,
+      message,
+    });
+    for (const client of ws.clients) {
+      if (
+        client.subscribedTextChannelId === channelId &&
+        client.readyState === WebSocket.OPEN
+      ) {
+        client.send(outgoing);
+      }
+    }
+  };
+
+  ws.on("connection", (socket, request) => {
+    socket.identity = request.signalingIdentity;
+    socket.allowedChannelIds = new Set(socket.identity.channelIds);
     let joinedRoomId;
+
+    const isAllowed = (channelId) => socket.allowedChannelIds.has(channelId);
+    const rejectForbidden = (channelId) =>
+      socket.send(JSON.stringify({ type: "forbidden", channelId }));
 
     socket.on("message", (raw) => {
       let message;
@@ -21,8 +138,84 @@ export function createSignalingServer({ port = 3001, maxPeers = 2 } = {}) {
         return;
       }
 
+      if (message.type === "subscribe-presence") {
+        const requestedRoomIds = Array.isArray(message.roomIds)
+          ? message.roomIds
+              .filter((roomId) => typeof roomId === "string")
+              .slice(0, 100)
+          : [];
+        const roomIds = requestedRoomIds.filter(isAllowed);
+        socket.subscribedRoomIds = new Set(roomIds);
+        requestedRoomIds
+          .filter((roomId) => !isAllowed(roomId))
+          .forEach(rejectForbidden);
+        roomIds.forEach((roomId) => broadcastPresence(roomId));
+        return;
+      }
+
+      if (message.type === "subscribe-text") {
+        if (!isAllowed(message.channelId)) {
+          rejectForbidden(message.channelId);
+          return;
+        }
+        socket.subscribedTextChannelId =
+          typeof message.channelId === "string" ? message.channelId : undefined;
+        socket.send(
+          JSON.stringify({
+            type: "text-subscribed",
+            channelId: socket.subscribedTextChannelId,
+          }),
+        );
+        return;
+      }
+
+      if (message.type === "text-message") {
+        socket.send(JSON.stringify({ type: "forbidden-message-publish" }));
+        return;
+      }
+
+      if (
+        message.type === "set-group-presence" &&
+        typeof message.roomId === "string"
+      ) {
+        if (!isAllowed(message.roomId)) {
+          rejectForbidden(message.roomId);
+          return;
+        }
+        socket.groupPresence ??= new Map();
+        if (message.present) {
+          const name = socket.identity.name;
+          socket.groupPresence.set(message.roomId, {
+            name,
+            muted: Boolean(message.muted),
+            camera: Boolean(message.camera),
+            screen: Boolean(message.screen),
+            speaking: Boolean(message.speaking),
+          });
+        } else {
+          socket.groupPresence.delete(message.roomId);
+        }
+        broadcastPresence(message.roomId);
+        return;
+      }
+
+      if (message.type === "media-state" && joinedRoomId) {
+        socket.mediaState = {
+          muted: Boolean(message.muted),
+          camera: Boolean(message.camera),
+          screen: Boolean(message.screen),
+          speaking: Boolean(message.speaking),
+        };
+        broadcastPresence(joinedRoomId);
+        return;
+      }
+
       if (message.type === "join") {
         if (joinedRoomId || typeof message.roomId !== "string") return;
+        if (!isAllowed(message.roomId)) {
+          rejectForbidden(message.roomId);
+          return;
+        }
 
         const peers = peersFor(message.roomId);
         if (peers.size >= maxPeers) {
@@ -31,6 +224,7 @@ export function createSignalingServer({ port = 3001, maxPeers = 2 } = {}) {
         }
 
         joinedRoomId = message.roomId;
+        socket.participantName = socket.identity.name;
         const hasPeer = peers.size > 0;
         peers.add(socket);
         socket.send(JSON.stringify({ type: "joined", initiator: !hasPeer }));
@@ -40,6 +234,7 @@ export function createSignalingServer({ port = 3001, maxPeers = 2 } = {}) {
             peer.send(JSON.stringify({ type: "peer-joined" }));
           }
         }
+        broadcastPresence(joinedRoomId);
         return;
       }
 
@@ -52,6 +247,10 @@ export function createSignalingServer({ port = 3001, maxPeers = 2 } = {}) {
     });
 
     socket.on("close", () => {
+      for (const roomId of socket.groupPresence?.keys() ?? []) {
+        socket.groupPresence.delete(roomId);
+        broadcastPresence(roomId);
+      }
       if (!joinedRoomId) return;
 
       const peers = peersFor(joinedRoomId);
@@ -61,11 +260,42 @@ export function createSignalingServer({ port = 3001, maxPeers = 2 } = {}) {
           peer.send(JSON.stringify({ type: "peer-left" }));
         }
       }
+      broadcastPresence(joinedRoomId);
       if (peers.size === 0) rooms.delete(joinedRoomId);
     });
   });
 
+  server.listen(port);
   return server;
+}
+
+function secretsMatch(supplied, expected) {
+  if (!supplied) return false;
+  const suppliedBuffer = Buffer.from(supplied);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    suppliedBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(suppliedBuffer, expectedBuffer)
+  );
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 20_000) reject(new Error("Body too large"));
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(body));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", reject);
+  });
 }
 
 function start() {

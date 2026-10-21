@@ -61,13 +61,29 @@ export async function POST(
     .insert(messages)
     .values({ channelId, authorId: session.user.id, content: text })
     .returning({ id: messages.id, createdAt: messages.createdAt });
-  return NextResponse.json(
-    {
-      ...message,
-      text,
-      author: session.user.name ?? "User",
-      authorId: session.user.id,
-    },
-    { status: 201 },
-  );
+  const canonicalMessage = {
+    ...message,
+    text,
+    author: session.user.name ?? "User",
+    authorId: session.user.id,
+  };
+  const signalingUrl =
+    process.env.SIGNALING_INTERNAL_URL ?? "http://localhost:3001";
+  const internalSecret =
+    process.env.SIGNALING_INTERNAL_SECRET ?? process.env.AUTH_SECRET;
+  if (internalSecret) {
+    try {
+      await fetch(`${signalingUrl}/internal/text-message`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${internalSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ channelId, message: canonicalMessage }),
+      });
+    } catch {
+      // The message remains safely stored; reconnecting clients reload history.
+    }
+  }
+  return NextResponse.json(canonicalMessage, { status: 201 });
 }

@@ -13,7 +13,11 @@ import {
 
 export const userRole = pgEnum("user_role", ["owner", "demo"]);
 export const serverRole = pgEnum("server_role", ["owner", "member"]);
-export const channelType = pgEnum("channel_type", ["text", "voice"]);
+export const channelType = pgEnum("channel_type", [
+  "text",
+  "voice_direct",
+  "voice_group",
+]);
 
 export const users = pgTable(
   "users",

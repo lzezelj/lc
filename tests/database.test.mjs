@@ -77,3 +77,40 @@ test("messages cannot reference users or channels that do not exist", async () =
     await client.end();
   }
 });
+
+test("channels distinguish direct and SFU-backed group calls", async () => {
+  assert.ok(process.env.DATABASE_URL, "DATABASE_URL must be configured");
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+
+  try {
+    await client.query("BEGIN");
+    const ownerId = randomUUID();
+    const serverId = randomUUID();
+    await client.query(
+      "INSERT INTO users (id, role, name, email) VALUES ($1, 'owner', 'Owner', $2)",
+      [ownerId, `owner-${ownerId}@example.test`],
+    );
+    await client.query(
+      "INSERT INTO servers (id, name, created_by) VALUES ($1, 'Calls', $2)",
+      [serverId, ownerId],
+    );
+    await client.query(
+      `INSERT INTO channels (server_id, name, type)
+       VALUES ($1, 'Pair', 'voice_direct'), ($1, 'Team', 'voice_group')`,
+      [serverId],
+    );
+    const result = await client.query(
+      "SELECT type FROM channels WHERE server_id = $1 ORDER BY type",
+      [serverId],
+    );
+
+    assert.deepEqual(
+      result.rows.map((row) => row.type),
+      ["voice_direct", "voice_group"],
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});

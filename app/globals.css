@@ -153,6 +153,148 @@ button {
   color: #fff;
 }
 
+.voicePresence {
+  display: grid;
+  gap: 3px;
+  margin: 2px 12px 7px 24px;
+}
+
+.voiceChannel {
+  position: relative;
+}
+
+.pingIndicator {
+  position: relative;
+  display: inline-grid;
+  margin-left: 7px;
+  place-items: center;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.pingDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ed4245;
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 18%);
+}
+
+.pingIndicator.good .pingDot {
+  background: #3ba55d;
+}
+
+.pingIndicator.acceptable .pingDot {
+  background: #faa61a;
+}
+
+.pingTooltip {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  z-index: 20;
+  display: none;
+  width: max-content;
+  transform: translateX(-50%);
+  border-radius: 4px;
+  padding: 4px 7px;
+  background: #090c13;
+  color: #fff;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.pingIndicator:hover .pingTooltip,
+.pingIndicator:focus .pingTooltip,
+.pingIndicator:focus-visible .pingTooltip {
+  display: block;
+}
+
+.openCallView {
+  position: absolute;
+  top: 6px;
+  right: 13px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 5px;
+  background: #343d54;
+  color: #dbe4f5;
+}
+
+.voiceParticipant {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 5px;
+  color: #c8cfdd;
+  font-size: 12px;
+}
+
+.voiceParticipant i {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border-radius: 50%;
+  background: #34405c;
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.voiceParticipant b {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voiceParticipant.speaking b {
+  color: #64e6a5;
+}
+
+.voiceParticipant.speaking i {
+  box-shadow: 0 0 0 2px #42c987;
+}
+
+.voiceIndicators {
+  display: flex;
+  gap: 3px;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.voiceIndicators span {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 4px;
+  background: #30394e;
+  color: #dbe4f5;
+}
+
+.voiceIndicators svg {
+  width: 12px;
+  height: 12px;
+}
+
+.networkBadge {
+  position: absolute;
+  top: 35px;
+  left: 12px;
+  z-index: 2;
+  border-radius: 5px;
+  padding: 4px 7px;
+  background: rgb(9 13 23 / 82%);
+  color: #a9b8d2;
+  font-size: 10px;
+}
+
 .profileBar {
   position: absolute;
   right: 0;
@@ -195,10 +337,11 @@ button {
 }
 
 .room {
+  position: relative;
   display: grid;
   min-width: 0;
   max-height: 100vh;
-  grid-template-rows: 58px minmax(260px, 45vh) minmax(0, 1fr);
+  grid-template-rows: 58px minmax(0, 1fr);
 }
 
 .room.textOnly {
@@ -278,20 +421,93 @@ button {
   background: #111625;
 }
 
+.backgroundCall {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+}
+
+.backgroundCall .videoGrid,
+.backgroundCall .mediaNotice {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .videoGrid {
-  display: grid;
+  position: relative;
+  display: flex;
   min-height: 0;
-  grid-template-columns: 1fr 1fr;
+  height: 100%;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  justify-content: center;
   gap: 12px;
+  overflow-y: auto;
+}
+
+.groupPlaceholder {
+  border: 1px dashed #394158;
 }
 
 .videoCard {
   position: relative;
   display: grid;
-  min-height: 160px;
+  flex: 0 0 calc((100% - 24px) / 3);
+  height: calc((100% - 12px) / 2);
+  min-height: 150px;
+  min-width: 0;
   overflow: hidden;
   place-items: center;
   border-radius: 10px;
+  background: #080d17;
+}
+
+.videoGrid.focused {
+  overflow: hidden;
+}
+
+.videoGrid.focused .videoCard:not(.videoHidden) {
+  flex-basis: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+}
+
+.videoGrid > audio {
+  display: none;
+}
+
+.videoHidden {
+  display: none;
+}
+
+.focusActions {
+  position: absolute;
+  z-index: 3;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.focusActions button {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: #090d17d9;
+  color: var(--ink);
+}
+
+.videoGrid:fullscreen {
+  max-height: none;
+  padding: 18px;
   background: #080d17;
 }
 
@@ -311,6 +527,17 @@ button {
   font-size: 12px;
 }
 
+.qualityBadge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: #090d17c7;
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
 .videoCard p {
   position: absolute;
   max-width: 190px;
@@ -322,6 +549,85 @@ button {
   display: flex;
   justify-content: center;
   gap: 8px;
+}
+
+.voiceDock {
+  position: fixed;
+  z-index: 18;
+  bottom: 59px;
+  left: 72px;
+  width: 250px;
+  min-height: 48px;
+  align-items: center;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  background: #121622;
+}
+
+.voiceDock button {
+  padding: 7px 6px;
+  font-size: 11px;
+}
+
+.deviceControl {
+  position: relative;
+  display: flex;
+}
+
+.deviceControl > button:first-child {
+  border-radius: 7px 0 0 7px;
+}
+
+.controls .mediaToggle {
+  display: grid;
+  min-width: 38px;
+  place-items: center;
+}
+
+.controls .deviceControl.mediaDisabled > button {
+  background: #9f354b;
+  color: #fff;
+}
+
+.controls .deviceControl.mediaDisabled .deviceMenuTrigger {
+  border-left-color: #c96377;
+}
+
+.controls .deviceMenuTrigger {
+  padding-inline: 8px;
+  border-left: 1px solid #59627a;
+  border-radius: 0 7px 7px 0;
+}
+
+.deviceControl.open .deviceMenuTrigger {
+  background: #46506a;
+}
+
+.deviceDropdown {
+  position: absolute;
+  z-index: 10;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: grid;
+  width: min(300px, 75vw);
+  max-height: 240px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #171d2b;
+  box-shadow: 0 12px 30px #0008;
+}
+
+.controls .deviceDropdown button {
+  border-radius: 5px;
+  background: transparent;
+  text-align: left;
+}
+
+.controls .deviceDropdown button:hover,
+.controls .deviceDropdown button.selected {
+  background: #30384d;
 }
 
 .controls button,
@@ -421,6 +727,17 @@ button {
 .memberSidebar {
   padding-top: 58px;
   border-left: 1px solid var(--line);
+}
+
+.memberSearch {
+  width: calc(100% - 28px);
+  margin: 14px 14px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: 0;
+  background: #101522;
+  color: var(--ink);
 }
 
 .inviteMemberButton {
@@ -564,6 +881,38 @@ button {
   background: var(--accent);
 }
 
+.mediaSettings {
+  display: grid;
+  gap: 16px;
+}
+
+.mediaSettings p,
+.mediaSettings small {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.mediaSettings .permissionButton {
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+}
+
+.mediaSettings .permissionButton:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.joiningStatus {
+  align-self: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .inviteResult {
   overflow-wrap: anywhere;
   color: #77e2bb;
@@ -644,6 +993,31 @@ button {
   background: #8e3449;
 }
 
+.errorToast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  max-width: min(420px, calc(100vw - 40px));
+  gap: 14px;
+  padding: 13px 14px;
+  border: 1px solid #a8495f;
+  border-radius: 9px;
+  background: #3d1f2a;
+  box-shadow: 0 12px 35px rgb(0 0 0 / 35%);
+  color: #ffdbe3;
+}
+
+.errorToast button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 21px;
+  line-height: 1;
+}
+
 @media (max-width: 920px) {
   .workspace {
     grid-template-columns: 64px 210px minmax(0, 1fr);
@@ -661,14 +1035,6 @@ button {
 
   .channelSidebar {
     display: none;
-  }
-
-  .room {
-    grid-template-rows: 58px minmax(360px, 50vh) minmax(0, 1fr);
-  }
-
-  .videoGrid {
-    grid-template-columns: 1fr;
   }
 
   .roomHeader > span {

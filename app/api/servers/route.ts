@@ -39,7 +39,7 @@ export async function POST(request: Request) {
       .values({ serverId, userId: session.user.id, role: "owner" });
     await tx.insert(channels).values([
       { id: textChannelId, serverId, name: "general", type: "text" },
-      { serverId, name: "Lounge", type: "voice" },
+      { serverId, name: "Lounge", type: "voice_direct" },
     ]);
   });
   return NextResponse.json(
