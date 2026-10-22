@@ -19,6 +19,7 @@ services:
       - backend
 
   migrate:
+    image: lc-app:${LC_IMAGE_TAG:-local}
     build:
       context: .
       args:
@@ -34,6 +35,7 @@ services:
       - backend
 
   app:
+    image: lc-app:${LC_IMAGE_TAG:-local}
     build:
       context: .
       args:
@@ -76,6 +78,7 @@ services:
       - backend
 
   signaling:
+    image: lc-app:${LC_IMAGE_TAG:-local}
     build:
       context: .
       args:

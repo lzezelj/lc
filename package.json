@@ -23,12 +23,12 @@
     "drizzle-orm": "^0.45.4",
     "livekit-client": "^2.23.0",
     "livekit-server-sdk": "^2.19.1",
-    "next": "16.1.1",
+    "next": "^16.4.2",
     "next-auth": "^5.0.0-beta.32",
     "pg": "^8.23.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "ws": "8.18.3"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
