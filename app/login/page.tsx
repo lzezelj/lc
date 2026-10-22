@@ -8,7 +8,12 @@ export default function LoginPage() {
     <main className="loginPage">
       <section className="loginCard">
         <div className="workspaceLogo">LC</div>
+        <span className="workInProgress">Work in progress</span>
         <h1>Welcome to LC</h1>
+        <p>
+          LC is an active portfolio project and may change while it is being
+          developed.
+        </p>
         <p>Owner access is restricted to the configured Google account.</p>
         <button onClick={() => signIn("google", { callbackUrl: "/" })}>
           Continue with Google

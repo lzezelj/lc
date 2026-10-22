@@ -812,6 +812,18 @@ button {
   margin: 0;
 }
 
+.workInProgress {
+  padding: 5px 10px;
+  border: 1px solid #8c76ff;
+  border-radius: 999px;
+  background: rgb(124 92 255 / 14%);
+  color: #c9beff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .loginCard p,
 .loginCard small {
   color: var(--muted);
