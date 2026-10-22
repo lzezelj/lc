@@ -8,8 +8,10 @@ out/
 # Local environment files and secrets
 .env
 .env.local
+.env.production
 .env.*.local
 !.env.example
+!.env.production.example
 
 # Test and tooling output
 coverage/

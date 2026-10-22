@@ -1,0 +1,150 @@
+name: lc-production
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lc
+      POSTGRES_USER: lc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lc -d lc"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - backend
+
+  migrate:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SIGNALING_URL: ${NEXT_PUBLIC_SIGNALING_URL:?NEXT_PUBLIC_SIGNALING_URL is required}
+    command: ["node", "db/migrate.mjs"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SIGNALING_URL: ${NEXT_PUBLIC_SIGNALING_URL:?NEXT_PUBLIC_SIGNALING_URL is required}
+    restart: unless-stopped
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      AUTH_URL: ${AUTH_URL:?AUTH_URL is required}
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:?AUTH_GOOGLE_ID is required}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:?AUTH_GOOGLE_SECRET is required}
+      OWNER_EMAIL: ${OWNER_EMAIL:?OWNER_EMAIL is required}
+      SIGNALING_INTERNAL_URL: ${SIGNALING_INTERNAL_URL:?SIGNALING_INTERNAL_URL is required}
+      SIGNALING_INTERNAL_SECRET: ${SIGNALING_INTERNAL_SECRET:?SIGNALING_INTERNAL_SECRET is required}
+      LIVEKIT_URL: ${LIVEKIT_URL:?LIVEKIT_URL is required}
+      LIVEKIT_INTERNAL_URL: ${LIVEKIT_INTERNAL_URL:?LIVEKIT_INTERNAL_URL is required}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend
+
+  signaling:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SIGNALING_URL: ${NEXT_PUBLIC_SIGNALING_URL:?NEXT_PUBLIC_SIGNALING_URL is required}
+    command: ["node", "server/signaling.mjs"]
+    restart: unless-stopped
+    environment:
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+      SIGNALING_INTERNAL_SECRET: ${SIGNALING_INTERNAL_SECRET:?SIGNALING_INTERNAL_SECRET is required}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend
+
+  livekit:
+    image: livekit/livekit-server:v1.13.10
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        logging:
+          level: info
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: true
+        keys:
+          ${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
+      SIGNAL_DOMAIN: ${SIGNAL_DOMAIN:?SIGNAL_DOMAIN is required}
+      LIVEKIT_DOMAIN: ${LIVEKIT_DOMAIN:?LIVEKIT_DOMAIN is required}
+    ports:
+      - "80:80"
+      - "443:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+      signaling:
+        condition: service_healthy
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

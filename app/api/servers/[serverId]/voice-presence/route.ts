@@ -37,7 +37,7 @@ export async function GET(
       and(eq(channels.serverId, serverId), eq(channels.type, "voice_group")),
     );
 
-  const serverUrl = process.env.LIVEKIT_URL;
+  const serverUrl = process.env.LIVEKIT_INTERNAL_URL ?? process.env.LIVEKIT_URL;
   const apiKey = process.env.LIVEKIT_API_KEY;
   const apiSecret = process.env.LIVEKIT_API_SECRET;
   if (!serverUrl || !apiKey || !apiSecret) {
