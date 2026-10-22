@@ -109,9 +109,10 @@ export async function POST(request: Request) {
       expiresAt,
     });
   });
+  const publicOrigin = process.env.AUTH_URL ?? new URL(request.url).origin;
   return NextResponse.json(
     {
-      inviteUrl: `${new URL(request.url).origin}/invite/${token}`,
+      inviteUrl: new URL(`/invite/${token}`, publicOrigin).toString(),
       expiresAt,
       member: { id: demoUserId, name, image: null, role: "member" },
     },
