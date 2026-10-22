@@ -3,7 +3,15 @@ import { and, eq, inArray, lte } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
-import { demoInvites, serverMembers, servers, users } from "../../../db/schema";
+import {
+  channels,
+  demoInvites,
+  messages,
+  serverMembers,
+  servers,
+  users,
+} from "../../../db/schema";
+import { disconnectUserEverywhere } from "../../../server/disconnect-user";
 
 export async function GET() {
   const session = await auth();
@@ -147,8 +155,9 @@ export async function PATCH(request: Request) {
   const body = (await request.json()) as {
     demoUserId?: string;
     action?: string;
+    serverIds?: string[];
   };
-  if (!body.demoUserId || body.action !== "revoke") {
+  if (!body.demoUserId || !body.action) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   }
 
@@ -169,6 +178,90 @@ export async function PATCH(request: Request) {
     );
   }
 
+  if (body.action === "servers") {
+    const serverIds = [...new Set(body.serverIds ?? [])];
+    if (serverIds.length === 0)
+      return NextResponse.json(
+        { error: "At least one server is required" },
+        { status: 400 },
+      );
+    const owned = await db
+      .select({ id: servers.id })
+      .from(servers)
+      .where(
+        and(
+          inArray(servers.id, serverIds),
+          eq(servers.createdBy, session.user.id),
+        ),
+      );
+    if (owned.length !== serverIds.length)
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const previous = await db
+      .select({ serverId: serverMembers.serverId })
+      .from(serverMembers)
+      .where(eq(serverMembers.userId, demoUser.id));
+    const affectedServerIds = [
+      ...new Set([...previous.map((row) => row.serverId), ...serverIds]),
+    ];
+    const groupChannels = await db
+      .select({ id: channels.id })
+      .from(channels)
+      .where(
+        and(
+          inArray(channels.serverId, affectedServerIds),
+          eq(channels.type, "voice_group"),
+        ),
+      );
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(serverMembers)
+        .where(eq(serverMembers.userId, demoUser.id));
+      await tx
+        .insert(serverMembers)
+        .values(
+          serverIds.map((serverId) => ({ serverId, userId: demoUser.id })),
+        );
+    });
+    await disconnectUserEverywhere(
+      demoUser.id,
+      groupChannels.map((channel) => channel.id),
+    );
+    return NextResponse.json({ id: demoUser.id, serverIds });
+  }
+
+  if (body.action === "regenerate") {
+    const token = randomBytes(32).toString("base64url");
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const expiresAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
+    await db
+      .update(demoInvites)
+      .set({ tokenHash, expiresAt, revokedAt: null, redeemedAt: null })
+      .where(eq(demoInvites.demoUserId, demoUser.id));
+    await db
+      .update(users)
+      .set({ expiresAt, disabledAt: null, updatedAt: new Date() })
+      .where(eq(users.id, demoUser.id));
+    const publicOrigin = process.env.AUTH_URL ?? new URL(request.url).origin;
+    return NextResponse.json({
+      id: demoUser.id,
+      inviteUrl: new URL(`/invite/${token}`, publicOrigin).toString(),
+      expiresAt,
+      status: "pending",
+    });
+  }
+
+  if (body.action !== "revoke")
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  const groupChannels = await db
+    .select({ id: channels.id })
+    .from(channels)
+    .innerJoin(serverMembers, eq(serverMembers.serverId, channels.serverId))
+    .where(
+      and(
+        eq(serverMembers.userId, demoUser.id),
+        eq(channels.type, "voice_group"),
+      ),
+    );
   const revokedAt = new Date();
   await db.transaction(async (tx) => {
     await tx
@@ -181,6 +274,74 @@ export async function PATCH(request: Request) {
       .where(eq(demoInvites.demoUserId, demoUser.id));
     await tx.delete(serverMembers).where(eq(serverMembers.userId, demoUser.id));
   });
-
+  await disconnectUserEverywhere(
+    demoUser.id,
+    groupChannels.map((channel) => channel.id),
+  );
   return NextResponse.json({ id: demoUser.id, status: "revoked" });
+}
+
+export async function DELETE(request: Request) {
+  const session = await auth();
+  if (!session || session.user.role !== "owner")
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const body = (await request.json()) as {
+    demoUserId?: string;
+    deleteMessages?: boolean;
+  };
+  if (!body.demoUserId)
+    return NextResponse.json(
+      { error: "Demo account is required" },
+      { status: 400 },
+    );
+  const [demoUser] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, body.demoUserId),
+        eq(users.createdBy, session.user.id),
+        eq(users.role, "demo"),
+      ),
+    );
+  if (!demoUser)
+    return NextResponse.json(
+      { error: "Demo account not found" },
+      { status: 404 },
+    );
+  const groupChannels = await db
+    .select({ id: channels.id })
+    .from(channels)
+    .innerJoin(serverMembers, eq(serverMembers.serverId, channels.serverId))
+    .where(
+      and(
+        eq(serverMembers.userId, demoUser.id),
+        eq(channels.type, "voice_group"),
+      ),
+    );
+  await disconnectUserEverywhere(
+    demoUser.id,
+    groupChannels.map((channel) => channel.id),
+  );
+  await db.transaction(async (tx) => {
+    await tx.delete(serverMembers).where(eq(serverMembers.userId, demoUser.id));
+    await tx.delete(demoInvites).where(eq(demoInvites.demoUserId, demoUser.id));
+    if (body.deleteMessages) {
+      await tx.delete(messages).where(eq(messages.authorId, demoUser.id));
+      await tx.delete(users).where(eq(users.id, demoUser.id));
+    } else {
+      await tx
+        .update(users)
+        .set({
+          name: "Deleted user",
+          email: null,
+          image: null,
+          createdBy: null,
+          disabledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, demoUser.id));
+    }
+  });
+  return NextResponse.json({ id: demoUser.id });
 }

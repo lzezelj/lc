@@ -10,6 +10,7 @@ export function createSignalingToken(identity, secret, lifetimeSeconds = 60) {
     sub: identity.id,
     name: identity.name,
     channelIds: identity.channelIds,
+    serverIds: identity.serverIds ?? [],
     exp: Math.floor(Date.now() / 1000) + lifetimeSeconds,
   });
   const signature = createHmac("sha256", secret)
@@ -42,6 +43,8 @@ export function verifySignalingToken(token, secret) {
       !identity.channelIds.every(
         (channelId) => typeof channelId === "string",
       ) ||
+      !Array.isArray(identity.serverIds) ||
+      !identity.serverIds.every((serverId) => typeof serverId === "string") ||
       typeof identity.exp !== "number" ||
       identity.exp <= Math.floor(Date.now() / 1000)
     ) {

@@ -165,6 +165,9 @@ export const messages = pgTable(
     authorId: uuid("author_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    replyToId: uuid("reply_to_id").references((): AnyPgColumn => messages.id, {
+      onDelete: "set null",
+    }),
     content: text("content").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -178,5 +181,6 @@ export const messages = pgTable(
       table.createdAt,
       table.id,
     ),
+    index("messages_reply_to_id_idx").on(table.replyToId),
   ],
 );

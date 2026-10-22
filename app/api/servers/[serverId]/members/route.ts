@@ -2,7 +2,8 @@ import { and, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
-import { serverMembers, users } from "../../../../../db/schema";
+import { channels, serverMembers, users } from "../../../../../db/schema";
+import { disconnectUserEverywhere } from "../../../../../server/disconnect-user";
 
 export async function GET(
   _request: Request,
@@ -68,4 +69,58 @@ export async function GET(
     );
 
   return NextResponse.json(members);
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ serverId: string }> },
+) {
+  const session = await auth();
+  const { serverId } = await params;
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const body = (await request.json()) as { userId?: string };
+  if (!body.userId || body.userId === session.user.id)
+    return NextResponse.json({ error: "Invalid member" }, { status: 400 });
+  const [owner] = await db
+    .select({ role: serverMembers.role })
+    .from(serverMembers)
+    .where(
+      and(
+        eq(serverMembers.serverId, serverId),
+        eq(serverMembers.userId, session.user.id),
+      ),
+    );
+  if (owner?.role !== "owner")
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const [target] = await db
+    .select({ role: serverMembers.role })
+    .from(serverMembers)
+    .where(
+      and(
+        eq(serverMembers.serverId, serverId),
+        eq(serverMembers.userId, body.userId),
+      ),
+    );
+  if (!target || target.role === "owner")
+    return NextResponse.json({ error: "Member not found" }, { status: 404 });
+  const groupChannels = await db
+    .select({ id: channels.id })
+    .from(channels)
+    .where(
+      and(eq(channels.serverId, serverId), eq(channels.type, "voice_group")),
+    );
+  await db
+    .delete(serverMembers)
+    .where(
+      and(
+        eq(serverMembers.serverId, serverId),
+        eq(serverMembers.userId, body.userId),
+      ),
+    );
+  await disconnectUserEverywhere(
+    body.userId,
+    groupChannels.map((channel) => channel.id),
+  );
+  return NextResponse.json({ id: body.userId });
 }

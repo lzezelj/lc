@@ -48,6 +48,66 @@ export function createSignalingServer({
         .catch(() => response.writeHead(400).end("Invalid JSON"));
       return;
     }
+    if (
+      request.method === "POST" &&
+      request.url === "/internal/message-deleted"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret)) {
+        response.writeHead(401).end("Unauthorized");
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.channelId !== "string" ||
+            typeof body.messageId !== "string"
+          ) {
+            response.writeHead(400).end("Invalid deletion");
+            return;
+          }
+          broadcastMessageDeletion(
+            body.channelId,
+            body.messageId,
+            body.permanent === true,
+          );
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      request.url === "/internal/disconnect-user"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret)) {
+        response.writeHead(401).end("Unauthorized");
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => {
+          if (typeof body.userId !== "string") {
+            response.writeHead(400).end("Invalid user");
+            return;
+          }
+          for (const client of ws.clients) {
+            if (client.identity?.sub === body.userId) {
+              client.send(JSON.stringify({ type: "access-changed" }));
+              client.close(4003, "Access changed");
+            }
+          }
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     response.writeHead(426, { "Content-Type": "text/plain" });
     response.end("Upgrade Required");
   });
@@ -121,6 +181,50 @@ export function createSignalingServer({
     }
   };
 
+  const broadcastMessageDeletion = (channelId, messageId, permanent) => {
+    const outgoing = JSON.stringify({
+      type: "message-deleted",
+      channelId,
+      messageId,
+      permanent,
+    });
+    for (const client of ws.clients) {
+      if (
+        client.subscribedTextChannelId === channelId &&
+        client.readyState === WebSocket.OPEN
+      ) {
+        client.send(outgoing);
+      }
+    }
+  };
+
+  const broadcastOnlinePresence = (serverId) => {
+    const userIds = [
+      ...new Set(
+        [...ws.clients]
+          .filter(
+            (client) =>
+              client.readyState === WebSocket.OPEN &&
+              client.identity?.serverIds?.includes(serverId),
+          )
+          .map((client) => client.identity.sub),
+      ),
+    ];
+    const outgoing = JSON.stringify({
+      type: "online-presence",
+      serverId,
+      userIds,
+    });
+    for (const client of ws.clients) {
+      if (
+        client.subscribedOnlineServerId === serverId &&
+        client.readyState === WebSocket.OPEN
+      ) {
+        client.send(outgoing);
+      }
+    }
+  };
+
   ws.on("connection", (socket, request) => {
     socket.identity = request.signalingIdentity;
     socket.allowedChannelIds = new Set(socket.identity.channelIds);
@@ -150,6 +254,16 @@ export function createSignalingServer({
           .filter((roomId) => !isAllowed(roomId))
           .forEach(rejectForbidden);
         roomIds.forEach((roomId) => broadcastPresence(roomId));
+        return;
+      }
+
+      if (message.type === "subscribe-online") {
+        if (!socket.identity.serverIds.includes(message.serverId)) {
+          rejectForbidden(message.serverId);
+          return;
+        }
+        socket.subscribedOnlineServerId = message.serverId;
+        broadcastOnlinePresence(message.serverId);
         return;
       }
 
@@ -247,6 +361,9 @@ export function createSignalingServer({
     });
 
     socket.on("close", () => {
+      for (const serverId of socket.identity.serverIds) {
+        broadcastOnlinePresence(serverId);
+      }
       for (const roomId of socket.groupPresence?.keys() ?? []) {
         socket.groupPresence.delete(roomId);
         broadcastPresence(roomId);

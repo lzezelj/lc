@@ -40,9 +40,10 @@ async function connect(
   url,
   name = "Test user",
   channelIds = permittedChannelIds,
+  serverIds = ["server-1"],
 ) {
   const token = createSignalingToken(
-    { id: `test-${name}`, name, channelIds },
+    { id: `test-${name}`, name, channelIds, serverIds },
     authSecret,
   );
   const socket = new WebSocket(`${url}?token=${token}`);
@@ -50,6 +51,71 @@ async function connect(
   await once(socket, "open");
   return socket;
 }
+
+test("online presence is scoped to an authorized server", async () => {
+  const url = await startServer();
+  const first = await connect(url, "Ada");
+  const second = await connect(url, "Grace");
+  const presence = nextMessage(first);
+  first.send(
+    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+  );
+  assert.deepEqual(await presence, {
+    type: "online-presence",
+    serverId: "server-1",
+    userIds: ["test-Ada", "test-Grace"],
+  });
+  const forbidden = nextMessage(second);
+  second.send(
+    JSON.stringify({ type: "subscribe-online", serverId: "private" }),
+  );
+  assert.deepEqual(await forbidden, {
+    type: "forbidden",
+    channelId: "private",
+  });
+});
+
+test("an authenticated internal command disconnects a user immediately", async () => {
+  const url = await startServer();
+  const socket = await connect(url, "Ada");
+  const accessChanged = nextMessage(socket);
+  const closed = once(socket, "close");
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/disconnect-user`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId: "test-Ada" }),
+    },
+  );
+  assert.equal(response.status, 204);
+  assert.deepEqual(await accessChanged, { type: "access-changed" });
+  const [code] = await closed;
+  assert.equal(code, 4003);
+});
+
+test("an unauthenticated disconnect command cannot remove a user", async () => {
+  const url = await startServer();
+  const socket = await connect(url, "Ada");
+  const stayedConnected = expectNoMessage(socket);
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/disconnect-user`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer wrong-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId: "test-Ada" }),
+    },
+  );
+  assert.equal(response.status, 401);
+  await stayedConnected;
+  assert.equal(socket.readyState, WebSocket.OPEN);
+});
 
 test("connections without a valid authentication token are rejected", async () => {
   const url = await startServer();
@@ -226,6 +292,48 @@ test("persisted text messages are delivered only to channel subscribers", async 
     type: "text-message",
     channelId: "general",
     message,
+  });
+  await outsiderStayedQuiet;
+});
+
+test("persisted message deletions are delivered only to channel subscribers", async () => {
+  const url = await startServer();
+  const recipient = await connect(url);
+  const outsider = await connect(url);
+
+  for (const [socket, channelId] of [
+    [recipient, "general"],
+    [outsider, "random"],
+  ]) {
+    const subscribed = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "subscribe-text", channelId }));
+    await subscribed;
+  }
+
+  const delivered = nextMessage(recipient);
+  const outsiderStayedQuiet = expectNoMessage(outsider);
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/message-deleted`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        channelId: "general",
+        messageId: "message-1",
+        permanent: true,
+      }),
+    },
+  );
+
+  assert.equal(response.status, 204);
+  assert.deepEqual(await delivered, {
+    type: "message-deleted",
+    channelId: "general",
+    messageId: "message-1",
+    permanent: true,
   });
   await outsiderStayedQuiet;
 });

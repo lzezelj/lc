@@ -105,7 +105,7 @@ model contains:
 - hashed demo invitations and their expiry/revocation state;
 - servers and server memberships;
 - text, direct-voice, and group-voice channels;
-- persistent text messages.
+- persistent text messages, reply relationships, and deletion timestamps.
 
 Drizzle defines the schema and migrations. A one-shot migration container runs
 after PostgreSQL becomes healthy and before the application starts.
@@ -120,10 +120,20 @@ video. It provides:
 - direct-call join/leave coordination;
 - WebRTC offer, answer, and ICE-candidate relay;
 - voice presence broadcasts;
-- real-time delivery of text messages that the Next.js API has already stored.
+- real-time delivery of text messages and deletion events that the Next.js API
+  has already stored.
+- server-scoped online-presence subscriptions;
+- authenticated administrative disconnection when membership changes.
 
 The service keeps connections and rooms in memory. Clients reconnect and
 resubscribe after a dropped WebSocket connection.
+
+Online state is derived from authenticated WebSocket connections rather than a
+database flag. The signed token includes current server IDs, and the signaling
+service accepts a presence subscription only for one of those servers. Closing
+the last socket for a user removes that user from the server's online set. The
+browser keeps this website-level connection open even when the user has no
+server or has not joined a voice channel, so online does not mean “in a call.”
 
 ### LiveKit
 
@@ -172,9 +182,21 @@ The server never accepts a client-supplied author identity. API routes derive
 the user from the authenticated session and verify the relevant server or
 channel membership before reading or modifying data.
 
-Users may inspect and delete all messages authored by their own account. The
-owner may do the same only for demo accounts that the owner created. This is
-checked by the API; it is not only a UI restriction.
+Users may inspect and delete messages authored by their own account. The owner
+may do the same only for demo accounts that the owner created. Ordinary message
+deletion is a soft deletion: the content is erased while the row remains so
+replies can display a stable `Deleted message` placeholder. This is checked by
+the API; it is not only a UI restriction. The confirmation UI also offers an
+explicit, default-off permanent deletion. Permanent deletion removes the row;
+the reply foreign key uses `ON DELETE SET NULL`, so replies survive without a
+reference to content that no longer exists.
+
+The owner can replace a demo account's server memberships, regenerate its
+short-lived invitation, revoke it, or delete it. Membership replacement must
+retain at least one server. Account deletion either permanently deletes the
+account's messages and user row, or anonymizes the disabled user as
+`Deleted user` so retained messages remain attributable without retaining the
+demo identity.
 
 ### Signaling authorization
 
@@ -183,9 +205,9 @@ current channel memberships and signs this identity and channel list with
 HMAC-SHA256 using `AUTH_SECRET`. The token expires after 60 seconds and is
 verified with a timing-safe signature comparison by the WebSocket service.
 
-The short lifetime limits token reuse. It does not terminate an already-open
-WebSocket when a membership changes; that connection must be disconnected or
-reconnected before its embedded permission list is refreshed.
+The short lifetime limits token reuse. Administrative membership changes call
+the internal disconnect endpoint, forcing affected sockets to reconnect before
+receiving a refreshed permission list.
 
 ### LiveKit authorization
 
@@ -216,7 +238,9 @@ sequenceDiagram
 Persistence happens before broadcast. A client cannot use the public WebSocket
 to invent an authoritative text message. If the internal broadcast fails, the
 message remains stored and clients recover it when they reconnect or reload the
-latest history.
+latest history. Replies store the referenced message ID. Deletions follow the
+same API-to-signaling path as new messages, so connected channel subscribers
+replace the content immediately without polling.
 
 ## Direct WebRTC call flow
 
@@ -271,6 +295,25 @@ Transport between participants and LiveKit is encrypted, but the current
 LiveKit deployment does not enable application-level end-to-end encryption.
 The SFU must process media packets to route them. LiveKit offers UDP media and
 ICE/TCP fallback, but TURN has not yet been configured.
+
+## Membership revocation and moderation
+
+Kicking a server member, changing demo-server assignments, revoking an account,
+or deleting an account follows one control path:
+
+1. Next.js verifies that the actor owns the relevant server or demo account.
+2. PostgreSQL membership or account state is changed.
+3. Next.js calls the signaling service's authenticated internal disconnect
+   endpoint for that user.
+4. The signaling service sends `access-changed` and closes matching sockets
+   with code `4003`. The browser reloads its server/navigation state, and a new
+   connection requires a token containing current permissions. This also lets
+   an already-open no-server page discover when access is added.
+5. Next.js enumerates LiveKit participants in affected group rooms and removes
+   every participant identity prefixed by the user's ID.
+
+This makes removal immediate for text signaling, direct WebRTC, presence, and
+group media rather than waiting for the browser to refresh.
 
 ## Public and private network boundaries
 
@@ -361,7 +404,8 @@ application-level owner dashboard yet.
 - LiveKit has UDP and ICE/TCP but no TURN/TLS relay for highly restrictive
   networks.
 - Signaling permissions are captured when the short-lived connection token is
-  issued and are not revoked mid-connection.
+  issued. Administrative changes actively close sockets, but purely time-based
+  expiry is enforced when the session/token is next refreshed.
 - Monitoring is mostly manual.
 - Demo-account expiry removes server access but intentionally retains the user
   and message records until an authorized user explicitly deletes messages or

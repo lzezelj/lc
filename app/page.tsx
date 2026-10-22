@@ -8,9 +8,12 @@ import { GroupCall } from "./group-call";
 
 type ChatMessage = {
   id: string;
+  authorId: string;
   author: string;
   text: string;
   time: string;
+  deleted: boolean;
+  replyTo: { id: string; text: string; author: string } | null;
 };
 
 type Server = { id: string; name: string };
@@ -45,6 +48,8 @@ type VoiceParticipant = {
 };
 type Signal = {
   type: string;
+  serverId?: string;
+  userIds?: string[];
   roomId?: string;
   participants?: Array<string | VoiceParticipant>;
   sdp?: RTCSessionDescriptionInit;
@@ -72,6 +77,7 @@ export default function Home() {
   const [selectedServerId, setSelectedServerId] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState("");
   const [form, setForm] = useState<
     "server" | "channel" | "account" | "manage" | "media" | "messages" | null
@@ -82,12 +88,37 @@ export default function Home() {
   const [chooseInviteServer, setChooseInviteServer] = useState(false);
   const [inviteUrl, setInviteUrl] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [demoMenuOpen, setDemoMenuOpen] = useState(false);
   const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
+  const [editingDemoServers, setEditingDemoServers] = useState<string[]>([]);
+  const [editingDemoAccount, setEditingDemoAccount] =
+    useState<DemoAccount | null>(null);
+  const [demoInviteLinks, setDemoInviteLinks] = useState<
+    Record<string, string>
+  >({});
+  const [deleteDemoCandidate, setDeleteDemoCandidate] =
+    useState<DemoAccount | null>(null);
+  const [deleteDemoMessages, setDeleteDemoMessages] = useState(false);
+  const [regenerateInviteCandidate, setRegenerateInviteCandidate] =
+    useState<DemoAccount | null>(null);
   const [revokeCandidateId, setRevokeCandidateId] = useState("");
   const [messageAccount, setMessageAccount] = useState({ id: "", name: "" });
   const [accountMessages, setAccountMessages] = useState<AccountMessage[]>([]);
   const [deleteMessagesPending, setDeleteMessagesPending] = useState(false);
+  const [returnToDemoManager, setReturnToDemoManager] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
+  const [messageMenu, setMessageMenu] = useState<{
+    message: ChatMessage;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [deleteMessageCandidate, setDeleteMessageCandidate] = useState<{
+    id: string;
+    preview: string;
+  } | null>(null);
+  const [permanentMessageDeletion, setPermanentMessageDeletion] =
+    useState(false);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("Not connected");
   const [joined, setJoined] = useState(false);
@@ -99,6 +130,7 @@ export default function Home() {
     Record<string, VoiceParticipant[]>
   >({});
   const [errorMessage, setErrorMessage] = useState("");
+  const [noticeMessage, setNoticeMessage] = useState("");
   const [microphones, setMicrophones] = useState<MediaDeviceOption[]>([]);
   const [cameras, setCameras] = useState<MediaDeviceOption[]>([]);
   const [microphoneId, setMicrophoneId] = useState(() =>
@@ -117,6 +149,12 @@ export default function Home() {
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
   const [callViewOpen, setCallViewOpen] = useState(false);
   const [memberSearch, setMemberSearch] = useState("");
+  const [memberMenu, setMemberMenu] = useState<{
+    member: Member;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [kickCandidate, setKickCandidate] = useState<Member | null>(null);
   const [focusedDirectVideo, setFocusedDirectVideo] = useState<
     "local" | "remote" | null
   >(null);
@@ -134,6 +172,9 @@ export default function Home() {
   const stream = useRef<MediaStream | null>(null);
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
   const accountMenu = useRef<HTMLDivElement>(null);
+  const demoMenu = useRef<HTMLDivElement>(null);
+  const messageContextMenu = useRef<HTMLDivElement>(null);
+  const memberContextMenu = useRef<HTMLDivElement>(null);
   const lastTextChannelId = useRef("");
   const activeGroupChannelId = useRef("");
   const directVideoGrid = useRef<HTMLDivElement>(null);
@@ -189,19 +230,61 @@ export default function Home() {
     if (!selectedServerId) return;
     void fetch(`/api/servers/${selectedServerId}/members`)
       .then((response) => response.json())
-      .then((data: Member[]) => setMembers(Array.isArray(data) ? data : []));
-  }, [selectedServerId]);
+      .then((data: Member[]) => {
+        setMembers(Array.isArray(data) ? data : []);
+        if (session?.user.id) {
+          setOnlineUserIds((current) => [
+            ...new Set([...current, session.user.id]),
+          ]);
+        }
+      });
+  }, [selectedServerId, session?.user.id]);
 
   useEffect(() => {
-    if (!accountMenuOpen) return;
+    if (!accountMenuOpen && !demoMenuOpen) return;
     const closeAccountMenu = (event: PointerEvent) => {
       if (!accountMenu.current?.contains(event.target as Node)) {
         setAccountMenuOpen(false);
       }
+      if (!demoMenu.current?.contains(event.target as Node)) {
+        setDemoMenuOpen(false);
+      }
     };
     document.addEventListener("pointerdown", closeAccountMenu);
     return () => document.removeEventListener("pointerdown", closeAccountMenu);
-  }, [accountMenuOpen]);
+  }, [accountMenuOpen, demoMenuOpen]);
+
+  useEffect(() => {
+    if (!messageMenu) return;
+    const closeMessageMenu = (event: PointerEvent) => {
+      if (!messageContextMenu.current?.contains(event.target as Node)) {
+        setMessageMenu(null);
+      }
+    };
+    const closeMessageMenuOnScroll = () => setMessageMenu(null);
+    document.addEventListener("pointerdown", closeMessageMenu);
+    document.addEventListener("scroll", closeMessageMenuOnScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeMessageMenu);
+      document.removeEventListener("scroll", closeMessageMenuOnScroll, true);
+    };
+  }, [messageMenu]);
+
+  useEffect(() => {
+    if (!memberMenu) return;
+    const closeMemberMenu = (event: PointerEvent) => {
+      if (!memberContextMenu.current?.contains(event.target as Node)) {
+        setMemberMenu(null);
+      }
+    };
+    const closeOnScroll = () => setMemberMenu(null);
+    document.addEventListener("pointerdown", closeMemberMenu);
+    document.addEventListener("scroll", closeOnScroll, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeMemberMenu);
+      document.removeEventListener("scroll", closeOnScroll, true);
+    };
+  }, [memberMenu]);
 
   useEffect(() => {
     const selected = channels.find(
@@ -211,11 +294,22 @@ export default function Home() {
       return;
     }
     void fetch(`/api/channels/${selectedChannelId}/messages`)
-      .then((response) => response.json())
+      .then(async (response) => {
+        const data = await readJsonResponse<unknown>(response);
+        if (!response.ok) throw new Error(apiErrorMessage(data));
+        return data;
+      })
       .then((data) => {
         if (!Array.isArray(data)) return;
         setMessages(data.map(toChatMessage));
-      });
+      })
+      .catch((error: unknown) =>
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Messages could not be loaded.",
+        ),
+      );
   }, [channels, selectedChannelId]);
 
   useEffect(() => {
@@ -241,7 +335,38 @@ export default function Home() {
           type?: string;
           channelId?: string;
           message?: Parameters<typeof toChatMessage>[0];
+          messageId?: string;
+          permanent?: boolean;
         };
+        if (
+          incoming.type === "message-deleted" &&
+          incoming.channelId === selectedChannelId &&
+          incoming.messageId
+        ) {
+          setMessages((current) =>
+            current
+              .filter(
+                (message) =>
+                  !incoming.permanent || message.id !== incoming.messageId,
+              )
+              .map((message) =>
+                message.id === incoming.messageId
+                  ? { ...message, text: "Deleted message", deleted: true }
+                  : message.replyTo?.id === incoming.messageId
+                    ? {
+                        ...message,
+                        replyTo: incoming.permanent
+                          ? null
+                          : {
+                              ...message.replyTo!,
+                              text: "Deleted message",
+                            },
+                      }
+                    : message,
+              ),
+          );
+          return;
+        }
         if (
           incoming.type !== "text-message" ||
           incoming.channelId !== selectedChannelId ||
@@ -281,17 +406,24 @@ export default function Home() {
   );
 
   useEffect(() => {
-    if (authStatus !== "authenticated") return;
+    const currentUserId = session?.user.id;
+    if (authStatus !== "authenticated" || !currentUserId) return;
     const voiceChannelIds = channels
       .filter((channel) => channel.type !== "text")
       .map((channel) => channel.id);
-    if (voiceChannelIds.length === 0) return;
-
     const livePresence = createReconnectingSignalingConnection({
       onSocket: (openedSocket) => {
         presenceSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
+        if (selectedServerId) {
+          openedSocket.send(
+            JSON.stringify({
+              type: "subscribe-online",
+              serverId: selectedServerId,
+            }),
+          );
+        }
         openedSocket.send(
           JSON.stringify({
             type: "subscribe-presence",
@@ -310,6 +442,10 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (message.type === "access-changed") {
+          location.reload();
+          return;
+        }
         if (
           message.type === "presence" &&
           message.roomId &&
@@ -320,6 +456,13 @@ export default function Home() {
             [message.roomId!]: message.participants!.map(normalizePresence),
           }));
         }
+        if (
+          message.type === "online-presence" &&
+          message.serverId === selectedServerId &&
+          Array.isArray(message.userIds)
+        ) {
+          setOnlineUserIds([...new Set([...message.userIds, currentUserId])]);
+        }
       },
       onError: () => setErrorMessage("Voice presence is reconnecting."),
     });
@@ -327,7 +470,7 @@ export default function Home() {
       livePresence.close();
       presenceSocket.current = null;
     };
-  }, [authStatus, channels]);
+  }, [authStatus, channels, selectedServerId, session?.user.id]);
 
   useEffect(() => {
     if (!selectedServerId) return;
@@ -883,22 +1026,31 @@ export default function Home() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || !selectedChannelId) return;
-    setDraft("");
-    const response = await fetch(
-      `/api/channels/${selectedChannelId}/messages`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      },
-    );
-    const message = await response.json();
-    if (response.ok) {
+    try {
+      const response = await fetch(
+        `/api/channels/${selectedChannelId}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, replyToId: replyingTo?.id }),
+        },
+      );
+      const message =
+        await readJsonResponse<Parameters<typeof toChatMessage>[0]>(response);
+      if (!response.ok) throw new Error(apiErrorMessage(message));
+      setDraft("");
+      setReplyingTo(null);
       const chatMessage = toChatMessage(message);
       setMessages((current) =>
         current.some((candidate) => candidate.id === chatMessage.id)
           ? current
           : [...current, chatMessage],
+      );
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "The message could not be sent.",
       );
     }
   }
@@ -917,7 +1069,8 @@ export default function Home() {
       setServers((current) => [...current, server]);
       setSelectedServerId(server.id);
       closeForm();
-    }
+      setNoticeMessage("Server created.");
+    } else setErrorMessage(server.error ?? "Server could not be created.");
   }
 
   async function createChannel(event: FormEvent) {
@@ -934,7 +1087,8 @@ export default function Home() {
       setChannels((current) => [...current, channel]);
       setSelectedChannelId(channel.id);
       closeForm();
-    }
+      setNoticeMessage("Channel created.");
+    } else setErrorMessage(channel.error ?? "Channel could not be created.");
   }
 
   async function createDemoAccount(event: FormEvent) {
@@ -954,11 +1108,14 @@ export default function Home() {
       if (inviteServerId === selectedServerId && result.member) {
         setMembers((current) => [...current, result.member]);
       }
-    }
+      setNoticeMessage("Demo account created. Copy the invitation link now.");
+    } else
+      setErrorMessage(result.error ?? "Demo account could not be created.");
   }
 
   function openDemoAccount(serverId: string, chooseServer: boolean) {
     setAccountMenuOpen(false);
+    setDemoMenuOpen(false);
     setInviteServerId(serverId);
     setChooseInviteServer(chooseServer);
     setInviteUrl("");
@@ -967,6 +1124,7 @@ export default function Home() {
 
   async function openDemoAccountManager() {
     setAccountMenuOpen(false);
+    setDemoMenuOpen(false);
     setRevokeCandidateId("");
     setForm("manage");
     const response = await fetch("/api/demo-accounts");
@@ -980,7 +1138,7 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ demoUserId, action: "revoke" }),
     });
-    if (!response.ok) return;
+    if (!response.ok) return setErrorMessage("Access could not be revoked.");
     setDemoAccounts((current) =>
       current.map((account) =>
         account.id === demoUserId
@@ -992,16 +1150,155 @@ export default function Home() {
       current.filter((member) => member.id !== demoUserId),
     );
     setRevokeCandidateId("");
+    setNoticeMessage("Demo account access revoked.");
   }
 
-  async function openAccountMessages(userId: string, name: string) {
+  async function saveDemoServers(account: DemoAccount) {
+    const response = await fetch("/api/demo-accounts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        demoUserId: account.id,
+        action: "servers",
+        serverIds: editingDemoServers,
+      }),
+    });
+    if (!response.ok)
+      return setErrorMessage("Server assignments could not be saved.");
+    setDemoAccounts((current) =>
+      current.map((candidate) =>
+        candidate.id === account.id
+          ? {
+              ...candidate,
+              servers: servers.filter((server) =>
+                editingDemoServers.includes(server.id),
+              ),
+            }
+          : candidate,
+      ),
+    );
+    setEditingDemoAccount(null);
+    if (selectedServerId) {
+      const membersResponse = await fetch(
+        `/api/servers/${selectedServerId}/members`,
+      );
+      const latestMembers = await membersResponse.json();
+      if (membersResponse.ok && Array.isArray(latestMembers)) {
+        setMembers(latestMembers);
+      }
+    }
+    setNoticeMessage("Server access updated.");
+  }
+
+  async function openDemoServerAssignments(account: DemoAccount) {
+    const response = await fetch("/api/servers");
+    const latestServers = await readJsonResponse<Server[]>(response);
+    if (!response.ok || !Array.isArray(latestServers)) {
+      setErrorMessage("Servers could not be refreshed.");
+      return;
+    }
+    setServers(latestServers);
+    setEditingDemoServers(account.servers.map((server) => server.id));
+    setEditingDemoAccount(account);
+  }
+
+  async function regenerateDemoInvite(account: DemoAccount) {
+    const response = await fetch("/api/demo-accounts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoUserId: account.id, action: "regenerate" }),
+    });
+    const result = await readJsonResponse<{
+      inviteUrl?: string;
+      expiresAt?: string;
+      status?: DemoAccount["status"];
+      error?: string;
+    }>(response);
+    if (!response.ok || !result.inviteUrl)
+      return setErrorMessage(
+        result.error ?? "Invitation could not be generated.",
+      );
+    setDemoInviteLinks((current) => ({
+      ...current,
+      [account.id]: result.inviteUrl!,
+    }));
+    setDemoAccounts((current) =>
+      current.map((candidate) =>
+        candidate.id === account.id
+          ? {
+              ...candidate,
+              expiresAt: result.expiresAt ?? candidate.expiresAt,
+              status: result.status ?? candidate.status,
+            }
+          : candidate,
+      ),
+    );
+    setRegenerateInviteCandidate(null);
+    setNoticeMessage(
+      "A new invitation link was generated. The old link no longer works.",
+    );
+  }
+
+  async function deleteDemoAccount() {
+    if (!deleteDemoCandidate) return;
+    const response = await fetch("/api/demo-accounts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        demoUserId: deleteDemoCandidate.id,
+        deleteMessages: deleteDemoMessages,
+      }),
+    });
+    if (!response.ok)
+      return setErrorMessage("The demo account could not be deleted.");
+    setDemoAccounts((current) =>
+      current.filter((account) => account.id !== deleteDemoCandidate.id),
+    );
+    setMembers((current) =>
+      current.filter((member) => member.id !== deleteDemoCandidate.id),
+    );
+    setDeleteDemoCandidate(null);
+    setDeleteDemoMessages(false);
+    setNoticeMessage("Demo account deleted.");
+  }
+
+  async function kickMember(userId: string) {
+    const response = await fetch(`/api/servers/${selectedServerId}/members`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    if (!response.ok)
+      return setErrorMessage("The member could not be removed.");
+    setMembers((current) => current.filter((member) => member.id !== userId));
+    setKickCandidate(null);
+    setMemberMenu(null);
+    setNoticeMessage("Member removed from the server.");
+  }
+
+  async function openAccountMessages(
+    userId: string,
+    name: string,
+    fromDemoManager = false,
+  ) {
     setAccountMenuOpen(false);
     setMessageAccount({ id: userId, name });
     setDeleteMessagesPending(false);
+    setReturnToDemoManager(fromDemoManager);
     setForm("messages");
-    const response = await fetch(`/api/users/${userId}/messages`);
-    const data = await response.json();
-    setAccountMessages(response.ok && Array.isArray(data) ? data : []);
+    try {
+      const response = await fetch(`/api/users/${userId}/messages`);
+      const data = await readJsonResponse<unknown>(response);
+      if (!response.ok) throw new Error(apiErrorMessage(data));
+      setAccountMessages(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setAccountMessages([]);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Account messages could not be loaded.",
+      );
+    }
   }
 
   async function deleteAccountMessages() {
@@ -1013,6 +1310,62 @@ export default function Home() {
     setDeleteMessagesPending(false);
   }
 
+  function requestMessageDeletion(messageId: string, preview: string) {
+    setMessageMenu(null);
+    setPermanentMessageDeletion(false);
+    setDeleteMessageCandidate({ id: messageId, preview });
+  }
+
+  async function deleteMessage() {
+    if (!deleteMessageCandidate) return;
+    const response = await fetch(`/api/messages/${deleteMessageCandidate.id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ permanent: permanentMessageDeletion }),
+    });
+    if (!response.ok) {
+      setErrorMessage("The message could not be deleted.");
+      return;
+    }
+    setMessages((current) =>
+      current
+        .filter(
+          (message) =>
+            !permanentMessageDeletion ||
+            message.id !== deleteMessageCandidate.id,
+        )
+        .map((message) =>
+          message.id === deleteMessageCandidate.id
+            ? { ...message, text: "Deleted message", deleted: true }
+            : message.replyTo?.id === deleteMessageCandidate.id
+              ? {
+                  ...message,
+                  replyTo: permanentMessageDeletion
+                    ? null
+                    : { ...message.replyTo, text: "Deleted message" },
+                }
+              : message,
+        ),
+    );
+    setAccountMessages((current) =>
+      current.filter((message) => message.id !== deleteMessageCandidate.id),
+    );
+    setMessageMenu(null);
+    setDeleteMessageCandidate(null);
+    setPermanentMessageDeletion(false);
+  }
+
+  function closeCurrentForm() {
+    if (form === "messages" && returnToDemoManager) {
+      setForm("manage");
+      setAccountMessages([]);
+      setDeleteMessagesPending(false);
+      setReturnToDemoManager(false);
+      return;
+    }
+    closeForm();
+  }
+
   function closeForm() {
     setForm(null);
     setFormName("");
@@ -1020,6 +1373,7 @@ export default function Home() {
     setChooseInviteServer(false);
     setRevokeCandidateId("");
     setDeleteMessagesPending(false);
+    setReturnToDemoManager(false);
   }
 
   function selectVoiceChannel(channel: Channel) {
@@ -1039,6 +1393,12 @@ export default function Home() {
 
   const visibleMembers = members.filter((member) =>
     member.name.toLowerCase().includes(memberSearch.trim().toLowerCase()),
+  );
+  const onlineMembers = visibleMembers.filter((member) =>
+    onlineUserIds.includes(member.id),
+  );
+  const offlineMembers = visibleMembers.filter(
+    (member) => !onlineUserIds.includes(member.id),
   );
   const activeVoiceChannel = channels.find(
     (channel) => channel.id === activeVoiceChannelId,
@@ -1131,10 +1491,12 @@ export default function Home() {
                 onClick={() => {
                   lastTextChannelId.current = channel.id;
                   setCallViewOpen(false);
+                  setReplyingTo(null);
+                  setMessageMenu(null);
                   setSelectedChannelId(channel.id);
                 }}
               >
-                # {channel.name}
+                {channel.name}
               </button>
             ))}
           <p className="sectionLabel">VOICE CHANNELS</p>
@@ -1206,52 +1568,22 @@ export default function Home() {
         </nav>
         <footer className="profileBar">
           <span className="avatar">Y</span>
-          <span>
-            <strong>{session.user.name ?? "You"}</strong>
-            <small>{status}</small>
-          </span>
-        </footer>
-      </aside>
-      <section
-        className={`room ${selectedChannel?.type === "text" ? "textOnly" : ""}`}
-      >
-        <header className="roomHeader">
-          <strong>
-            {displayedChannel
-              ? `${displayedChannel.type === "text" ? "#" : displayedChannel.type === "voice_group" ? "◉" : "\u{1F50A}"} ${displayedChannel.name}`
-              : "Select a channel"}
-          </strong>
           <div
-            className={`accountMenu ${accountMenuOpen ? "open" : ""}`}
+            className={`accountMenu profileMenu ${accountMenuOpen ? "open" : ""}`}
             ref={accountMenu}
           >
             <button
               className="accountMenuTrigger"
-              aria-expanded={accountMenuOpen}
               onClick={() => setAccountMenuOpen((current) => !current)}
             >
-              {session.user.name ?? "My account"}
-              <span aria-hidden="true">⌄</span>
+              <span>
+                <strong>{session.user.name ?? "You"}</strong>
+                <small>{status}</small>
+              </span>
+              <span aria-hidden="true">⌃</span>
             </button>
             {accountMenuOpen && (
               <div className="accountMenuDropdown">
-                {session.user.role === "owner" && (
-                  <>
-                    <button
-                      onClick={() =>
-                        openDemoAccount(
-                          selectedServerId || servers[0]?.id || "",
-                          true,
-                        )
-                      }
-                    >
-                      Create demo account
-                    </button>
-                    <button onClick={() => void openDemoAccountManager()}>
-                      Manage demo accounts
-                    </button>
-                  </>
-                )}
                 <button
                   onClick={() => {
                     setAccountMenuOpen(false);
@@ -1271,16 +1603,54 @@ export default function Home() {
                 >
                   My messages
                 </button>
-                <a href="/impressum">Impressum</a>
-                <a href="/privacy">Privacy</a>
-                <button
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    void signOut({ callbackUrl: "/login" });
-                  }}
-                >
+                <button onClick={() => void signOut({ callbackUrl: "/login" })}>
                   Log out
                 </button>
+              </div>
+            )}
+          </div>
+        </footer>
+      </aside>
+      <section
+        className={`room ${selectedChannel?.type === "text" ? "textOnly" : ""}`}
+      >
+        <header className="roomHeader">
+          <strong>
+            {displayedChannel
+              ? `${displayedChannel.type === "text" ? "" : displayedChannel.type === "voice_group" ? "◉ " : "\u{1F50A} "}${displayedChannel.name}`
+              : "Select a channel"}
+          </strong>
+          <div
+            className={`accountMenu ${demoMenuOpen ? "open" : ""} ${session.user.role !== "owner" ? "ownerOnlyHidden" : ""}`}
+            ref={demoMenu}
+          >
+            <button
+              className="accountMenuTrigger"
+              aria-expanded={demoMenuOpen}
+              onClick={() => setDemoMenuOpen((current) => !current)}
+            >
+              Demo account
+              <span aria-hidden="true">⌄</span>
+            </button>
+            {demoMenuOpen && (
+              <div className="accountMenuDropdown">
+                {session.user.role === "owner" && (
+                  <>
+                    <button
+                      onClick={() =>
+                        openDemoAccount(
+                          selectedServerId || servers[0]?.id || "",
+                          true,
+                        )
+                      }
+                    >
+                      Create demo account
+                    </button>
+                    <button onClick={() => void openDemoAccountManager()}>
+                      Manage demo accounts
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1438,10 +1808,6 @@ export default function Home() {
         )}
         {selectedChannel?.type === "text" && !callViewOpen && (
           <section className="chat">
-            <header>
-              <strong>Channel chat</strong>
-              <small>Messages are stored in PostgreSQL.</small>
-            </header>
             <div className="chatLog">
               {messages.length === 0 && (
                 <p className="empty">
@@ -1451,7 +1817,24 @@ export default function Home() {
                 </p>
               )}
               {messages.map((message) => (
-                <article key={message.id}>
+                <article
+                  className={message.deleted ? "deletedMessage" : undefined}
+                  key={message.id}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMessageMenu({
+                      message,
+                      x: Math.min(event.clientX, window.innerWidth - 190),
+                      y: Math.min(event.clientY, window.innerHeight - 110),
+                    });
+                  }}
+                >
+                  {message.replyTo && (
+                    <div className="replyPreview">
+                      <strong>{message.replyTo.author}</strong>
+                      <span>{message.replyTo.text}</span>
+                    </div>
+                  )}
                   <b>{message.author}</b>
                   <time>{message.time}</time>
                   <p>{message.text}</p>
@@ -1459,16 +1842,32 @@ export default function Home() {
               ))}
             </div>
             <form onSubmit={submit}>
-              <input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                disabled={!selectedChannelId}
-                placeholder={
-                  selectedChannel
-                    ? `Message #${selectedChannel.name}`
-                    : "Select a text channel"
-                }
-              />
+              <div className="messageComposer">
+                {replyingTo && (
+                  <div className="replyingTo">
+                    <span>
+                      Replying to <strong>{replyingTo.author}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Cancel reply"
+                      onClick={() => setReplyingTo(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+                <input
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  disabled={!selectedChannelId}
+                  placeholder={
+                    selectedChannel
+                      ? `Message #${selectedChannel.name}`
+                      : "Select a text channel"
+                  }
+                />
+              </div>
               <button disabled={!selectedChannelId}>Send</button>
             </form>
           </section>
@@ -1492,8 +1891,22 @@ export default function Home() {
           placeholder="Search users"
           aria-label="Search users"
         />
-        {visibleMembers.map((member) => (
-          <div className="member" key={member.id}>
+        <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
+        {onlineMembers.map((member) => (
+          <div
+            className="member online"
+            key={member.id}
+            onContextMenu={(event) => {
+              if (session.user.role !== "owner" || member.role === "owner")
+                return;
+              event.preventDefault();
+              setMemberMenu({
+                member,
+                x: Math.min(event.clientX, window.innerWidth - 190),
+                y: Math.min(event.clientY, window.innerHeight - 70),
+              });
+            }}
+          >
             <span className={`avatar ${member.role}`}>
               {member.name[0]?.toUpperCase()}
             </span>
@@ -1503,11 +1916,95 @@ export default function Home() {
             </span>
           </div>
         ))}
+        <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
+        {offlineMembers.map((member) => (
+          <div
+            className="member offline"
+            key={member.id}
+            onContextMenu={(event) => {
+              if (session.user.role !== "owner" || member.role === "owner")
+                return;
+              event.preventDefault();
+              setMemberMenu({
+                member,
+                x: Math.min(event.clientX, window.innerWidth - 190),
+                y: Math.min(event.clientY, window.innerHeight - 70),
+              });
+            }}
+          >
+            <span className={`avatar ${member.role}`}>
+              {member.name[0]?.toUpperCase()}
+            </span>
+            <span>
+              <strong>{member.name}</strong>
+              <small>{member.role}</small>
+            </span>
+          </div>
+        ))}
+        <div className="appLegalLinks">
+          <a href="/impressum">Impressum</a>
+          <a href="/privacy">Privacy</a>
+        </div>
       </aside>
+      {memberMenu && (
+        <div
+          className="messageContextMenu"
+          ref={memberContextMenu}
+          role="menu"
+          style={{ left: memberMenu.x, top: memberMenu.y }}
+        >
+          <button
+            className="danger"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setKickCandidate(memberMenu.member);
+              setMemberMenu(null);
+            }}
+          >
+            Kick from server
+          </button>
+        </div>
+      )}
+      {messageMenu && (
+        <div
+          className="messageContextMenu"
+          ref={messageContextMenu}
+          role="menu"
+          style={{ left: messageMenu.x, top: messageMenu.y }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setReplyingTo(messageMenu.message);
+              setMessageMenu(null);
+            }}
+          >
+            Reply
+          </button>
+          {messageMenu.message.authorId === session.user.id &&
+            !messageMenu.message.deleted && (
+              <button
+                className="danger"
+                type="button"
+                role="menuitem"
+                onClick={() =>
+                  requestMessageDeletion(
+                    messageMenu.message.id,
+                    messageMenu.message.text,
+                  )
+                }
+              >
+                Delete message
+              </button>
+            )}
+        </div>
+      )}
       {form && (
-        <div className="modalBackdrop" onMouseDown={closeForm}>
+        <div className="modalBackdrop" onMouseDown={closeCurrentForm}>
           <form
-            className="modalCard"
+            className={`modalCard ${form === "manage" ? "manageDemoModal" : ""}`}
             onSubmit={
               form === "server"
                 ? createServer
@@ -1607,14 +2104,37 @@ export default function Home() {
                         Expires {formatLocalDateTime(account.expiresAt)}
                       </small>
                     )}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void openAccountMessages(account.id, account.name)
-                      }
-                    >
-                      View messages
-                    </button>
+                    {demoInviteLinks[account.id] && (
+                      <p className="inviteResult">
+                        {demoInviteLinks[account.id]}
+                      </p>
+                    )}
+                    <div className="demoAccountActions">
+                      <button
+                        type="button"
+                        onClick={() => void openDemoServerAssignments(account)}
+                      >
+                        Servers
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRegenerateInviteCandidate(account)}
+                      >
+                        New invite
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void openAccountMessages(
+                            account.id,
+                            account.name,
+                            true,
+                          )
+                        }
+                      >
+                        Messages
+                      </button>
+                    </div>
                     {!["revoked", "expired"].includes(account.status) && (
                       <div className="revokeActions">
                         {revokeCandidateId === account.id ? (
@@ -1644,6 +2164,16 @@ export default function Home() {
                         )}
                       </div>
                     )}
+                    <button
+                      className="danger"
+                      type="button"
+                      onClick={() => {
+                        setDeleteDemoCandidate(account);
+                        setDeleteDemoMessages(false);
+                      }}
+                    >
+                      Delete account
+                    </button>
                   </article>
                 ))}
               </div>
@@ -1708,10 +2238,21 @@ export default function Home() {
                 )}
                 {accountMessages.map((message) => (
                   <article key={message.id}>
-                    <small>
-                      {message.serverName} / #{message.channelName} ·{" "}
-                      {formatLocalDateTime(message.createdAt)}
-                    </small>
+                    <div className="managedMessageHeader">
+                      <small>
+                        {message.serverName} / #{message.channelName} ·{" "}
+                        {formatLocalDateTime(message.createdAt)}
+                      </small>
+                      <button
+                        className="messageDeleteButton"
+                        type="button"
+                        onClick={() =>
+                          requestMessageDeletion(message.id, message.text)
+                        }
+                      >
+                        Delete
+                      </button>
+                    </div>
                     <p>{message.text}</p>
                   </article>
                 ))}
@@ -1744,9 +2285,11 @@ export default function Home() {
               </div>
             )}
             <div className="modalActions">
-              <button type="button" onClick={closeForm}>
+              <button type="button" onClick={closeCurrentForm}>
                 {form === "manage" || form === "media" || form === "messages"
-                  ? "Close"
+                  ? form === "messages" && returnToDemoManager
+                    ? "Back"
+                    : "Close"
                   : "Cancel"}
               </button>
               {form !== "manage" && form !== "media" && form !== "messages" && (
@@ -1760,6 +2303,218 @@ export default function Home() {
           </form>
         </div>
       )}
+      {editingDemoAccount && (
+        <div className="modalBackdrop nestedModalBackdrop">
+          <section
+            className="modalCard serverAssignmentModal"
+            role="dialog"
+            aria-modal="true"
+          >
+            <h2>Server access for {editingDemoAccount.name}</h2>
+            <p>
+              Select at least one server. Saving applies the latest server list
+              and refreshes the demo user’s page.
+            </p>
+            <div className="serverAssignmentList">
+              {servers.map((server) => (
+                <label key={server.id}>
+                  <input
+                    type="checkbox"
+                    checked={editingDemoServers.includes(server.id)}
+                    onChange={(event) =>
+                      setEditingDemoServers((current) =>
+                        event.target.checked
+                          ? [...current, server.id]
+                          : current.filter((id) => id !== server.id),
+                      )
+                    }
+                  />
+                  <span>{server.name}</span>
+                </label>
+              ))}
+            </div>
+            <div className="modalActions">
+              <button type="button" onClick={() => setEditingDemoAccount(null)}>
+                Cancel
+              </button>
+              <button
+                className="primary"
+                type="button"
+                disabled={editingDemoServers.length === 0}
+                onClick={() => void saveDemoServers(editingDemoAccount)}
+              >
+                Save access
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {kickCandidate && (
+        <div className="modalBackdrop nestedModalBackdrop">
+          <section
+            className="modalCard deletionConfirmation"
+            role="dialog"
+            aria-modal="true"
+          >
+            <h2>Kick {kickCandidate.name}?</h2>
+            <p>
+              They will immediately lose access to this server and be
+              disconnected from its direct and group voice channels.
+            </p>
+            <div className="modalActions">
+              <button type="button" onClick={() => setKickCandidate(null)}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void kickMember(kickCandidate.id)}
+              >
+                Kick from server
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {regenerateInviteCandidate && (
+        <div className="modalBackdrop nestedModalBackdrop">
+          <section
+            className="modalCard deletionConfirmation"
+            role="dialog"
+            aria-modal="true"
+          >
+            <h2>Generate a new invitation?</h2>
+            <p>
+              The existing invitation link for {regenerateInviteCandidate.name}{" "}
+              will stop working immediately.
+            </p>
+            <div className="modalActions">
+              <button
+                type="button"
+                onClick={() => setRegenerateInviteCandidate(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                type="button"
+                onClick={() =>
+                  void regenerateDemoInvite(regenerateInviteCandidate)
+                }
+              >
+                Generate new link
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {deleteMessageCandidate && (
+        <div
+          className="modalBackdrop deletionConfirmationBackdrop"
+          onMouseDown={() => {
+            setDeleteMessageCandidate(null);
+            setPermanentMessageDeletion(false);
+          }}
+        >
+          <section
+            className="modalCard deletionConfirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-message-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2 id="delete-message-title">Delete message?</h2>
+            <p>
+              By default, LC erases the message content but keeps a
+              <em> Deleted message </em>
+              placeholder so existing replies still make sense.
+            </p>
+            <blockquote>{deleteMessageCandidate.preview}</blockquote>
+            <label className="permanentDeleteOption">
+              <input
+                type="checkbox"
+                checked={permanentMessageDeletion}
+                onChange={(event) =>
+                  setPermanentMessageDeletion(event.target.checked)
+                }
+              />
+              <span>
+                Delete completely
+                <small>
+                  Permanently removes the database row and disconnects replies
+                  from this message. This cannot be undone.
+                </small>
+              </span>
+            </label>
+            <div className="modalActions">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteMessageCandidate(null);
+                  setPermanentMessageDeletion(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void deleteMessage()}
+              >
+                {permanentMessageDeletion
+                  ? "Delete permanently"
+                  : "Delete message"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {deleteDemoCandidate && (
+        <div className="modalBackdrop deletionConfirmationBackdrop">
+          <section
+            className="modalCard deletionConfirmation"
+            role="dialog"
+            aria-modal="true"
+          >
+            <h2>Delete {deleteDemoCandidate.name}?</h2>
+            <p>
+              The account will immediately lose all server, signaling, and voice
+              access.
+            </p>
+            <label className="permanentDeleteOption">
+              <input
+                type="checkbox"
+                checked={deleteDemoMessages}
+                onChange={(event) =>
+                  setDeleteDemoMessages(event.target.checked)
+                }
+              />
+              <span>
+                Delete all messages
+                <small>
+                  When disabled, messages remain under “Deleted user”. When
+                  enabled, every message is permanently removed.
+                </small>
+              </span>
+            </label>
+            <div className="modalActions">
+              <button
+                type="button"
+                onClick={() => setDeleteDemoCandidate(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void deleteDemoAccount()}
+              >
+                Delete account
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {errorMessage && (
         <div className="errorToast" role="alert">
           <span>{errorMessage}</span>
@@ -1771,8 +2526,45 @@ export default function Home() {
           </button>
         </div>
       )}
+      {noticeMessage && (
+        <div className="noticeToast" role="status">
+          <span>{noticeMessage}</span>
+          <button
+            aria-label="Dismiss confirmation"
+            onClick={() => setNoticeMessage("")}
+          >
+            ×
+          </button>
+        </div>
+      )}
     </main>
   );
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  if (!body) {
+    throw new Error(`Server returned an empty response (${response.status}).`);
+  }
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(
+      `Server returned an invalid response (${response.status}).`,
+    );
+  }
+}
+
+function apiErrorMessage(value: unknown) {
+  if (
+    value &&
+    typeof value === "object" &&
+    "error" in value &&
+    typeof value.error === "string"
+  ) {
+    return value.error;
+  }
+  return "The server could not complete the request.";
 }
 
 function time() {
@@ -1784,14 +2576,20 @@ function time() {
 
 function toChatMessage(message: {
   id: string;
+  authorId: string;
   author: string;
   text: string;
   createdAt?: string | Date;
+  deleted?: boolean;
+  replyTo?: { id: string; text: string; author: string } | null;
 }): ChatMessage {
   return {
     id: message.id,
+    authorId: message.authorId,
     author: message.author,
     text: message.text,
+    deleted: Boolean(message.deleted),
+    replyTo: message.replyTo ?? null,
     time: message.createdAt
       ? new Date(message.createdAt).toLocaleTimeString([], {
           hour: "2-digit",

@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
@@ -49,7 +49,7 @@ export async function GET(
       .from(messages)
       .innerJoin(channels, eq(channels.id, messages.channelId))
       .innerJoin(servers, eq(servers.id, channels.serverId))
-      .where(eq(messages.authorId, userId))
+      .where(and(eq(messages.authorId, userId), isNull(messages.deletedAt)))
       .orderBy(asc(messages.createdAt)),
   );
 }
@@ -67,9 +67,33 @@ export async function DELETE(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const deletedAt = new Date();
   const deleted = await db
-    .delete(messages)
-    .where(eq(messages.authorId, userId))
-    .returning({ id: messages.id });
+    .update(messages)
+    .set({ content: "", deletedAt, editedAt: deletedAt })
+    .where(and(eq(messages.authorId, userId), isNull(messages.deletedAt)))
+    .returning({ id: messages.id, channelId: messages.channelId });
+
+  const signalingUrl =
+    process.env.SIGNALING_INTERNAL_URL ?? "http://localhost:3001";
+  const internalSecret =
+    process.env.SIGNALING_INTERNAL_SECRET ?? process.env.AUTH_SECRET;
+  if (internalSecret) {
+    await Promise.allSettled(
+      deleted.map((message) =>
+        fetch(`${signalingUrl}/internal/message-deleted`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${internalSecret}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            channelId: message.channelId,
+            messageId: message.id,
+          }),
+        }),
+      ),
+    );
+  }
   return NextResponse.json({ deletedCount: deleted.length });
 }
