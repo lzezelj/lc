@@ -1204,6 +1204,8 @@ export default function Home() {
                 >
                   Voice &amp; video settings
                 </button>
+                <a href="/impressum">Impressum</a>
+                <a href="/privacy">Privacy</a>
                 <button
                   onClick={() => {
                     setAccountMenuOpen(false);

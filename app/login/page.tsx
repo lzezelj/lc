@@ -1,6 +1,7 @@
 "use client";
 
 import { signIn } from "next-auth/react";
+import { LegalLinks } from "../legal-links";
 
 export default function LoginPage() {
   return (
@@ -13,6 +14,7 @@ export default function LoginPage() {
           Continue with Google
         </button>
         <small>Demo participants enter through an invitation link.</small>
+        <LegalLinks />
       </section>
     </main>
   );
