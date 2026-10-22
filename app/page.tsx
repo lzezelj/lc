@@ -52,9 +52,16 @@ type Signal = {
 
 const iceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
+function formatLocalDateTime(value: string) {
+  const date = new Date(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export default function Home() {
   const { data: session, status: authStatus } = useSession();
   const [servers, setServers] = useState<Server[]>([]);
+  const [serversLoaded, setServersLoaded] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -135,7 +142,8 @@ export default function Home() {
       .then((data: Server[]) => {
         setServers(data);
         setSelectedServerId((current) => current || data[0]?.id || "");
-      });
+      })
+      .finally(() => setServersLoaded(true));
   }, [authStatus]);
 
   useEffect(() => {
@@ -985,6 +993,7 @@ export default function Home() {
   }
 
   function selectVoiceChannel(channel: Channel) {
+    if (activeVoiceChannelId === channel.id) return;
     prepareVoiceSounds();
     leaveRoom();
     setActiveVoiceChannelId(channel.id);
@@ -1012,6 +1021,24 @@ export default function Home() {
 
   if (authStatus !== "authenticated") {
     return <main className="loginPage">Loading LC...</main>;
+  }
+
+  if (serversLoaded && servers.length === 0) {
+    return (
+      <main className="noServerPage">
+        <section>
+          <div className="workspaceLogo">LC</div>
+          <h1>No server access</h1>
+          <p>
+            Unfortunately, you currently don&apos;t have access to any servers.
+            Please contact the owner.
+          </p>
+          <button onClick={() => void signOut({ callbackUrl: "/login" })}>
+            Log out
+          </button>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -1535,7 +1562,7 @@ export default function Home() {
                     </small>
                     {account.expiresAt && account.status !== "revoked" && (
                       <small>
-                        Expires {new Date(account.expiresAt).toLocaleString()}
+                        Expires {formatLocalDateTime(account.expiresAt)}
                       </small>
                     )}
                     {!["revoked", "expired"].includes(account.status) && (

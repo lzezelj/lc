@@ -795,6 +795,43 @@ button {
   background: radial-gradient(circle at top, #252b4d, #0d1018 55%);
 }
 
+.noServerPage {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at top, #252b4d, #0d1018 55%);
+}
+
+.noServerPage section {
+  display: grid;
+  width: min(460px, 100%);
+  justify-items: center;
+  gap: 16px;
+  padding: 38px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  text-align: center;
+}
+
+.noServerPage h1,
+.noServerPage p {
+  margin: 0;
+}
+
+.noServerPage p {
+  color: var(--muted);
+}
+
+.noServerPage button {
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+}
+
 .loginCard {
   display: grid;
   width: min(420px, 100%);

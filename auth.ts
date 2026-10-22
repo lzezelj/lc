@@ -4,6 +4,7 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
+import { isAccountActive } from "./auth-account.mjs";
 import { db } from "./db";
 import { accounts, demoInvites, sessions, users } from "./db/schema";
 
@@ -76,7 +77,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user?.id) {
         token.userId = user.id;
         token.role = user.role;
+        return token;
       }
+
+      if (!token.userId) return null;
+      const [currentUser] = await db
+        .select({
+          id: users.id,
+          role: users.role,
+          disabledAt: users.disabledAt,
+          expiresAt: users.expiresAt,
+        })
+        .from(users)
+        .where(eq(users.id, token.userId));
+      if (!isAccountActive(currentUser)) {
+        return null;
+      }
+      token.role = currentUser.role;
       return token;
     },
     async session({ session, token }) {

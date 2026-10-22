@@ -142,6 +142,10 @@ issues participant tokens scoped to a single `channel-{id}` room.
 The owner signs in through Google OAuth. Authentication succeeds only when
 Google reports a verified email matching `OWNER_EMAIL`. Auth.js uses a signed
 JWT session strategy, while linked OAuth account data is stored in PostgreSQL.
+Whenever the session is accessed, the JWT callback revalidates that the user
+still exists and is neither disabled nor expired. Invalid sessions return no
+session and Auth.js clears their session cookie. The browser refreshes its
+session state at least once per minute and whenever the window regains focus.
 
 ### Demo login
 
