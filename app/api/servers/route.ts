@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, isNull, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
-import { channels, serverMembers, servers } from "../../../db/schema";
+import { channels, serverMembers, servers, users } from "../../../db/schema";
 
 export async function GET() {
   const session = await auth();
@@ -13,7 +13,14 @@ export async function GET() {
     .select({ id: servers.id, name: servers.name })
     .from(serverMembers)
     .innerJoin(servers, eq(servers.id, serverMembers.serverId))
-    .where(eq(serverMembers.userId, session.user.id));
+    .innerJoin(users, eq(users.id, serverMembers.userId))
+    .where(
+      and(
+        eq(serverMembers.userId, session.user.id),
+        isNull(users.disabledAt),
+        or(isNull(users.expiresAt), gt(users.expiresAt, new Date())),
+      ),
+    );
   return NextResponse.json(result);
 }
 

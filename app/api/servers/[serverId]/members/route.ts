@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
@@ -27,6 +27,29 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const expiredMembers = await db
+    .select({ userId: users.id })
+    .from(serverMembers)
+    .innerJoin(users, eq(users.id, serverMembers.userId))
+    .where(
+      and(
+        eq(serverMembers.serverId, serverId),
+        eq(users.role, "demo"),
+        lte(users.expiresAt, new Date()),
+      ),
+    );
+  if (expiredMembers.length > 0) {
+    await db.delete(serverMembers).where(
+      and(
+        eq(serverMembers.serverId, serverId),
+        inArray(
+          serverMembers.userId,
+          expiredMembers.map((member) => member.userId),
+        ),
+      ),
+    );
+  }
+
   const members = await db
     .select({
       id: users.id,
@@ -36,7 +59,13 @@ export async function GET(
     })
     .from(serverMembers)
     .innerJoin(users, eq(users.id, serverMembers.userId))
-    .where(and(eq(serverMembers.serverId, serverId), isNull(users.disabledAt)));
+    .where(
+      and(
+        eq(serverMembers.serverId, serverId),
+        isNull(users.disabledAt),
+        or(isNull(users.expiresAt), gt(users.expiresAt, new Date())),
+      ),
+    );
 
   return NextResponse.json(members);
 }

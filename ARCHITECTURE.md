@@ -158,6 +158,11 @@ session state at least once per minute and whenever the window regains focus.
    and unused, then marks it as redeemed.
 6. Revocation disables the demo user and removes its server memberships.
 
+Expired demo accounts are also excluded from server and member queries. Their
+membership rows are removed when expiration is observed during session
+validation or demo-account management. Expiration and revocation preserve the
+account's existing messages unless an authorized user explicitly deletes them.
+
 This design prevents a database reader from directly using stored invitation
 values as login credentials.
 
@@ -166,6 +171,10 @@ values as login credentials.
 The server never accepts a client-supplied author identity. API routes derive
 the user from the authenticated session and verify the relevant server or
 channel membership before reading or modifying data.
+
+Users may inspect and delete all messages authored by their own account. The
+owner may do the same only for demo accounts that the owner created. This is
+checked by the API; it is not only a UI restriction.
 
 ### Signaling authorization
 
@@ -354,8 +363,9 @@ application-level owner dashboard yet.
 - Signaling permissions are captured when the short-lived connection token is
   issued and are not revoked mid-connection.
 - Monitoring is mostly manual.
-- Demo-account expiry prevents access but does not currently erase all related
-  database records automatically.
+- Demo-account expiry removes server access but intentionally retains the user
+  and message records until an authorized user explicitly deletes messages or
+  a later account-deletion workflow anonymizes them.
 
 These choices are appropriate for a small portfolio deployment: they keep cost
 and operational complexity low while preserving clear service boundaries.

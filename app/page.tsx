@@ -29,6 +29,13 @@ type DemoAccount = {
   status: "pending" | "active" | "expired" | "revoked";
   servers: Server[];
 };
+type AccountMessage = {
+  id: string;
+  text: string;
+  createdAt: string;
+  channelName: string;
+  serverName: string;
+};
 type VoiceParticipant = {
   name: string;
   muted: boolean;
@@ -67,7 +74,7 @@ export default function Home() {
   const [members, setMembers] = useState<Member[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState("");
   const [form, setForm] = useState<
-    "server" | "channel" | "account" | "manage" | "media" | null
+    "server" | "channel" | "account" | "manage" | "media" | "messages" | null
   >(null);
   const [formName, setFormName] = useState("");
   const [channelType, setChannelType] = useState<ChannelType>("text");
@@ -77,6 +84,9 @@ export default function Home() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
   const [revokeCandidateId, setRevokeCandidateId] = useState("");
+  const [messageAccount, setMessageAccount] = useState({ id: "", name: "" });
+  const [accountMessages, setAccountMessages] = useState<AccountMessage[]>([]);
+  const [deleteMessagesPending, setDeleteMessagesPending] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("Not connected");
@@ -984,12 +994,32 @@ export default function Home() {
     setRevokeCandidateId("");
   }
 
+  async function openAccountMessages(userId: string, name: string) {
+    setAccountMenuOpen(false);
+    setMessageAccount({ id: userId, name });
+    setDeleteMessagesPending(false);
+    setForm("messages");
+    const response = await fetch(`/api/users/${userId}/messages`);
+    const data = await response.json();
+    setAccountMessages(response.ok && Array.isArray(data) ? data : []);
+  }
+
+  async function deleteAccountMessages() {
+    const response = await fetch(`/api/users/${messageAccount.id}/messages`, {
+      method: "DELETE",
+    });
+    if (!response.ok) return;
+    setAccountMessages([]);
+    setDeleteMessagesPending(false);
+  }
+
   function closeForm() {
     setForm(null);
     setFormName("");
     setInviteUrl("");
     setChooseInviteServer(false);
     setRevokeCandidateId("");
+    setDeleteMessagesPending(false);
   }
 
   function selectVoiceChannel(channel: Channel) {
@@ -1230,6 +1260,16 @@ export default function Home() {
                   }}
                 >
                   Voice &amp; video settings
+                </button>
+                <button
+                  onClick={() =>
+                    void openAccountMessages(
+                      session.user.id,
+                      session.user.name ?? "My account",
+                    )
+                  }
+                >
+                  My messages
                 </button>
                 <a href="/impressum">Impressum</a>
                 <a href="/privacy">Privacy</a>
@@ -1488,9 +1528,11 @@ export default function Home() {
                     ? "Create demo account"
                     : form === "media"
                       ? "Voice & video settings"
-                      : "Manage demo accounts"}
+                      : form === "messages"
+                        ? "Account messages"
+                        : "Manage demo accounts"}
             </h2>
-            {form !== "manage" && form !== "media" && (
+            {form !== "manage" && form !== "media" && form !== "messages" && (
               <label>
                 Name
                 <input
@@ -1565,6 +1607,14 @@ export default function Home() {
                         Expires {formatLocalDateTime(account.expiresAt)}
                       </small>
                     )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void openAccountMessages(account.id, account.name)
+                      }
+                    >
+                      View messages
+                    </button>
                     {!["revoked", "expired"].includes(account.status) && (
                       <div className="revokeActions">
                         {revokeCandidateId === account.id ? (
@@ -1648,11 +1698,58 @@ export default function Home() {
                 </small>
               </div>
             )}
+            {form === "messages" && (
+              <div className="accountMessageList">
+                <p>
+                  Messages written by <strong>{messageAccount.name}</strong>
+                </p>
+                {accountMessages.length === 0 && (
+                  <p className="empty">No messages found.</p>
+                )}
+                {accountMessages.map((message) => (
+                  <article key={message.id}>
+                    <small>
+                      {message.serverName} / #{message.channelName} ·{" "}
+                      {formatLocalDateTime(message.createdAt)}
+                    </small>
+                    <p>{message.text}</p>
+                  </article>
+                ))}
+                {accountMessages.length > 0 &&
+                  (deleteMessagesPending ? (
+                    <div className="revokeActions">
+                      <button
+                        type="button"
+                        onClick={() => setDeleteMessagesPending(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="danger"
+                        type="button"
+                        onClick={() => void deleteAccountMessages()}
+                      >
+                        Confirm delete all
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="danger"
+                      type="button"
+                      onClick={() => setDeleteMessagesPending(true)}
+                    >
+                      Delete all messages
+                    </button>
+                  ))}
+              </div>
+            )}
             <div className="modalActions">
               <button type="button" onClick={closeForm}>
-                {form === "manage" || form === "media" ? "Close" : "Cancel"}
+                {form === "manage" || form === "media" || form === "messages"
+                  ? "Close"
+                  : "Cancel"}
               </button>
-              {form !== "manage" && form !== "media" && (
+              {form !== "manage" && form !== "media" && form !== "messages" && (
                 <button className="primary" type="submit">
                   {form === "account" && inviteUrl
                     ? "Create another"

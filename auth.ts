@@ -6,7 +6,13 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 import { isAccountActive } from "./auth-account.mjs";
 import { db } from "./db";
-import { accounts, demoInvites, sessions, users } from "./db/schema";
+import {
+  accounts,
+  demoInvites,
+  serverMembers,
+  sessions,
+  users,
+} from "./db/schema";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: DrizzleAdapter(db, {
@@ -91,6 +97,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         .from(users)
         .where(eq(users.id, token.userId));
       if (!isAccountActive(currentUser)) {
+        if (currentUser?.role === "demo") {
+          await db
+            .delete(serverMembers)
+            .where(eq(serverMembers.userId, currentUser.id));
+        }
         return null;
       }
       token.role = currentUser.role;

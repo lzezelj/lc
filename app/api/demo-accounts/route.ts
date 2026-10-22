@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, lte } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
@@ -9,6 +9,25 @@ export async function GET() {
   const session = await auth();
   if (!session || session.user.role !== "owner") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const expiredAccounts = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.createdBy, session.user.id),
+        eq(users.role, "demo"),
+        lte(users.expiresAt, new Date()),
+      ),
+    );
+  if (expiredAccounts.length > 0) {
+    await db.delete(serverMembers).where(
+      inArray(
+        serverMembers.userId,
+        expiredAccounts.map((account) => account.id),
+      ),
+    );
   }
 
   const rows = await db
