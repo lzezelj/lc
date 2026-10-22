@@ -137,6 +137,8 @@ export function GroupCall({
   const cameraOffRef = useRef(true);
   const stopLocalStats = useRef<(() => void) | null>(null);
   const stopRoomPing = useRef<(() => void) | null>(null);
+  const speakingReleaseTimer = useRef<number | null>(null);
+  const localSpeaking = useRef(false);
   const onConnectionChangeRef = useRef(onConnectionChange);
 
   useEffect(() => {
@@ -170,6 +172,11 @@ export function GroupCall({
     stopLocalStats.current = null;
     stopRoomPing.current?.();
     stopRoomPing.current = null;
+    if (speakingReleaseTimer.current !== null) {
+      window.clearTimeout(speakingReleaseTimer.current);
+      speakingReleaseTimer.current = null;
+    }
+    localSpeaking.current = false;
     setLocalVideoStats("");
   }
 
@@ -268,15 +275,32 @@ export function GroupCall({
         updatePresence();
       })
       .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-        onMediaStateChange({
-          muted: mutedRef.current,
-          camera: !cameraOffRef.current,
-          screen: false,
-          speaking: speakers.some(
-            (participant) =>
-              participant.identity === room.localParticipant.identity,
-          ),
-        });
+        const speaking = speakers.some(
+          (participant) =>
+            participant.identity === room.localParticipant.identity,
+        );
+        if (speakingReleaseTimer.current !== null) {
+          window.clearTimeout(speakingReleaseTimer.current);
+          speakingReleaseTimer.current = null;
+        }
+        const publishSpeaking = (next: boolean) => {
+          if (localSpeaking.current === next) return;
+          localSpeaking.current = next;
+          onMediaStateChange({
+            muted: mutedRef.current,
+            camera: !cameraOffRef.current,
+            screen: false,
+            speaking: next,
+          });
+        };
+        if (speaking) {
+          publishSpeaking(true);
+        } else {
+          speakingReleaseTimer.current = window.setTimeout(
+            () => publishSpeaking(false),
+            350,
+          );
+        }
       })
       .on(RoomEvent.Disconnected, () => {
         if (roomRef.current !== room) return;
@@ -310,7 +334,7 @@ export function GroupCall({
       try {
         await room.localParticipant.setMicrophoneEnabled(
           true,
-          microphoneId ? { deviceId: microphoneId } : undefined,
+          voiceCaptureOptions(microphoneId),
         );
       } catch {
         setMuted(true);
@@ -340,7 +364,7 @@ export function GroupCall({
     try {
       await room.localParticipant.setMicrophoneEnabled(
         muted,
-        microphoneId ? { deviceId: microphoneId } : undefined,
+        voiceCaptureOptions(microphoneId),
       );
       setMuted((current) => !current);
       mutedRef.current = !muted;
@@ -520,6 +544,17 @@ export function GroupCall({
       </p>
     </section>
   );
+}
+
+function voiceCaptureOptions(deviceId: string) {
+  return {
+    ...(deviceId ? { deviceId } : {}),
+    channelCount: 1,
+    sampleRate: 48_000,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
 }
 
 function videoQuality(video: HTMLVideoElement) {

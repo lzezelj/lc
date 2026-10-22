@@ -54,3 +54,29 @@ export async function POST(request: Request) {
     { status: 201 },
   );
 }
+
+export async function PATCH(request: Request) {
+  const session = await auth();
+  if (!session || session.user.role !== "owner")
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const body = (await request.json()) as { serverId?: string; name?: string };
+  const name = body.name?.trim();
+  if (!body.serverId || !name || name.length > 60)
+    return NextResponse.json(
+      { error: "Server name must be 1-60 characters" },
+      { status: 400 },
+    );
+  const [server] = await db
+    .update(servers)
+    .set({ name })
+    .where(
+      and(
+        eq(servers.id, body.serverId),
+        eq(servers.createdBy, session.user.id),
+      ),
+    )
+    .returning({ id: servers.id, name: servers.name });
+  if (!server)
+    return NextResponse.json({ error: "Server not found" }, { status: 404 });
+  return NextResponse.json(server);
+}

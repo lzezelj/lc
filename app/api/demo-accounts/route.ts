@@ -156,6 +156,7 @@ export async function PATCH(request: Request) {
     demoUserId?: string;
     action?: string;
     serverIds?: string[];
+    name?: string;
   };
   if (!body.demoUserId || !body.action) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
@@ -176,6 +177,20 @@ export async function PATCH(request: Request) {
       { error: "Demo account not found" },
       { status: 404 },
     );
+  }
+
+  if (body.action === "rename") {
+    const name = body.name?.trim();
+    if (!name || name.length > 60)
+      return NextResponse.json(
+        { error: "Username must be 1-60 characters" },
+        { status: 400 },
+      );
+    await db
+      .update(users)
+      .set({ name, updatedAt: new Date() })
+      .where(eq(users.id, demoUser.id));
+    return NextResponse.json({ id: demoUser.id, name });
   }
 
   if (body.action === "servers") {

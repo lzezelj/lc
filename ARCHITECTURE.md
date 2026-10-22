@@ -65,6 +65,12 @@ For direct calls, browsers negotiate with each other and send media peer to
 peer. For group calls, each browser publishes media to LiveKit and subscribes
 to tracks selected by LiveKit.
 
+Voice membership is independent from navigation. The client keeps the active
+direct peer connection or LiveKit room mounted while the user visits another
+server or text channel, and disconnects only when the user leaves or joins a
+different voice channel. Microphone capture requests mono 48 kHz audio with
+browser echo cancellation, noise suppression, and automatic gain control.
+
 ### Cloudflare
 
 Cloudflare is the authoritative DNS provider. It proxies the application and
@@ -90,6 +96,8 @@ responsibilities include:
 
 - Auth.js authentication and session validation.
 - Owner and server-membership authorization.
+- Owner-authorized renaming of servers, channels, and managed demo users, plus
+  authenticated self-service username changes.
 - Drizzle queries and transactions.
 - Creation of short-lived signaling tokens.
 - Creation of room-scoped LiveKit participant tokens.

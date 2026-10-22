@@ -128,6 +128,16 @@ button {
   color: var(--muted);
 }
 
+.headerActions {
+  display: flex;
+  gap: 8px;
+}
+
+.headerActions button,
+.renameChannel {
+  cursor: pointer;
+}
+
 .sectionLabel {
   margin: 24px 14px 8px;
   font-size: 11px;
@@ -145,6 +155,39 @@ button {
   background: transparent;
   color: var(--muted);
   text-align: left;
+}
+
+.channelRow,
+.voiceChannel {
+  position: relative;
+}
+
+.channelRow .channel,
+.voiceChannel .channel {
+  padding-right: 34px;
+}
+
+.renameChannel {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 13px;
+  border: 0;
+  opacity: 0;
+  background: transparent;
+  color: var(--muted);
+  transform: translateY(-50%);
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.channelRow:hover .renameChannel,
+.voiceChannel:hover .renameChannel,
+.renameChannel:focus-visible {
+  opacity: 1;
+}
+
+.renameChannel:hover {
+  color: var(--ink);
 }
 
 .channel:hover,
@@ -372,6 +415,11 @@ button {
 
 .accountMenuTrigger > span:last-child {
   transition: transform 120ms ease;
+}
+
+.accountMenuTrigger:hover {
+  border-color: #3e465b;
+  background: #202637;
 }
 
 .accountMenu.open .accountMenuTrigger {
@@ -865,8 +913,18 @@ button {
 }
 
 .memberSidebar {
-  padding-top: 58px;
   border-left: 1px solid var(--line);
+}
+
+.memberSidebarHeader {
+  display: flex;
+  height: 58px;
+  align-items: center;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 11px;
+  letter-spacing: 0.06em;
 }
 
 .memberSearch {
@@ -953,8 +1011,68 @@ button {
   font-size: 11px;
 }
 
-.appLegalLinks a {
+.appLegalLinks button {
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.appLegalLinks button:hover {
+  color: var(--ink);
+}
+
+.legalModalBackdrop {
+  z-index: 70;
+}
+
+.legalModal {
+  display: grid;
+  width: min(850px, calc(100vw - 32px));
+  height: min(820px, calc(100vh - 32px));
+  grid-template-rows: 52px minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
+}
+
+.legalModal > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.legalModal > header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.legalModal > header button:hover {
+  background: #252b3b;
+  color: var(--ink);
+}
+
+.legalModal iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #0e1320;
 }
 
 .serverAssignmentList {
@@ -1323,9 +1441,10 @@ button {
 }
 
 .demoAccount {
+  position: relative;
   display: grid;
   gap: 10px;
-  padding: 17px;
+  padding: 17px 58px 46px 17px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: #101522;
@@ -1374,6 +1493,63 @@ button {
 .demoAccountActions button:hover {
   border-color: #665c8c;
   background: #303950;
+}
+
+.demoAccountActions button.danger {
+  border-color: #7b3445;
+  background: #642b3a;
+  color: #ffe3e9;
+}
+
+.deleteDemoTrash {
+  position: absolute;
+  right: 15px;
+  bottom: 14px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid #8d3449;
+  border-radius: 7px;
+  background: #6f293c;
+  color: white;
+  cursor: pointer;
+}
+
+.deleteDemoTrash:hover {
+  background: #92364f;
+}
+
+.serverLoading {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgb(10 14 24 / 82%);
+  color: var(--ink);
+  backdrop-filter: blur(4px);
+}
+
+.loadingSpinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid #3a4258;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: loadingSpin 700ms linear infinite;
+}
+
+@keyframes loadingSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.renameModal {
+  width: min(430px, 100%);
 }
 
 .nestedModalBackdrop {

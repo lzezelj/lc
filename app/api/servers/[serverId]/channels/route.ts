@@ -59,3 +59,31 @@ export async function POST(
     .returning();
   return NextResponse.json(channel, { status: 201 });
 }
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ serverId: string }> },
+) {
+  const session = await auth();
+  const { serverId } = await params;
+  const member = session && (await membership(session.user.id, serverId));
+  if (!session || member?.role !== "owner")
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const body = (await request.json()) as { channelId?: string; name?: string };
+  const name = body.name?.trim();
+  if (!body.channelId || !name || name.length > 60)
+    return NextResponse.json(
+      { error: "Channel name must be 1-60 characters" },
+      { status: 400 },
+    );
+  const [channel] = await db
+    .update(channels)
+    .set({ name })
+    .where(
+      and(eq(channels.id, body.channelId), eq(channels.serverId, serverId)),
+    )
+    .returning();
+  if (!channel)
+    return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+  return NextResponse.json(channel);
+}

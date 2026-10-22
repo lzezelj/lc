@@ -74,6 +74,7 @@ export default function Home() {
   const { data: session, status: authStatus } = useSession();
   const [servers, setServers] = useState<Server[]>([]);
   const [serversLoaded, setServersLoaded] = useState(false);
+  const [serverDataLoading, setServerDataLoading] = useState(true);
   const [selectedServerId, setSelectedServerId] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -131,6 +132,9 @@ export default function Home() {
   >({});
   const [errorMessage, setErrorMessage] = useState("");
   const [noticeMessage, setNoticeMessage] = useState("");
+  const [legalDocument, setLegalDocument] = useState<
+    "impressum" | "privacy" | null
+  >(null);
   const [microphones, setMicrophones] = useState<MediaDeviceOption[]>([]);
   const [cameras, setCameras] = useState<MediaDeviceOption[]>([]);
   const [microphoneId, setMicrophoneId] = useState(() =>
@@ -147,7 +151,14 @@ export default function Home() {
   const [voiceJoinKey, setVoiceJoinKey] = useState(0);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
+  const [activeVoiceChannelSnapshot, setActiveVoiceChannelSnapshot] =
+    useState<Channel | null>(null);
   const [callViewOpen, setCallViewOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<{
+    kind: "user" | "demo" | "server" | "channel";
+    id: string;
+    name: string;
+  } | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
   const [memberMenu, setMemberMenu] = useState<{
     member: Member;
@@ -214,30 +225,37 @@ export default function Home() {
 
   useEffect(() => {
     if (!selectedServerId) return;
-    void fetch(`/api/servers/${selectedServerId}/channels`)
-      .then((response) => response.json())
-      .then((data: Channel[]) => {
-        setChannels(data);
-        const firstTextChannel = data.find(
+    let active = true;
+    void Promise.all([
+      fetch(`/api/servers/${selectedServerId}/channels`).then((response) =>
+        response.json(),
+      ),
+      fetch(`/api/servers/${selectedServerId}/members`).then((response) =>
+        response.json(),
+      ),
+    ])
+      .then(([channelData, memberData]: [Channel[], Member[]]) => {
+        if (!active) return;
+        setChannels(Array.isArray(channelData) ? channelData : []);
+        setMembers(Array.isArray(memberData) ? memberData : []);
+        const firstTextChannel = channelData.find(
           (channel) => channel.type === "text",
         );
         lastTextChannelId.current = firstTextChannel?.id ?? "";
-        setSelectedChannelId(firstTextChannel?.id ?? data[0]?.id ?? "");
-      });
-  }, [selectedServerId]);
-
-  useEffect(() => {
-    if (!selectedServerId) return;
-    void fetch(`/api/servers/${selectedServerId}/members`)
-      .then((response) => response.json())
-      .then((data: Member[]) => {
-        setMembers(Array.isArray(data) ? data : []);
+        setSelectedChannelId(firstTextChannel?.id ?? channelData[0]?.id ?? "");
         if (session?.user.id) {
           setOnlineUserIds((current) => [
             ...new Set([...current, session.user.id]),
           ]);
         }
+      })
+      .catch(() => setErrorMessage("The server could not be loaded."))
+      .finally(() => {
+        if (active) setServerDataLoading(false);
       });
+    return () => {
+      active = false;
+    };
   }, [selectedServerId, session?.user.id]);
 
   useEffect(() => {
@@ -464,7 +482,9 @@ export default function Home() {
           setOnlineUserIds([...new Set([...message.userIds, currentUserId])]);
         }
       },
-      onError: () => setErrorMessage("Voice presence is reconnecting."),
+      // Presence reconnects automatically; a brief interruption does not need
+      // a user-facing error because the participant list repairs itself.
+      onError: () => undefined,
     });
     return () => {
       livePresence.close();
@@ -497,7 +517,7 @@ export default function Home() {
           }));
         }
       } catch {
-        // The next polling cycle retries transient presence failures.
+        // The real-time presence subscription supplies subsequent updates.
       }
     };
     void loadGroupPresence();
@@ -722,7 +742,7 @@ export default function Home() {
     if (!joined || !stream.current) return;
     try {
       const replacement = await navigator.mediaDevices.getUserMedia({
-        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        audio: audioConstraints(deviceId),
       });
       const nextTrack = replacement.getAudioTracks()[0];
       const oldTrack = stream.current.getAudioTracks()[0];
@@ -833,7 +853,7 @@ export default function Home() {
       try {
         stream.current = await navigator.mediaDevices.getUserMedia({
           video: false,
-          audio: microphoneId ? { deviceId: { exact: microphoneId } } : true,
+          audio: audioConstraints(microphoneId),
         });
         startDirectSpeechMonitor();
         if (localVideo.current) localVideo.current.srcObject = stream.current;
@@ -948,6 +968,7 @@ export default function Home() {
     leaveRoom();
     setVoiceJoinTarget("");
     setActiveVoiceChannelId("");
+    setActiveVoiceChannelSnapshot(null);
     setCallViewOpen(false);
     const fallback = channels.find((channel) => channel.type === "text")?.id;
     setSelectedChannelId(lastTextChannelId.current || fallback || "");
@@ -1067,6 +1088,7 @@ export default function Home() {
     const server = await response.json();
     if (response.ok) {
       setServers((current) => [...current, server]);
+      setServerDataLoading(true);
       setSelectedServerId(server.id);
       closeForm();
       setNoticeMessage("Server created.");
@@ -1376,11 +1398,86 @@ export default function Home() {
     setReturnToDemoManager(false);
   }
 
+  async function saveRename(event: FormEvent) {
+    event.preventDefault();
+    if (!renameTarget) return;
+    const name = renameTarget.name.trim();
+    if (!name) return;
+    const endpoint =
+      renameTarget.kind === "user"
+        ? "/api/users/me"
+        : renameTarget.kind === "demo"
+          ? "/api/demo-accounts"
+          : renameTarget.kind === "server"
+            ? "/api/servers"
+            : `/api/servers/${selectedServerId}/channels`;
+    const response = await fetch(endpoint, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        ...(renameTarget.kind === "demo"
+          ? { demoUserId: renameTarget.id, action: "rename" }
+          : renameTarget.kind === "server"
+            ? { serverId: renameTarget.id }
+            : renameTarget.kind === "channel"
+              ? { channelId: renameTarget.id }
+              : {}),
+      }),
+    });
+    const result = await readJsonResponse<{ error?: string }>(response);
+    if (!response.ok) {
+      setErrorMessage(result?.error ?? "The name could not be changed.");
+      return;
+    }
+    if (renameTarget.kind === "demo") {
+      setDemoAccounts((current) =>
+        current.map((account) =>
+          account.id === renameTarget.id ? { ...account, name } : account,
+        ),
+      );
+      setMembers((current) =>
+        current.map((member) =>
+          member.id === renameTarget.id ? { ...member, name } : member,
+        ),
+      );
+    } else if (renameTarget.kind === "server") {
+      setServers((current) =>
+        current.map((server) =>
+          server.id === renameTarget.id ? { ...server, name } : server,
+        ),
+      );
+    } else if (renameTarget.kind === "channel") {
+      setChannels((current) =>
+        current.map((channel) =>
+          channel.id === renameTarget.id ? { ...channel, name } : channel,
+        ),
+      );
+      setActiveVoiceChannelSnapshot((current) =>
+        current?.id === renameTarget.id ? { ...current, name } : current,
+      );
+    }
+    setRenameTarget(null);
+    setNoticeMessage(
+      renameTarget.kind === "user"
+        ? "Username changed. Reloading your session..."
+        : `${
+            renameTarget.kind === "server"
+              ? "Server"
+              : renameTarget.kind === "channel"
+                ? "Channel"
+                : "Demo account"
+          } renamed.`,
+    );
+    if (renameTarget.kind === "user") location.reload();
+  }
+
   function selectVoiceChannel(channel: Channel) {
     if (activeVoiceChannelId === channel.id) return;
     prepareVoiceSounds();
     leaveRoom();
     setActiveVoiceChannelId(channel.id);
+    setActiveVoiceChannelSnapshot(channel);
     setCallViewOpen(false);
     setVoiceJoinTarget(channel.id);
     setVoiceJoinKey((current) => current + 1);
@@ -1400,17 +1497,20 @@ export default function Home() {
   const offlineMembers = visibleMembers.filter(
     (member) => !onlineUserIds.includes(member.id),
   );
-  const activeVoiceChannel = channels.find(
-    (channel) => channel.id === activeVoiceChannelId,
-  );
+  const activeVoiceChannel = activeVoiceChannelSnapshot;
   const selectedChannel = channels.find(
     (channel) => channel.id === selectedChannelId,
   );
   const displayedChannel =
     callViewOpen && activeVoiceChannel ? activeVoiceChannel : selectedChannel;
 
-  if (authStatus !== "authenticated") {
-    return <main className="loginPage">Loading LC...</main>;
+  if (authStatus !== "authenticated" || !serversLoaded) {
+    return (
+      <main className="loginPage appLoadingPage">
+        <span className="loadingSpinner" />
+        <span>Loading LC...</span>
+      </main>
+    );
   }
 
   if (serversLoaded && servers.length === 0) {
@@ -1433,6 +1533,12 @@ export default function Home() {
 
   return (
     <main className="workspace">
+      {serverDataLoading && (
+        <div className="serverLoading" role="status" aria-live="polite">
+          <span className="loadingSpinner" />
+          <span>Loading server...</span>
+        </div>
+      )}
       <aside className="workspaceRail" aria-label="Workspaces">
         <div className="workspaceLogo">LC</div>
         {servers.map((server) => (
@@ -1441,10 +1547,9 @@ export default function Home() {
               className={`workspaceButton ${server.id === selectedServerId ? "active" : ""}`}
               aria-label={server.name}
               onClick={() => {
-                leaveRoom();
-                setVoiceJoinTarget("");
-                setActiveVoiceChannelId("");
+                if (server.id === selectedServerId) return;
                 setCallViewOpen(false);
+                setServerDataLoading(true);
                 setSelectedServerId(server.id);
               }}
             >
@@ -1472,12 +1577,27 @@ export default function Home() {
               "LC"}
           </strong>
           {session.user.role === "owner" && selectedServerId && (
-            <button
-              onClick={() => setForm("channel")}
-              aria-label="Create channel"
-            >
-              +
-            </button>
+            <span className="headerActions">
+              <button
+                onClick={() => {
+                  const server = servers.find(
+                    (candidate) => candidate.id === selectedServerId,
+                  );
+                  if (server) setRenameTarget({ kind: "server", ...server });
+                }}
+                aria-label="Rename server"
+                title="Rename server"
+              >
+                ✎
+              </button>
+              <button
+                onClick={() => setForm("channel")}
+                aria-label="Create channel"
+                title="Create channel"
+              >
+                +
+              </button>
+            </span>
           )}
         </header>
         <nav>
@@ -1485,19 +1605,32 @@ export default function Home() {
           {channels
             .filter((channel) => channel.type === "text")
             .map((channel) => (
-              <button
-                className={`channel ${channel.id === selectedChannelId ? "active" : ""}`}
-                key={channel.id}
-                onClick={() => {
-                  lastTextChannelId.current = channel.id;
-                  setCallViewOpen(false);
-                  setReplyingTo(null);
-                  setMessageMenu(null);
-                  setSelectedChannelId(channel.id);
-                }}
-              >
-                {channel.name}
-              </button>
+              <div className="channelRow" key={channel.id}>
+                <button
+                  className={`channel ${channel.id === selectedChannelId ? "active" : ""}`}
+                  onClick={() => {
+                    lastTextChannelId.current = channel.id;
+                    setCallViewOpen(false);
+                    setReplyingTo(null);
+                    setMessageMenu(null);
+                    setSelectedChannelId(channel.id);
+                  }}
+                >
+                  {channel.name}
+                </button>
+                {session.user.role === "owner" && (
+                  <button
+                    className="renameChannel"
+                    aria-label={`Rename ${channel.name}`}
+                    title="Rename channel"
+                    onClick={() =>
+                      setRenameTarget({ kind: "channel", ...channel })
+                    }
+                  >
+                    ✎
+                  </button>
+                )}
+              </div>
             ))}
           <p className="sectionLabel">VOICE CHANNELS</p>
           {channels
@@ -1515,6 +1648,18 @@ export default function Home() {
                       <PingIndicator ping={channelPing[channel.id]} />
                     )}
                 </button>
+                {session.user.role === "owner" && (
+                  <button
+                    className="renameChannel"
+                    aria-label={`Rename ${channel.name}`}
+                    title="Rename channel"
+                    onClick={() =>
+                      setRenameTarget({ kind: "channel", ...channel })
+                    }
+                  >
+                    ✎
+                  </button>
+                )}
                 {voicePresence[channel.id]?.some(
                   (participant) => participant.camera || participant.screen,
                 ) && (
@@ -1603,6 +1748,18 @@ export default function Home() {
                 >
                   My messages
                 </button>
+                <button
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setRenameTarget({
+                      kind: "user",
+                      id: session.user.id,
+                      name: session.user.name ?? "",
+                    });
+                  }}
+                >
+                  Change username
+                </button>
                 <button onClick={() => void signOut({ callbackUrl: "/login" })}>
                   Log out
                 </button>
@@ -1629,7 +1786,7 @@ export default function Home() {
               aria-expanded={demoMenuOpen}
               onClick={() => setDemoMenuOpen((current) => !current)}
             >
-              Demo account
+              Manage demo accounts
               <span aria-hidden="true">⌄</span>
             </button>
             {demoMenuOpen && (
@@ -1874,15 +2031,9 @@ export default function Home() {
         )}
       </section>
       <aside className="memberSidebar">
-        {session.user.role === "owner" && selectedServerId && (
-          <button
-            className="inviteMemberButton"
-            onClick={() => openDemoAccount(selectedServerId, false)}
-          >
-            + Create demo account
-          </button>
-        )}
-        <p className="sectionLabel">ALL USERS — {members.length}</p>
+        <header className="memberSidebarHeader">
+          <strong>ALL USERS — {members.length}</strong>
+        </header>
         <input
           className="memberSearch"
           type="search"
@@ -1942,10 +2093,49 @@ export default function Home() {
           </div>
         ))}
         <div className="appLegalLinks">
-          <a href="/impressum">Impressum</a>
-          <a href="/privacy">Privacy</a>
+          <button type="button" onClick={() => setLegalDocument("impressum")}>
+            Impressum
+          </button>
+          <button type="button" onClick={() => setLegalDocument("privacy")}>
+            Privacy
+          </button>
         </div>
       </aside>
+      {legalDocument && (
+        <div
+          className="modalBackdrop legalModalBackdrop"
+          onMouseDown={() => setLegalDocument(null)}
+        >
+          <section
+            className="legalModal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              legalDocument === "impressum" ? "Impressum" : "Privacy notice"
+            }
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              <strong>
+                {legalDocument === "impressum" ? "Impressum" : "Privacy notice"}
+              </strong>
+              <button
+                type="button"
+                aria-label="Close legal document"
+                onClick={() => setLegalDocument(null)}
+              >
+                ×
+              </button>
+            </header>
+            <iframe
+              title={
+                legalDocument === "impressum" ? "Impressum" : "Privacy notice"
+              }
+              src={`/${legalDocument}`}
+            />
+          </section>
+        </div>
+      )}
       {memberMenu && (
         <div
           className="messageContextMenu"
@@ -1999,6 +2189,49 @@ export default function Home() {
                 Delete message
               </button>
             )}
+        </div>
+      )}
+      {renameTarget && (
+        <div
+          className="modalBackdrop"
+          onMouseDown={() => setRenameTarget(null)}
+        >
+          <form
+            className="modalCard renameModal"
+            onSubmit={saveRename}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2>
+              Rename{" "}
+              {["user", "demo"].includes(renameTarget.kind)
+                ? "username"
+                : renameTarget.kind}
+            </h2>
+            <label>
+              Name
+              <input
+                autoFocus
+                maxLength={60}
+                required
+                value={renameTarget.name}
+                onChange={(event) =>
+                  setRenameTarget((current) =>
+                    current
+                      ? { ...current, name: event.target.value }
+                      : current,
+                  )
+                }
+              />
+            </label>
+            <div className="modalActions">
+              <button type="button" onClick={() => setRenameTarget(null)}>
+                Cancel
+              </button>
+              <button className="primary" type="submit">
+                Save name
+              </button>
+            </div>
+          </form>
         </div>
       )}
       {form && (
@@ -2112,6 +2345,18 @@ export default function Home() {
                     <div className="demoAccountActions">
                       <button
                         type="button"
+                        onClick={() =>
+                          setRenameTarget({
+                            kind: "demo",
+                            id: account.id,
+                            name: account.name,
+                          })
+                        }
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void openDemoServerAssignments(account)}
                       >
                         Servers
@@ -2134,45 +2379,27 @@ export default function Home() {
                       >
                         Messages
                       </button>
+                      {!["revoked", "expired"].includes(account.status) && (
+                        <button
+                          className="danger"
+                          type="button"
+                          onClick={() => setRevokeCandidateId(account.id)}
+                        >
+                          Revoke access
+                        </button>
+                      )}
                     </div>
-                    {!["revoked", "expired"].includes(account.status) && (
-                      <div className="revokeActions">
-                        {revokeCandidateId === account.id ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => setRevokeCandidateId("")}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              className="danger"
-                              type="button"
-                              onClick={() => void revokeDemoAccount(account.id)}
-                            >
-                              Confirm revoke
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            className="danger"
-                            type="button"
-                            onClick={() => setRevokeCandidateId(account.id)}
-                          >
-                            Revoke access
-                          </button>
-                        )}
-                      </div>
-                    )}
                     <button
-                      className="danger"
+                      className="deleteDemoTrash"
                       type="button"
+                      title="Delete account"
+                      aria-label={`Delete ${account.name}`}
                       onClick={() => {
                         setDeleteDemoCandidate(account);
                         setDeleteDemoMessages(false);
                       }}
                     >
-                      Delete account
+                      <span aria-hidden="true">🗑</span>
                     </button>
                   </article>
                 ))}
@@ -2371,6 +2598,35 @@ export default function Home() {
                 onClick={() => void kickMember(kickCandidate.id)}
               >
                 Kick from server
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {revokeCandidateId && (
+        <div
+          className="modalBackdrop nestedModalBackdrop"
+          onMouseDown={() => setRevokeCandidateId("")}
+        >
+          <section
+            className="modalCard confirmationModal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2>Revoke access?</h2>
+            <p>
+              This signs the demo account out and removes it from every server.
+              Its existing messages are kept.
+            </p>
+            <div className="modalActions">
+              <button type="button" onClick={() => setRevokeCandidateId("")}>
+                Cancel
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void revokeDemoAccount(revokeCandidateId)}
+              >
+                Revoke access
               </button>
             </div>
           </section>
@@ -2681,6 +2937,17 @@ function cameraConstraints(deviceId: string): MediaTrackConstraints {
   };
 }
 
+function audioConstraints(deviceId: string): MediaTrackConstraints {
+  return {
+    ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    channelCount: { ideal: 1 },
+    sampleRate: { ideal: 48_000 },
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+}
+
 function videoQuality(video: HTMLVideoElement) {
   if (!video.videoWidth || !video.videoHeight) return "";
   return `${video.videoWidth}×${video.videoHeight} · ${video.videoHeight}p`;
@@ -2707,6 +2974,7 @@ function monitorSpeaking(
   let animationFrame = 0;
   let lastSpeaking = false;
   let lastLoudAt = 0;
+  let loudFrames = 0;
   source.connect(analyser);
 
   const sample = () => {
@@ -2716,9 +2984,12 @@ function monitorSpeaking(
       const normalized = (value - 128) / 128;
       sum += normalized * normalized;
     }
-    const loud = Math.sqrt(sum / samples.length) > 0.035 && audioTrack.enabled;
+    const level = Math.sqrt(sum / samples.length);
+    const loud = level > (lastSpeaking ? 0.025 : 0.04) && audioTrack.enabled;
+    loudFrames = loud ? loudFrames + 1 : 0;
     if (loud) lastLoudAt = performance.now();
-    const speaking = loud || performance.now() - lastLoudAt < 250;
+    const speaking =
+      loudFrames >= 2 || (lastSpeaking && performance.now() - lastLoudAt < 350);
     if (speaking !== lastSpeaking) {
       lastSpeaking = speaking;
       onChange(speaking);
