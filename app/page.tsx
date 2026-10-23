@@ -14,9 +14,25 @@ type ChatMessage = {
   time: string;
   deleted: boolean;
   replyTo: { id: string; text: string; author: string } | null;
+  kind: "message" | "call";
+  callDurationSeconds: number | null;
 };
 
 type Server = { id: string; name: string };
+type Friend = {
+  id: string;
+  name: string;
+  handle: string;
+  image: string | null;
+  status: "pending" | "accepted";
+  incoming: boolean;
+  lastActivityAt: string | null;
+  lastMessage: {
+    text: string;
+    kind: "message" | "call";
+    createdAt: string;
+  } | null;
+};
 type ChannelType = "text" | "voice_direct" | "voice_group";
 type Channel = { id: string; name: string; type: ChannelType };
 type Member = {
@@ -60,6 +76,10 @@ type Signal = {
   camera?: boolean;
   screen?: boolean;
   speaking?: boolean;
+  fromUserId?: string;
+  fromName?: string;
+  targetUserId?: string;
+  message?: Parameters<typeof toChatMessage>[0];
 };
 
 const iceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
@@ -70,11 +90,36 @@ function formatLocalDateTime(value: string) {
   return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function formatCallDuration(seconds: number | null) {
+  const total = Math.max(0, seconds ?? 0);
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
 export default function Home() {
   const { data: session, status: authStatus } = useSession();
   const [servers, setServers] = useState<Server[]>([]);
+  const [friendsView, setFriendsView] = useState(false);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [friendSearch, setFriendSearch] = useState("");
+  const [friendResults, setFriendResults] = useState<Friend[]>([]);
+  const [friendTab, setFriendTab] = useState<"online" | "offline" | "pending">(
+    "online",
+  );
+  const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
+  const [directMessages, setDirectMessages] = useState<ChatMessage[]>([]);
+  const [unreadDirectMessages, setUnreadDirectMessages] = useState<
+    Record<string, number>
+  >({});
+  const [incomingCall, setIncomingCall] = useState<{
+    fromUserId: string;
+    fromName: string;
+    roomId: string;
+  } | null>(null);
+  const [callPeerPresent, setCallPeerPresent] = useState(false);
+  const [signalingRefreshKey, setSignalingRefreshKey] = useState(0);
   const [serversLoaded, setServersLoaded] = useState(false);
-  const [serverDataLoading, setServerDataLoading] = useState(true);
   const [selectedServerId, setSelectedServerId] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -90,6 +135,13 @@ export default function Home() {
   const [inviteUrl, setInviteUrl] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [demoMenuOpen, setDemoMenuOpen] = useState(false);
+  const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
+  const [addFriendsOpen, setAddFriendsOpen] = useState(false);
+  const [deleteServerOpen, setDeleteServerOpen] = useState(false);
+  const [serverFriendSearch, setServerFriendSearch] = useState("");
+  const [selectedServerFriendIds, setSelectedServerFriendIds] = useState<
+    string[]
+  >([]);
   const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
   const [editingDemoServers, setEditingDemoServers] = useState<string[]>([]);
   const [editingDemoAccount, setEditingDemoAccount] =
@@ -189,15 +241,31 @@ export default function Home() {
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
   const accountMenu = useRef<HTMLDivElement>(null);
   const demoMenu = useRef<HTMLDivElement>(null);
+  const serverSettingsMenu = useRef<HTMLDivElement>(null);
   const messageContextMenu = useRef<HTMLDivElement>(null);
   const memberContextMenu = useRef<HTMLDivElement>(null);
   const lastTextChannelId = useRef("");
   const activeGroupChannelId = useRef("");
   const directVideoGrid = useRef<HTMLDivElement>(null);
   const directRoomId = useRef("");
+  const friendCallStartedAt = useRef(0);
+  const friendCallPartnerId = useRef("");
+  const leaveRoomRef = useRef<() => void>(() => undefined);
+  const selectedFriendId = useRef("");
+  const friendsViewRef = useRef(false);
+  const selectedServerIdRef = useRef("");
+  const voiceChannelIdsRef = useRef<string[]>([]);
   const directReconnectTimer = useRef<number | null>(null);
   const directReconnectAttempt = useRef(0);
   const directReconnectInProgress = useRef(false);
+  const accessRefreshInProgress = useRef(false);
+  const refreshAccessRef = useRef<() => void>(() => undefined);
+  const unavailableCallRef = useRef<() => void>(() => undefined);
+  const recordCallOutcomeRef = useRef<
+    (event: "call-ended" | "call-declined" | "user-unavailable") => void
+  >(() => undefined);
+  const closeCallViewRef = useRef<() => void>(() => undefined);
+  const serverSwitchRequest = useRef(0);
   const stopSpeechMonitor = useRef<(() => void) | null>(null);
   const stopDirectStats = useRef<(() => void) | null>(null);
 
@@ -212,6 +280,253 @@ export default function Home() {
       })
       .finally(() => setServersLoaded(true));
   }, [authStatus]);
+
+  async function loadFriends() {
+    const response = await fetch("/api/friends");
+    if (response.ok) setFriends(await response.json());
+  }
+
+  useEffect(() => {
+    selectedFriendId.current = selectedFriend?.id ?? "";
+    friendsViewRef.current = friendsView;
+  }, [friendsView, selectedFriend?.id]);
+
+  useEffect(() => {
+    selectedServerIdRef.current = selectedServerId;
+    voiceChannelIdsRef.current = channels
+      .filter((channel) => channel.type !== "text")
+      .map((channel) => channel.id);
+    const activeSocket = presenceSocket.current;
+    if (activeSocket?.readyState !== WebSocket.OPEN) return;
+    if (selectedServerId) {
+      activeSocket.send(
+        JSON.stringify({
+          type: "subscribe-online",
+          serverId: selectedServerId,
+        }),
+      );
+    }
+    activeSocket.send(
+      JSON.stringify({
+        type: "subscribe-presence",
+        roomIds: voiceChannelIdsRef.current,
+      }),
+    );
+  }, [channels, selectedServerId]);
+
+  useEffect(() => {
+    if (authStatus === "authenticated") {
+      const timeout = window.setTimeout(() => void loadFriends(), 0);
+      return () => window.clearTimeout(timeout);
+    }
+  }, [authStatus]);
+
+  const incomingFriendRequestCount = friends.filter(
+    (friend) => friend.status === "pending" && friend.incoming,
+  ).length;
+  const unreadMessageCount = Object.values(unreadDirectMessages).reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const notificationCount = incomingFriendRequestCount + unreadMessageCount;
+
+  useEffect(() => {
+    document.title = unreadMessageCount ? `(${unreadMessageCount}) LC` : "LC";
+    return () => {
+      document.title = "LC";
+    };
+  }, [unreadMessageCount]);
+
+  useEffect(() => {
+    const enableCallAudio = () => prepareVoiceSounds();
+    document.addEventListener("pointerdown", enableCallAudio, { once: true });
+    return () => document.removeEventListener("pointerdown", enableCallAudio);
+  }, []);
+
+  useEffect(() => {
+    if (!incomingCall) return;
+    prepareVoiceSounds();
+    playVoiceSound("ring");
+    const interval = window.setInterval(() => playVoiceSound("ring"), 1600);
+    const timeout = window.setTimeout(() => setIncomingCall(null), 20_000);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [incomingCall]);
+
+  useEffect(() => {
+    if (!activeVoiceChannelId.startsWith("friend:") || callPeerPresent) return;
+    const timeout = window.setTimeout(
+      () => unavailableCallRef.current(),
+      20_000,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [activeVoiceChannelId, callPeerPresent]);
+
+  useEffect(() => {
+    if (friendsView) setTimeout(() => void loadFriends(), 0);
+  }, [friendsView]);
+
+  useEffect(() => {
+    if (!selectedFriend) return;
+    void fetch(`/api/direct-messages/${selectedFriend.id}`)
+      .then((response) => response.json())
+      .then((data) =>
+        setDirectMessages(Array.isArray(data) ? data.map(toChatMessage) : []),
+      );
+  }, [selectedFriend]);
+
+  function openFriend(friend: Friend) {
+    setSelectedFriend(friend);
+    setUnreadDirectMessages((current) => {
+      const next = { ...current };
+      delete next[friend.id];
+      return next;
+    });
+  }
+
+  async function searchFriends(query = friendSearch) {
+    const response = await fetch(
+      `/api/friends/search?q=${encodeURIComponent(query)}`,
+    );
+    if (response.ok) setFriendResults(await response.json());
+  }
+
+  async function friendAction(
+    action: "request" | "accept" | "decline",
+    friend: Friend,
+  ) {
+    const response = await fetch("/api/friends", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        action === "request"
+          ? { action, handle: friend.handle }
+          : { action, userId: friend.id },
+      ),
+    });
+    if (!response.ok)
+      setErrorMessage((await response.json()).error ?? "Friend action failed.");
+    else {
+      setFriendResults([]);
+      setFriendSearch("");
+      await loadFriends();
+      invalidateSignalingToken();
+      setSignalingRefreshKey((current) => current + 1);
+    }
+  }
+
+  async function sendDirectMessage(event: FormEvent) {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!selectedFriend || !text) return;
+    const response = await fetch(`/api/direct-messages/${selectedFriend.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const message = await response.json();
+    if (!response.ok)
+      return setErrorMessage(message.error ?? "Message could not be sent.");
+    setDirectMessages((current) => [...current, toChatMessage(message)]);
+    await loadFriends();
+    setDraft("");
+  }
+
+  async function startFriendCall(friend: Friend) {
+    const response = await fetch("/api/friends", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "activity", userId: friend.id }),
+    });
+    if (response.ok) await loadFriends();
+    if (presenceSocket.current?.readyState === WebSocket.OPEN) {
+      presenceSocket.current.send(
+        JSON.stringify({ type: "call-invite", targetUserId: friend.id }),
+      );
+    }
+    friendCallPartnerId.current = friend.id;
+    selectVoiceChannel({
+      id: `friend:${[session!.user.id, friend.id].sort().join(":")}`,
+      name: friend.name,
+      type: "voice_direct",
+    });
+  }
+
+  async function recordCallOutcome(
+    event: "call-ended" | "call-declined" | "user-unavailable",
+  ) {
+    const partnerId = friendCallPartnerId.current;
+    if (!partnerId || !friendCallStartedAt.current) return;
+    const durationSeconds = Math.max(
+      0,
+      Math.round((Date.now() - friendCallStartedAt.current) / 1000),
+    );
+    friendCallStartedAt.current = 0;
+    friendCallPartnerId.current = "";
+    const response = await fetch(`/api/direct-messages/${partnerId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, durationSeconds }),
+    });
+    if (!response.ok) return;
+    const message = toChatMessage(await response.json());
+    setDirectMessages((current) =>
+      current.some((candidate) => candidate.id === message.id)
+        ? current
+        : [...current, message],
+    );
+    await loadFriends();
+  }
+  recordCallOutcomeRef.current = (event) => void recordCallOutcome(event);
+
+  function endFriendCall() {
+    send({ type: "hangup" });
+    void recordCallOutcome("call-ended");
+    returnToPreviousTextChannel();
+  }
+
+  function markUserUnavailable() {
+    const partnerId = friendCallPartnerId.current;
+    if (partnerId && presenceSocket.current?.readyState === WebSocket.OPEN) {
+      presenceSocket.current.send(
+        JSON.stringify({ type: "call-cancel", targetUserId: partnerId }),
+      );
+    }
+    void recordCallOutcome("user-unavailable");
+    returnToPreviousTextChannel();
+  }
+  unavailableCallRef.current = markUserUnavailable;
+
+  function answerIncomingCall() {
+    if (!incomingCall) return;
+    const caller = friends.find(
+      (friend) => friend.id === incomingCall.fromUserId,
+    );
+    setIncomingCall(null);
+    setFriendsView(true);
+    if (caller) openFriend(caller);
+    friendCallPartnerId.current = incomingCall.fromUserId;
+    selectVoiceChannel({
+      id: incomingCall.roomId,
+      name: incomingCall.fromName,
+      type: "voice_direct",
+    });
+  }
+
+  function declineIncomingCall() {
+    if (!incomingCall) return;
+    if (presenceSocket.current?.readyState === WebSocket.OPEN) {
+      presenceSocket.current.send(
+        JSON.stringify({
+          type: "call-decline",
+          targetUserId: incomingCall.fromUserId,
+        }),
+      );
+    }
+    setIncomingCall(null);
+  }
 
   useEffect(() => {
     void loadMediaDevices();
@@ -255,13 +570,67 @@ export default function Home() {
         }
       })
       .catch(() => setErrorMessage("The server could not be loaded."))
-      .finally(() => {
-        if (active) setServerDataLoading(false);
-      });
+      .finally(() => undefined);
     return () => {
       active = false;
     };
   }, [selectedServerId, session?.user.id]);
+
+  async function switchServer(serverId: string) {
+    if (!serverId || serverId === selectedServerId) return;
+    const requestId = ++serverSwitchRequest.current;
+    try {
+      const [channelData, memberData] = await Promise.all([
+        fetch(`/api/servers/${serverId}/channels`).then(
+          (response) => response.json() as Promise<Channel[]>,
+        ),
+        fetch(`/api/servers/${serverId}/members`).then(
+          (response) => response.json() as Promise<Member[]>,
+        ),
+      ]);
+      if (requestId !== serverSwitchRequest.current) return;
+      const nextChannels = Array.isArray(channelData) ? channelData : [];
+      setChannels(nextChannels);
+      setMembers(Array.isArray(memberData) ? memberData : []);
+      const firstTextChannel = nextChannels.find(
+        (channel) => channel.type === "text",
+      );
+      lastTextChannelId.current = firstTextChannel?.id ?? "";
+      setSelectedChannelId(firstTextChannel?.id ?? nextChannels[0]?.id ?? "");
+      setCallViewOpen(false);
+      setSelectedServerId(serverId);
+    } catch {
+      setErrorMessage("The server could not be loaded.");
+    }
+  }
+
+  async function refreshAccess() {
+    if (accessRefreshInProgress.current) return;
+    accessRefreshInProgress.current = true;
+    try {
+      const response = await fetch("/api/servers", { cache: "no-store" });
+      if (response.status === 401 || response.status === 403) {
+        location.href = "/login";
+        return;
+      }
+      if (!response.ok) throw new Error("Access refresh failed");
+      const nextServers = (await response.json()) as Server[];
+      setServers(nextServers);
+      setSelectedServerId((current) =>
+        nextServers.some((server) => server.id === current)
+          ? current
+          : (nextServers[0]?.id ?? ""),
+      );
+      await loadFriends();
+    } catch {
+      setErrorMessage(
+        "Access changed, but the workspace could not be refreshed.",
+      );
+    } finally {
+      accessRefreshInProgress.current = false;
+    }
+  }
+  refreshAccessRef.current = () => void refreshAccess();
 
   useEffect(() => {
     if (!accountMenuOpen && !demoMenuOpen) return;
@@ -276,6 +645,18 @@ export default function Home() {
     document.addEventListener("pointerdown", closeAccountMenu);
     return () => document.removeEventListener("pointerdown", closeAccountMenu);
   }, [accountMenuOpen, demoMenuOpen]);
+
+  useEffect(() => {
+    if (!serverSettingsOpen || addFriendsOpen || deleteServerOpen) return;
+    const closeServerSettings = (event: PointerEvent) => {
+      if (!serverSettingsMenu.current?.contains(event.target as Node)) {
+        setServerSettingsOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeServerSettings);
+    return () =>
+      document.removeEventListener("pointerdown", closeServerSettings);
+  }, [serverSettingsOpen, addFriendsOpen, deleteServerOpen]);
 
   useEffect(() => {
     if (!messageMenu) return;
@@ -472,26 +853,23 @@ export default function Home() {
   useEffect(() => {
     const currentUserId = session?.user.id;
     if (authStatus !== "authenticated" || !currentUserId) return;
-    const voiceChannelIds = channels
-      .filter((channel) => channel.type !== "text")
-      .map((channel) => channel.id);
     const livePresence = createReconnectingSignalingConnection({
       onSocket: (openedSocket) => {
         presenceSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
-        if (selectedServerId) {
+        if (selectedServerIdRef.current) {
           openedSocket.send(
             JSON.stringify({
               type: "subscribe-online",
-              serverId: selectedServerId,
+              serverId: selectedServerIdRef.current,
             }),
           );
         }
         openedSocket.send(
           JSON.stringify({
             type: "subscribe-presence",
-            roomIds: voiceChannelIds,
+            roomIds: voiceChannelIdsRef.current,
           }),
         );
         if (activeGroupChannelId.current) {
@@ -507,7 +885,8 @@ export default function Home() {
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
         if (message.type === "access-changed") {
-          location.reload();
+          invalidateSignalingToken();
+          refreshAccessRef.current();
           return;
         }
         if (
@@ -522,11 +901,62 @@ export default function Home() {
         }
         if (
           message.type === "online-presence" &&
-          message.serverId === selectedServerId &&
+          message.serverId === selectedServerIdRef.current &&
           Array.isArray(message.userIds)
         ) {
           setOnlineUserIds([...new Set([...message.userIds, currentUserId])]);
         }
+        if (message.type === "friendship-changed") {
+          void loadFriends();
+          invalidateSignalingToken();
+          setSignalingRefreshKey((current) => current + 1);
+        }
+        if (
+          message.type === "direct-message" &&
+          message.fromUserId &&
+          message.message
+        ) {
+          const directMessage = toChatMessage(message.message);
+          void loadFriends();
+          if (
+            friendsViewRef.current &&
+            selectedFriendId.current === message.fromUserId &&
+            document.visibilityState === "visible"
+          ) {
+            setDirectMessages((current) =>
+              current.some((candidate) => candidate.id === directMessage.id)
+                ? current
+                : [...current, directMessage],
+            );
+          } else {
+            setUnreadDirectMessages((current) => ({
+              ...current,
+              [message.fromUserId!]: (current[message.fromUserId!] ?? 0) + 1,
+            }));
+          }
+        }
+        if (
+          message.type === "call-invite" &&
+          message.fromUserId &&
+          message.fromName &&
+          message.roomId &&
+          !directRoomId.current
+        ) {
+          setIncomingCall({
+            fromUserId: message.fromUserId,
+            fromName: message.fromName,
+            roomId: message.roomId,
+          });
+        }
+        if (
+          message.type === "call-decline" &&
+          message.fromName &&
+          directRoomId.current
+        ) {
+          recordCallOutcomeRef.current("call-declined");
+          closeCallViewRef.current();
+        }
+        if (message.type === "call-cancel") setIncomingCall(null);
       },
       // Presence reconnects automatically; a brief interruption does not need
       // a user-facing error because the participant list repairs itself.
@@ -536,7 +966,7 @@ export default function Home() {
       livePresence.close();
       presenceSocket.current = null;
     };
-  }, [authStatus, channels, selectedServerId, session?.user.id]);
+  }, [authStatus, session?.user.id, signalingRefreshKey]);
 
   useEffect(() => {
     if (!selectedServerId) return;
@@ -679,12 +1109,14 @@ export default function Home() {
       return;
     }
     if (message.type === "peer-joined") {
+      setCallPeerPresent(true);
       playVoiceSound("join");
       await createOffer();
       send({ type: "camera-state", enabled: !cameraOff });
       return;
     }
     if (message.type === "offer" && "sdp" in message && message.sdp) {
+      setCallPeerPresent(true);
       const peer = await ensureConnection();
       await peer.setRemoteDescription(message.sdp);
       await addPendingCandidates(peer);
@@ -711,13 +1143,21 @@ export default function Home() {
       }
       return;
     }
-    if (message.type === "peer-left") {
+    if (message.type === "peer-left" || message.type === "hangup") {
       playVoiceSound("leave");
-      if (remoteVideo.current) remoteVideo.current.srcObject = null;
-      connection.current?.close();
-      connection.current = null;
-      setRemoteHasVideo(false);
-      setStatus("Waiting for another person...");
+      friendCallStartedAt.current = 0;
+      friendCallPartnerId.current = "";
+      setCallPeerPresent(false);
+      returnToPreviousTextChannel();
+      if (selectedFriend) {
+        void fetch(`/api/direct-messages/${selectedFriend.id}`)
+          .then((response) => response.json())
+          .then((data) =>
+            setDirectMessages(
+              Array.isArray(data) ? data.map(toChatMessage) : [],
+            ),
+          );
+      }
       return;
     }
     if (message.type === "camera-state") {
@@ -1002,6 +1442,7 @@ export default function Home() {
     setMuted(false);
     setCameraOff(true);
     setRemoteHasVideo(false);
+    setCallPeerPresent(false);
     setLocalVideoQuality("");
     setRemoteVideoQuality("");
     setDirectVideoStats("");
@@ -1009,6 +1450,7 @@ export default function Home() {
     setFocusedDirectVideo(null);
     if (wasConnected) playVoiceSound("leave");
   }
+  leaveRoomRef.current = leaveRoom;
 
   function returnToPreviousTextChannel() {
     leaveRoom();
@@ -1019,6 +1461,7 @@ export default function Home() {
     const fallback = channels.find((channel) => channel.type === "text")?.id;
     setSelectedChannelId(lastTextChannelId.current || fallback || "");
   }
+  closeCallViewRef.current = returnToPreviousTextChannel;
 
   function toggleAudio() {
     const track = stream.current?.getAudioTracks()[0];
@@ -1134,11 +1577,59 @@ export default function Home() {
     const server = await response.json();
     if (response.ok) {
       setServers((current) => [...current, server]);
-      setServerDataLoading(true);
-      setSelectedServerId(server.id);
+      await switchServer(server.id);
       closeForm();
       setNoticeMessage("Server created.");
     } else setErrorMessage(server.error ?? "Server could not be created.");
+  }
+
+  async function deleteServer() {
+    if (!selectedServerId) return;
+    const response = await fetch("/api/servers", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId: selectedServerId }),
+    });
+    const result = await response.json();
+    if (!response.ok)
+      return setErrorMessage(result.error ?? "Server could not be deleted.");
+    setServers((current) =>
+      current.filter((server) => server.id !== selectedServerId),
+    );
+    setSelectedServerId(
+      servers.find((server) => server.id !== selectedServerId)?.id ?? "",
+    );
+    setDeleteServerOpen(false);
+    setServerSettingsOpen(false);
+    setNoticeMessage("Server deleted.");
+  }
+
+  async function addSelectedFriendsToServer() {
+    if (!selectedServerId || selectedServerFriendIds.length === 0) return;
+    const response = await fetch(`/api/servers/${selectedServerId}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userIds: selectedServerFriendIds }),
+    });
+    const result = await response.json();
+    if (!response.ok)
+      return setErrorMessage(result.error ?? "Friends could not be added.");
+    const addedIds = new Set<string>(result.added ?? []);
+    setMembers((current) => [
+      ...current,
+      ...friends
+        .filter((friend) => addedIds.has(friend.id))
+        .map((friend) => ({
+          id: friend.id,
+          name: friend.name,
+          image: friend.image,
+          role: "member" as const,
+        })),
+    ]);
+    setSelectedServerFriendIds([]);
+    setNoticeMessage(
+      `${addedIds.size} friend${addedIds.size === 1 ? "" : "s"} added to the server.`,
+    );
   }
 
   async function createChannel(event: FormEvent) {
@@ -1527,7 +2018,10 @@ export default function Home() {
     setCallViewOpen(false);
     setVoiceJoinTarget(channel.id);
     setVoiceJoinKey((current) => current + 1);
+    setCallPeerPresent(false);
     if (channel.type === "voice_direct") {
+      if (channel.id.startsWith("friend:"))
+        friendCallStartedAt.current = Date.now();
       requestAnimationFrame(() => {
         requestAnimationFrame(() => void joinRoom(channel.id));
       });
@@ -1552,6 +2046,28 @@ export default function Home() {
   const isSelectedServerOwner = members.some(
     (member) => member.id === session?.user.id && member.role === "owner",
   );
+  const availableServerFriends = friends.filter(
+    (friend) =>
+      friend.status === "accepted" &&
+      !members.some((member) => member.id === friend.id) &&
+      `${friend.name} ${friend.handle}`
+        .toLowerCase()
+        .includes(serverFriendSearch.trim().toLowerCase()),
+  );
+  const incomingCallOverlay = incomingCall && (
+    <div className="incomingCall" role="dialog" aria-live="assertive">
+      <div>
+        <small>Incoming call</small>
+        <strong>{incomingCall.fromName}</strong>
+      </div>
+      <button type="button" className="danger" onClick={declineIncomingCall}>
+        Decline
+      </button>
+      <button type="button" className="primary" onClick={answerIncomingCall}>
+        Answer
+      </button>
+    </div>
+  );
 
   if (authStatus !== "authenticated" || !serversLoaded) {
     return (
@@ -1562,11 +2078,362 @@ export default function Home() {
     );
   }
 
+  if (friendsView) {
+    const acceptedFriends = friends.filter(
+      (friend) => friend.status === "accepted",
+    );
+    const recentFriends = [...acceptedFriends]
+      .filter((friend) => friend.lastActivityAt)
+      .sort(
+        (left, right) =>
+          new Date(right.lastActivityAt!).getTime() -
+          new Date(left.lastActivityAt!).getTime(),
+      );
+    const pendingRequests = friends.filter(
+      (friend) => friend.status === "pending",
+    );
+    const visibleFriends = acceptedFriends.filter((friend) =>
+      friendTab === "online"
+        ? onlineUserIds.includes(friend.id)
+        : !onlineUserIds.includes(friend.id),
+    );
+    return (
+      <main className="workspace friendsScreen">
+        <aside className="workspaceRail">
+          <button
+            className="workspaceLogo"
+            aria-label="Friends"
+            onClick={() => undefined}
+          >
+            LC
+            {notificationCount > 0 && (
+              <span className="notificationBadge">{notificationCount}</span>
+            )}
+          </button>
+          {servers.map((server) => (
+            <div className="serverButtonWrap" key={server.id}>
+              <button
+                className="workspaceButton"
+                aria-label={server.name}
+                onClick={() => {
+                  if (server.id === selectedServerId) {
+                    setFriendsView(false);
+                    return;
+                  }
+                  void switchServer(server.id).then(() =>
+                    setFriendsView(false),
+                  );
+                }}
+              >
+                {server.name[0]?.toUpperCase()}
+              </button>
+              <span className="serverTooltip">{server.name}</span>
+            </div>
+          ))}
+          {session.user.role !== "demo" && (
+            <div className="serverButtonWrap">
+              <button
+                className="workspaceButton"
+                aria-label="Create server"
+                onClick={() => {
+                  setFriendsView(false);
+                  setForm("server");
+                }}
+              >
+                +
+              </button>
+              <span className="serverTooltip" role="tooltip">
+                Create a server
+              </span>
+            </div>
+          )}
+        </aside>
+        <aside className="channelSidebar friendsSidebar">
+          <header className="workspaceName">
+            <button
+              className="friendsHomeButton"
+              type="button"
+              onClick={() => setSelectedFriend(null)}
+            >
+              Friends
+            </button>
+          </header>
+          <nav>
+            {recentFriends.map((friend) => (
+              <button
+                className={`channel ${selectedFriend?.id === friend.id ? "active" : ""} ${(unreadDirectMessages[friend.id] ?? 0) > 0 ? "unread" : ""}`}
+                key={friend.id}
+                onClick={() => openFriend(friend)}
+              >
+                <span className="friendConversationTitle">
+                  <b>{friend.name}</b>
+                  {friend.lastMessage && (
+                    <time>
+                      {new Date(
+                        friend.lastMessage.createdAt,
+                      ).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </time>
+                  )}
+                </span>
+                {friend.lastMessage && (
+                  <small title={friend.lastMessage.text}>
+                    {friend.lastMessage.text}
+                  </small>
+                )}
+                {(unreadDirectMessages[friend.id] ?? 0) > 0 && (
+                  <span className="conversationUnreadBadge">
+                    {unreadDirectMessages[friend.id]}
+                  </span>
+                )}
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <section className="room friendsRoom">
+          <header className="roomHeader">
+            <strong>{selectedFriend?.name ?? "Friends"}</strong>
+          </header>
+          {!selectedFriend && (
+            <div className="friendsContent">
+              <form
+                className="friendSearchForm"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void searchFriends();
+                }}
+              >
+                <input
+                  value={friendSearch}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setFriendSearch(value);
+                    if (value.trim().length >= 3 || value.includes(".")) {
+                      void searchFriends(value);
+                    } else {
+                      setFriendResults([]);
+                    }
+                  }}
+                  placeholder="Search friends"
+                />
+                <button>Search</button>
+              </form>
+              {friendResults
+                .filter(
+                  (result) =>
+                    !friends.some((friend) => friend.id === result.id),
+                )
+                .map((friend) => (
+                  <div className="friendRow" key={friend.id}>
+                    <span>
+                      <b>{friend.name}</b>
+                      <small>{friend.handle}</small>
+                    </span>
+                    <button
+                      onClick={() => void friendAction("request", friend)}
+                    >
+                      Add friend
+                    </button>
+                  </div>
+                ))}
+              <div className="friendTabs">
+                <button
+                  className={friendTab === "online" ? "active" : ""}
+                  onClick={() => setFriendTab("online")}
+                >
+                  Online
+                </button>
+                <button
+                  className={friendTab === "offline" ? "active" : ""}
+                  onClick={() => setFriendTab("offline")}
+                >
+                  Offline
+                </button>
+                <button
+                  className={friendTab === "pending" ? "active" : ""}
+                  onClick={() => setFriendTab("pending")}
+                >
+                  Pending invites
+                  {incomingFriendRequestCount > 0 && (
+                    <span className="tabBadge">
+                      {incomingFriendRequestCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+              {friendTab === "pending" ? (
+                <>
+                  <p className="sectionLabel">PENDING INVITES</p>
+                  {pendingRequests.map((friend) => (
+                    <div className="friendRow" key={friend.id}>
+                      <span>
+                        <b>{friend.name}</b>
+                        <small>{friend.handle}</small>
+                      </span>
+                      {friend.incoming ? (
+                        <>
+                          <button
+                            onClick={() => void friendAction("accept", friend)}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            onClick={() => void friendAction("decline", friend)}
+                          >
+                            Decline
+                          </button>
+                        </>
+                      ) : (
+                        <small>Sent</small>
+                      )}
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <p className="sectionLabel">{friendTab.toUpperCase()}</p>
+                  {visibleFriends.map((friend) => (
+                    <button
+                      className="friendRow"
+                      key={friend.id}
+                      onClick={() => openFriend(friend)}
+                    >
+                      <span>
+                        <b>{friend.name}</b>
+                        <small>{friend.handle}</small>
+                      </span>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+          {selectedFriend && (
+            <section
+              className={`chat directMessages ${activeVoiceChannel?.type === "voice_direct" ? "callActive" : ""}`}
+            >
+              <div className="chatLog">
+                {directMessages.map((message) => (
+                  <article
+                    className={message.kind === "call" ? "callHistory" : ""}
+                    key={message.id}
+                  >
+                    {message.kind === "call" ? (
+                      <p>
+                        {message.text}
+                        {message.text === "Call ended" &&
+                          ` · ${formatCallDuration(message.callDurationSeconds)}`}
+                        <time>{message.time}</time>
+                      </p>
+                    ) : (
+                      <>
+                        <b>{message.author}</b>
+                        <time>{message.time}</time>
+                        <p>{message.text}</p>
+                      </>
+                    )}
+                  </article>
+                ))}
+              </div>
+              <form onSubmit={sendDirectMessage}>
+                <input
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={`Message ${selectedFriend.name}`}
+                />
+                <button>Send</button>
+                <button
+                  type="button"
+                  onClick={() => void startFriendCall(selectedFriend)}
+                >
+                  Call
+                </button>
+              </form>
+            </section>
+          )}
+          {activeVoiceChannel?.type === "voice_direct" && (
+            <section className="friendsCallPanel" aria-live="polite">
+              <div className="friendsCallIdentity">
+                <small>{joined ? "Direct call" : "Calling"}</small>
+                <strong>{activeVoiceChannel.name}</strong>
+                <span>{joining ? "Connecting…" : status}</span>
+              </div>
+              <div className="friendsCallVideo">
+                <video ref={remoteVideo} autoPlay playsInline />
+                {!remoteHasVideo && (
+                  <span>{activeVoiceChannel.name[0]?.toUpperCase()}</span>
+                )}
+                <video
+                  className="localPreview"
+                  ref={localVideo}
+                  autoPlay
+                  muted
+                  playsInline
+                />
+              </div>
+              <div className="controls voiceDock friendsCallControls">
+                <DeviceMenu
+                  kind="microphone"
+                  disabled={muted}
+                  devices={microphones}
+                  selectedId={microphoneId}
+                  onAction={toggleAudio}
+                  onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
+                />
+                <DeviceMenu
+                  kind="camera"
+                  disabled={cameraOff}
+                  devices={cameras}
+                  selectedId={cameraId}
+                  onAction={() => void toggleVideo()}
+                  onSelect={(deviceId) => void changeActiveCamera(deviceId)}
+                />
+                <button
+                  className="danger"
+                  type="button"
+                  onClick={endFriendCall}
+                >
+                  End call
+                </button>
+              </div>
+            </section>
+          )}
+        </section>
+        <aside className="memberSidebar friendsInfoSidebar">
+          <header className="memberSidebarHeader">Profile</header>
+          {selectedFriend ? (
+            <div className="friendProfileCard">
+              <span className="avatar">
+                {selectedFriend.name[0]?.toUpperCase()}
+              </span>
+              <strong>{selectedFriend.name}</strong>
+              <small>{selectedFriend.handle}</small>
+            </div>
+          ) : (
+            <p className="empty">Select a friend to view their profile.</p>
+          )}
+        </aside>
+        {incomingCallOverlay}
+      </main>
+    );
+  }
+
   if (serversLoaded && servers.length === 0) {
     return (
       <main className="noServerPage">
         <section>
-          <div className="workspaceLogo">LC</div>
+          <button
+            className="workspaceLogo noServerFriendsButton"
+            aria-label="Friends"
+            onClick={() => setFriendsView(true)}
+          >
+            LC
+            {notificationCount > 0 && (
+              <span className="notificationBadge">{notificationCount}</span>
+            )}
+          </button>
           <h1>No servers yet</h1>
           {session.user.role === "demo" ? (
             <p>
@@ -1595,20 +2462,24 @@ export default function Home() {
             Log out
           </button>
         </section>
+        {incomingCallOverlay}
       </main>
     );
   }
 
   return (
     <main className="workspace">
-      {serverDataLoading && (
-        <div className="serverLoading" role="status" aria-live="polite">
-          <span className="loadingSpinner" />
-          <span>Loading server...</span>
-        </div>
-      )}
       <aside className="workspaceRail" aria-label="Workspaces">
-        <div className="workspaceLogo">LC</div>
+        <button
+          className="workspaceLogo"
+          aria-label="Friends"
+          onClick={() => setFriendsView(true)}
+        >
+          LC
+          {notificationCount > 0 && (
+            <span className="notificationBadge">{notificationCount}</span>
+          )}
+        </button>
         {servers.map((server) => (
           <div className="serverButtonWrap" key={server.id}>
             <button
@@ -1616,9 +2487,7 @@ export default function Home() {
               aria-label={server.name}
               onClick={() => {
                 if (server.id === selectedServerId) return;
-                setCallViewOpen(false);
-                setServerDataLoading(true);
-                setSelectedServerId(server.id);
+                void switchServer(server.id);
               }}
             >
               {server.name[0]?.toUpperCase()}
@@ -1629,13 +2498,18 @@ export default function Home() {
           </div>
         ))}
         {session.user.role !== "demo" && (
-          <button
-            className="workspaceButton"
-            aria-label="Create server"
-            onClick={() => setForm("server")}
-          >
-            +
-          </button>
+          <div className="serverButtonWrap">
+            <button
+              className="workspaceButton"
+              aria-label="Create server"
+              onClick={() => setForm("server")}
+            >
+              +
+            </button>
+            <span className="serverTooltip" role="tooltip">
+              Create a server
+            </span>
+          </div>
         )}
       </aside>
       <aside className="channelSidebar">
@@ -1645,27 +2519,58 @@ export default function Home() {
               "LC"}
           </strong>
           {isSelectedServerOwner && selectedServerId && (
-            <span className="headerActions">
+            <div
+              className={`accountMenu serverActions ${serverSettingsOpen ? "open" : ""}`}
+              ref={serverSettingsMenu}
+            >
               <button
-                onClick={() => {
-                  const server = servers.find(
-                    (candidate) => candidate.id === selectedServerId,
-                  );
-                  if (server) setRenameTarget({ kind: "server", ...server });
-                }}
-                aria-label="Rename server"
-                title="Rename server"
+                className="accountMenuTrigger"
+                aria-expanded={serverSettingsOpen}
+                onClick={() => setServerSettingsOpen((current) => !current)}
               >
-                ✎
+                Server settings
               </button>
-              <button
-                onClick={() => setForm("channel")}
-                aria-label="Create channel"
-                title="Create channel"
-              >
-                +
-              </button>
-            </span>
+              {serverSettingsOpen && (
+                <div className="accountMenuDropdown">
+                  <button
+                    onClick={() => {
+                      const server = servers.find(
+                        (candidate) => candidate.id === selectedServerId,
+                      );
+                      if (server)
+                        setRenameTarget({ kind: "server", ...server });
+                      setServerSettingsOpen(false);
+                    }}
+                  >
+                    Rename server
+                  </button>
+                  <button
+                    onClick={() => {
+                      setForm("channel");
+                      setServerSettingsOpen(false);
+                    }}
+                  >
+                    Create channel
+                  </button>
+                  <button
+                    onClick={() => {
+                      setServerFriendSearch("");
+                      setSelectedServerFriendIds([]);
+                      setAddFriendsOpen(true);
+                      void loadFriends();
+                    }}
+                  >
+                    Add friends to server
+                  </button>
+                  <button
+                    className="danger"
+                    onClick={() => setDeleteServerOpen(true)}
+                  >
+                    Delete server
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </header>
         <nav>
@@ -2134,11 +3039,11 @@ export default function Home() {
               });
             }}
           >
-            <span className={`avatar ${member.role}`}>
+            <span className={`avatar role-${member.role}`}>
               {member.name[0]?.toUpperCase()}
             </span>
-            <span>
-              <strong>{member.name}</strong>
+            <span className="memberIdentity">
+              <strong title={member.name}>{member.name}</strong>
               <small>{member.role}</small>
             </span>
           </div>
@@ -2158,11 +3063,11 @@ export default function Home() {
               });
             }}
           >
-            <span className={`avatar ${member.role}`}>
+            <span className={`avatar role-${member.role}`}>
               {member.name[0]?.toUpperCase()}
             </span>
-            <span>
-              <strong>{member.name}</strong>
+            <span className="memberIdentity">
+              <strong title={member.name}>{member.name}</strong>
               <small>{member.role}</small>
             </span>
           </div>
@@ -2264,6 +3169,109 @@ export default function Home() {
                 Delete message
               </button>
             )}
+        </div>
+      )}
+      {addFriendsOpen && (
+        <div
+          className="modalBackdrop nestedModalBackdrop"
+          onMouseDown={() => {
+            setAddFriendsOpen(false);
+            setServerSettingsOpen(false);
+          }}
+        >
+          <section
+            className="modalCard addFriendsModal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2>Add friends to server</h2>
+            <p>
+              Select one or more friends. Friends already in this server are
+              hidden.
+            </p>
+            <input
+              autoFocus
+              value={serverFriendSearch}
+              onChange={(event) => setServerFriendSearch(event.target.value)}
+              placeholder="Search friends"
+            />
+            <div className="friendPickerList">
+              {availableServerFriends.map((friend) => (
+                <label className="friendPickerRow" key={friend.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedServerFriendIds.includes(friend.id)}
+                    onChange={(event) =>
+                      setSelectedServerFriendIds((current) =>
+                        event.target.checked
+                          ? [...current, friend.id]
+                          : current.filter((id) => id !== friend.id),
+                      )
+                    }
+                  />
+                  <span>
+                    <b>{friend.name}</b>
+                    <small>{friend.handle}</small>
+                  </span>
+                </label>
+              ))}
+              {availableServerFriends.length === 0 && (
+                <p className="emptyState">
+                  No available friends match this search.
+                </p>
+              )}
+            </div>
+            <div className="modalActions">
+              <button
+                type="button"
+                onClick={() => {
+                  setAddFriendsOpen(false);
+                  setServerSettingsOpen(false);
+                }}
+              >
+                Close
+              </button>
+              <button
+                className="primary"
+                type="button"
+                disabled={selectedServerFriendIds.length === 0}
+                onClick={() => void addSelectedFriendsToServer()}
+              >
+                Add selected ({selectedServerFriendIds.length})
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {deleteServerOpen && (
+        <div className="modalBackdrop deletionConfirmationBackdrop">
+          <section className="modalCard deletionConfirmationModal">
+            <h2>Delete server?</h2>
+            <p>
+              This permanently deletes{" "}
+              <b>
+                {servers.find((server) => server.id === selectedServerId)?.name}
+              </b>
+              , including its channels and messages.
+            </p>
+            <div className="modalActions">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteServerOpen(false);
+                  setServerSettingsOpen(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void deleteServer()}
+              >
+                Delete server
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {renameTarget && (
@@ -2868,6 +3876,7 @@ export default function Home() {
           </button>
         </div>
       )}
+      {incomingCallOverlay}
     </main>
   );
 }
@@ -2913,6 +3922,8 @@ function toChatMessage(message: {
   createdAt?: string | Date;
   deleted?: boolean;
   replyTo?: { id: string; text: string; author: string } | null;
+  kind?: "message" | "call";
+  callDurationSeconds?: number | null;
 }): ChatMessage {
   return {
     id: message.id,
@@ -2921,6 +3932,8 @@ function toChatMessage(message: {
     text: message.text,
     deleted: Boolean(message.deleted),
     replyTo: message.replyTo ?? null,
+    kind: message.kind ?? "message",
+    callDurationSeconds: message.callDurationSeconds ?? null,
     time: message.createdAt
       ? new Date(message.createdAt).toLocaleTimeString([], {
           hour: "2-digit",
@@ -2930,10 +3943,36 @@ function toChatMessage(message: {
   };
 }
 
+let cachedSignalingToken = "";
+let signalingTokenExpiresAt = 0;
+let signalingTokenRequest: Promise<string> | null = null;
+
+function invalidateSignalingToken() {
+  cachedSignalingToken = "";
+  signalingTokenExpiresAt = 0;
+}
+
+async function getSignalingToken() {
+  if (cachedSignalingToken && Date.now() < signalingTokenExpiresAt) {
+    return cachedSignalingToken;
+  }
+  signalingTokenRequest ??= fetch("/api/signaling-token", { method: "POST" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Could not create signaling token");
+      const { token } = (await response.json()) as { token?: string };
+      if (!token) throw new Error("Signaling token was missing");
+      cachedSignalingToken = token;
+      signalingTokenExpiresAt = Date.now() + 45_000;
+      return token;
+    })
+    .finally(() => {
+      signalingTokenRequest = null;
+    });
+  return signalingTokenRequest;
+}
+
 async function openSignalingSocket() {
-  const response = await fetch("/api/signaling-token", { method: "POST" });
-  if (!response.ok) throw new Error("Could not create signaling token");
-  const { token } = (await response.json()) as { token?: string };
+  const token = await getSignalingToken();
   if (!token) throw new Error("Signaling token was missing");
   const configuredUrl = process.env.NEXT_PUBLIC_SIGNALING_URL;
   const url = configuredUrl || "ws://localhost:3001";

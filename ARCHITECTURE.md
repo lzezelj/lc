@@ -71,6 +71,9 @@ direct peer connection or LiveKit room mounted while the user visits another
 server or text channel, and disconnects only when the user leaves or joins a
 different voice channel. Microphone capture requests mono 48 kHz audio with
 browser echo cancellation, noise suppression, and automatic gain control.
+Server navigation fetches the destination channels and members before swapping
+the visible workspace, leaving the current screen usable instead of covering it
+with an intermediate loading overlay.
 
 ### Cloudflare
 
@@ -114,7 +117,11 @@ model contains:
 - hashed demo invitations and their expiry/revocation state;
 - servers and server memberships;
 - text, direct-voice, and group-voice channels;
-- persistent text messages, reply relationships, and deletion timestamps.
+- persistent text messages, reply relationships, and deletion timestamps;
+- stable public user handles, friendships, friend-only direct messages, and a
+  friendship activity timestamp used to order recent conversations. Sending a
+  direct message or starting a direct call updates that timestamp. Direct
+  message history also stores typed call-ended entries and their duration.
 
 Drizzle defines the schema and migrations. A one-shot migration container runs
 after PostgreSQL becomes healthy and before the application starts.
@@ -131,6 +138,8 @@ video. It provides:
 - voice presence broadcasts;
 - real-time delivery of text messages and deletion events that the Next.js API
   has already stored.
+- authenticated per-user events for friendship refreshes, direct-message
+  notifications, and friend-to-friend incoming-call prompts;
 - server-scoped online-presence subscriptions;
 - authenticated administrative disconnection when membership changes.
 
@@ -143,6 +152,9 @@ service accepts a presence subscription only for one of those servers. Closing
 the last socket for a user removes that user from the server's online set. The
 browser keeps this website-level connection open even when the user has no
 server or has not joined a voice channel, so online does not mean “in a call.”
+
+Opening the website-level socket broadcasts presence to every server in its
+token, so a user remains online while viewing Friends or a different server.
 
 ### LiveKit
 
@@ -224,6 +236,11 @@ verified with a timing-safe signature comparison by the WebSocket service.
 The short lifetime limits token reuse. Administrative membership changes call
 the internal disconnect endpoint, forcing affected sockets to reconnect before
 receiving a refreshed permission list.
+The browser caches a signaling token for at most 45 seconds so its independent
+presence, text, and direct-call sockets do not each consume a token issuance.
+Access and friendship changes invalidate that cache immediately. Server and
+channel navigation updates subscriptions on the persistent presence socket
+instead of reconnecting it.
 
 ### LiveKit authorization
 
@@ -264,6 +281,13 @@ messages only when the user selects the load-more control. The cursor contains
 the oldest message timestamp and ID, which makes pages stable when timestamps
 are shared and new messages arrive concurrently.
 
+Direct messages use the same persistence-before-notification rule. After the
+API stores a message and updates friendship activity, signaling sends the
+recipient a per-user event. An open conversation updates immediately;
+otherwise the browser increments its local unread and title counters.
+Friendship writes emit the same kind of refresh event so both users see request
+and acceptance changes without reloading.
+
 ## Direct WebRTC call flow
 
 ```mermaid
@@ -272,8 +296,9 @@ sequenceDiagram
   participant S as Signaling service
   participant B as Browser B
 
-  A->>S: Join direct-call room
-  B->>S: Join direct-call room
+  A->>S: Send friend-authorized call invitation
+  S-->>B: Show prompt and play ringtone
+  B->>S: Accept and join direct-call room
   S-->>A: Peer present; choose initiator
   A->>A: Create RTCPeerConnection and offer
   A->>S: Relay SDP offer
@@ -287,6 +312,13 @@ sequenceDiagram
   S->>A: ICE candidates
   A<<-->>B: DTLS-SRTP audio/video media
 ```
+
+Either participant can send an explicit hang-up signal. Both browsers then
+close their peer connection and media tracks immediately. The participant who
+ends the call writes one durable call-history entry, which is delivered to the
+other participant through the direct-message notification path. Declined calls
+are recorded as `Call declined`. If the recipient does not join within 20
+seconds, the caller cancels the invitation and records `User unavailable`.
 
 Signaling and media are separate planes. The signaling service introduces the
 peers and relays negotiation metadata; after ICE succeeds, direct media does
@@ -328,8 +360,9 @@ or deleting an account follows one control path:
 3. Next.js calls the signaling service's authenticated internal disconnect
    endpoint for that user.
 4. The signaling service sends `access-changed` and closes matching sockets
-   with code `4003`. The browser reloads its server/navigation state, and a new
-   connection requires a token containing current permissions. This also lets
+   with code `4003`. The browser refreshes its session, server/navigation, and
+   friendship state in place, and a new connection requires a token containing
+   current permissions. This avoids a full-page reload loop while still letting
    an already-open no-server page discover when access is added.
 5. Next.js enumerates LiveKit participants in affected group rooms and removes
    every participant identity prefixed by the user's ID.
@@ -394,8 +427,11 @@ The single Next.js instance keeps short-lived rate-limit counters in memory.
 Login starts are limited to 10 attempts per IP address per 15 minutes. Message
 creation is limited to 10 messages per authenticated user per 10 seconds.
 Server and channel changes are limited to 10 per user per hour, and demo-account
-administration is limited to 30 owner actions per hour. Signaling and LiveKit
-token issuance are limited to 30 requests per user per minute. Rejections use
+administration is limited to 30 owner actions per hour. Signaling token
+issuance is limited to 120 requests per user per minute to accommodate the
+application's independently authenticated persistent, text, and direct-call
+sockets; LiveKit token issuance remains limited to 30 requests per user per
+minute. Rejections use
 HTTP 429 and a `Retry-After` header. This prevents ordinary burst spam but is
 not shared across processes; a multi-instance deployment must move counters to
 Redis or an equivalent shared rate-limit store.

@@ -9,7 +9,8 @@ export const rateLimits = {
   message: { limit: 10, windowMs: 10 * 1000 },
   serverMutation: { limit: 10, windowMs: 60 * 60 * 1000 },
   adminMutation: { limit: 30, windowMs: 60 * 60 * 1000 },
-  signalingToken: { limit: 30, windowMs: 60 * 1000 },
+  signalingToken: { limit: 120, windowMs: 60 * 1000 },
+  livekitToken: { limit: 30, windowMs: 60 * 1000 },
 } satisfies Record<string, RateLimit>;
 
 export function requestIp(request: Request) {

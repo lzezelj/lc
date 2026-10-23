@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
-import { channels, serverMembers } from "../../../db/schema";
+import { channels, friendships, serverMembers } from "../../../db/schema";
 import { createSignalingToken } from "../../../server/signaling-auth.mjs";
 import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
 
@@ -39,6 +39,26 @@ export async function POST() {
     .select({ id: serverMembers.serverId })
     .from(serverMembers)
     .where(eq(serverMembers.userId, session.user.id));
+  const friendRows = await db
+    .select({
+      requesterId: friendships.requesterId,
+      recipientId: friendships.recipientId,
+      status: friendships.status,
+    })
+    .from(friendships)
+    .where(
+      or(
+        eq(friendships.requesterId, session.user.id),
+        eq(friendships.recipientId, session.user.id),
+      ),
+    );
+  const friendIds = friendRows
+    .filter((friendship) => friendship.status === "accepted")
+    .map((friendship) =>
+      friendship.requesterId === session.user.id
+        ? friendship.recipientId
+        : friendship.requesterId,
+    );
   return NextResponse.json({
     token: createSignalingToken(
       {
@@ -46,6 +66,7 @@ export async function POST() {
         name: session.user.name ?? "User",
         channelIds: permittedChannels.map((channel) => channel.id),
         serverIds: memberships.map((membership) => membership.id),
+        friendIds,
       },
       secret,
     ),

@@ -20,7 +20,7 @@ export async function POST(
   }
   const rateLimit = checkRateLimit(
     `livekit-token:${session.user.id}`,
-    rateLimits.signalingToken,
+    rateLimits.livekitToken,
   );
   if (!rateLimit.allowed)
     return NextResponse.json(

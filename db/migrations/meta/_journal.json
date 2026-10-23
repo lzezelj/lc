@@ -43,6 +43,34 @@
       "when": 1792758876377,
       "tag": "0005_dark_white_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792845270000,
+      "tag": "0006_friends",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792845270001,
+      "tag": "0007_handles_nullable",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792845270002,
+      "tag": "0008_friend_activity",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792845270003,
+      "tag": "0009_direct_call_history",
+      "breakpoints": true
     }
   ]
 }

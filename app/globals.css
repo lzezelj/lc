@@ -58,6 +58,7 @@ button {
 }
 
 .workspaceLogo {
+  position: relative;
   border-radius: 15px;
   background: var(--accent);
 }
@@ -66,6 +67,227 @@ button {
   background: #213e38;
   color: #77e2bb;
 }
+
+.workspaceButton:hover,
+.workspaceLogo:hover {
+  border-radius: 12px;
+  transform: translateY(-2px) scale(1.06);
+  transition: transform 160ms ease, border-radius 160ms ease;
+}
+
+.workspaceLogo {
+  border: 0;
+  cursor: pointer;
+}
+
+.friendsContent {
+  padding: 24px;
+  max-width: 680px;
+}
+
+.friendSearchForm {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111520;
+  box-shadow: 0 10px 28px #05070c55;
+}
+
+.friendSearchForm input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid #30384c;
+  border-radius: 8px;
+  outline: none;
+  background: #0c0f17;
+  color: var(--ink);
+}
+
+.friendSearchForm input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px #7c5cff26;
+}
+
+.friendSearchForm button,
+.directMessages form button {
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+}
+
+.notificationBadge,
+.tabBadge {
+  display: grid;
+  min-width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 2px solid #090b11;
+  border-radius: 999px;
+  background: #ed4245;
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.notificationBadge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+}
+
+.tabBadge {
+  display: inline-grid;
+  margin-left: 7px;
+  border-width: 0;
+}
+
+.incomingCall {
+  position: fixed;
+  z-index: 1000;
+  right: 24px;
+  bottom: 24px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-width: 360px;
+  padding: 16px;
+  border: 1px solid #343d53;
+  border-radius: 14px;
+  background: #151925;
+  box-shadow: 0 18px 60px #000a;
+}
+
+.incomingCall div {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+
+.incomingCall small { color: var(--muted); }
+.incomingCall button { padding: 9px 13px; border: 0; border-radius: 8px; color: white; }
+.incomingCall button.primary { background: #2f9e66; }
+.incomingCall button.danger { background: #c84052; }
+
+.friendsCallPanel {
+  position: absolute;
+  z-index: 30;
+  inset: 58px 16px auto;
+  height: 43%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #30384c;
+  border-radius: 0 0 14px 14px;
+  background: #10141f;
+}
+
+.friendsCallIdentity { display: grid; justify-items: center; gap: 4px; text-align: center; }
+.friendsCallPanel small,
+.friendsCallPanel span { color: var(--muted); }
+.friendsCallPanel button { padding: 9px 12px; border: 0; border-radius: 8px; color: white; }
+
+.friendsCallVideo {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #30384c;
+  border-radius: 16px;
+  background: radial-gradient(circle at 50% 40%, #29304a, #111520 65%);
+}
+
+.friendsCallVideo > span {
+  display: grid;
+  width: 92px;
+  height: 92px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-size: 38px;
+  font-weight: 800;
+}
+
+.friendsCallVideo > video:first-child { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+.friendsCallVideo .localPreview { position: absolute; right: 18px; bottom: 18px; width: min(220px, 25%); aspect-ratio: 16 / 9; border: 1px solid #566078; border-radius: 10px; background: #090b11; object-fit: cover; }
+.friendsCallControls { justify-content: center; border: 0; border-radius: 12px; }
+
+.friendRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px;
+  text-align: left;
+}
+
+.friendRow span {
+  display: grid;
+  flex: 1;
+}
+
+.friendRow small {
+  color: var(--muted);
+}
+
+.directMessages {
+  position: absolute;
+  inset: 58px 16px 16px;
+  min-width: 0;
+  width: auto;
+  background: #141925;
+  border: 1px solid #2f374a;
+}
+
+.directMessages.callActive { inset: calc(43% + 66px) 16px 16px; }
+
+.directMessages header { display: flex; gap: 14px; align-items: center; overflow: hidden; }
+.directMessages header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.friendsRoom { position: relative; min-width: 0; }
+.friendsContent { max-width: 760px; margin: 0 auto; }
+.friendTabs { display: flex; gap: 8px; margin: 18px 0; border-bottom: 1px solid var(--line); }
+.friendTabs button { padding: 9px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); }
+.friendTabs button:hover,
+.friendTabs button.active { border-bottom-color: var(--accent); color: var(--ink); }
+.friendsSidebar .channel { position: relative; width: calc(100% - 16px); padding-right: 32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.friendConversationTitle { display: flex; min-width: 0; gap: 8px; align-items: baseline; }
+.friendConversationTitle b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.friendConversationTitle time { margin-left: auto; color: var(--muted); font-size: 10px; }
+.friendsSidebar .channel > small { display: block; width: 100%; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.friendsSidebar .channel.unread { color: var(--ink); background: #242b3d; }
+.friendsSidebar .channel.unread > small { color: #d6daea; font-weight: 700; }
+.conversationUnreadBadge { position: absolute; right: 8px; bottom: 8px; display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 999px; background: #ed4245; color: white; font-size: 10px; font-weight: 800; }
+.friendsHomeButton { border: 0; background: transparent; color: var(--ink); font-weight: 800; }
+.friendsHomeButton:hover { color: #c8c0ff; }
+.friendsInfoSidebar { border-left: 1px solid var(--line); }
+.friendProfileCard { display: grid; justify-items: center; gap: 8px; padding: 28px 14px; overflow: hidden; text-align: center; }
+.friendProfileCard strong,
+.friendProfileCard small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friendProfileCard small { color: var(--muted); }
+.callHistory { text-align: center; color: var(--muted); }
+.callHistory time { padding-left: 10px; }
+.serverActions .accountMenuDropdown { width: 190px; }
+.serverActions .accountMenuDropdown button { justify-content: flex-start; text-align: left; }
+
+.addFriendsModal { width: min(520px, calc(100vw - 32px)); }
+.addFriendsModal > p { margin-top: 0; color: var(--muted); }
+.friendPickerList { display: grid; max-height: 320px; margin-top: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--deep); }
+.friendPickerRow { display: flex; gap: 12px; align-items: center; padding: 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.friendPickerRow:last-child { border-bottom: 0; }
+.friendPickerRow:hover { background: #202638; }
+.friendPickerRow span { display: grid; }
+.friendPickerRow small,
+.emptyState { color: var(--muted); }
+.emptyState { padding: 12px; }
 
 .serverButtonWrap {
   position: relative;
@@ -980,9 +1202,12 @@ button {
   transform: translateY(-1px);
 }
 
-.member:not(:has(.avatar.owner)) {
+.member:not(:has(.avatar.role-owner)) {
   cursor: context-menu;
 }
+
+.memberIdentity { display: grid; min-width: 0; flex: 1; }
+.memberIdentity strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .member.offline {
   opacity: 0.5;

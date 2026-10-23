@@ -34,6 +34,31 @@ function isAllowedGoogleEmail(email: string) {
   );
 }
 
+async function ensureHandle(userId: string, name: string | null | undefined) {
+  const [existing] = await db
+    .select({ handle: users.handle })
+    .from(users)
+    .where(eq(users.id, userId));
+  if (existing?.handle) return;
+  const base =
+    (name ?? "user")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "")
+      .slice(0, 24) || "user";
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const handle = `${base}.${String(Math.floor(Math.random() * 10_000)).padStart(4, "0")}`;
+    const [taken] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.handle, handle));
+    if (!taken) {
+      await db.update(users).set({ handle }).where(eq(users.id, userId));
+      return;
+    }
+  }
+  throw new Error("Could not allocate a user handle");
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: DrizzleAdapter(db, {
     usersTable: users,
@@ -103,6 +128,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       if (!user.id) return false;
       const role = isOwnerEmail(email) ? "owner" : "member";
+      await ensureHandle(user.id, user.name);
       await db
         .update(users)
         .set({ role, updatedAt: new Date() })

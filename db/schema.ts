@@ -12,6 +12,10 @@ import {
 } from "drizzle-orm/pg-core";
 
 export const userRole = pgEnum("user_role", ["owner", "member", "demo"]);
+export const friendshipStatus = pgEnum("friendship_status", [
+  "pending",
+  "accepted",
+]);
 export const serverRole = pgEnum("server_role", ["owner", "member"]);
 export const channelType = pgEnum("channel_type", [
   "text",
@@ -25,6 +29,7 @@ export const users = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     role: userRole("role").default("member").notNull(),
     name: text("name").notNull(),
+    handle: text("handle").unique(),
     email: text("email"),
     emailVerified: timestamp("email_verified", { withTimezone: true }),
     image: text("image"),
@@ -182,5 +187,53 @@ export const messages = pgTable(
       table.id,
     ),
     index("messages_reply_to_id_idx").on(table.replyToId),
+  ],
+);
+
+export const friendships = pgTable(
+  "friendships",
+  {
+    requesterId: uuid("requester_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recipientId: uuid("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: friendshipStatus("status").default("pending").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.requesterId, table.recipientId] }),
+    index("friendships_recipient_idx").on(table.recipientId),
+  ],
+);
+
+export const directMessages = pgTable(
+  "direct_messages",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    senderId: uuid("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recipientId: uuid("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    kind: text("kind").default("message").notNull(),
+    callDurationSeconds: integer("call_duration_seconds"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("direct_messages_timeline_idx").on(
+      table.senderId,
+      table.recipientId,
+      table.createdAt,
+    ),
   ],
 );

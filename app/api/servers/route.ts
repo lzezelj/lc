@@ -113,3 +113,21 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Server not found" }, { status: 404 });
   return NextResponse.json(server);
 }
+
+export async function DELETE(request: Request) {
+  const session = await auth();
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { serverId } = (await request.json()) as { serverId?: string };
+  if (!serverId)
+    return NextResponse.json({ error: "Server is required" }, { status: 400 });
+  const [deleted] = await db
+    .delete(servers)
+    .where(
+      and(eq(servers.id, serverId), eq(servers.createdBy, session.user.id)),
+    )
+    .returning({ id: servers.id });
+  if (!deleted)
+    return NextResponse.json({ error: "Server not found" }, { status: 404 });
+  return NextResponse.json(deleted);
+}

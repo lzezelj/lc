@@ -41,9 +41,10 @@ async function connect(
   name = "Test user",
   channelIds = permittedChannelIds,
   serverIds = ["server-1"],
+  friendIds = [],
 ) {
   const token = createSignalingToken(
-    { id: `test-${name}`, name, channelIds, serverIds },
+    { id: `test-${name}`, name, channelIds, serverIds, friendIds },
     authSecret,
   );
   const socket = new WebSocket(`${url}?token=${token}`);
@@ -51,6 +52,64 @@ async function connect(
   await once(socket, "open");
   return socket;
 }
+
+test("authenticated internal events reach only the selected user", async () => {
+  const url = await startServer();
+  const recipient = await connect(url, "Grace");
+  const outsider = await connect(url, "Ada");
+  const received = nextMessage(recipient);
+  const stayedQuiet = expectNoMessage(outsider);
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/user-event`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "test-Grace",
+        event: { type: "friendship-changed" },
+      }),
+    },
+  );
+  assert.equal(response.status, 204);
+  assert.deepEqual(await received, { type: "friendship-changed" });
+  await stayedQuiet;
+});
+
+test("call invitations require an accepted friend in the signaling token", async () => {
+  const url = await startServer();
+  const ada = await connect(
+    url,
+    "Ada",
+    permittedChannelIds,
+    ["server-1"],
+    ["test-Grace"],
+  );
+  const grace = await connect(
+    url,
+    "Grace",
+    permittedChannelIds,
+    ["server-1"],
+    ["test-Ada"],
+  );
+  const invitation = nextMessage(grace);
+  ada.send(JSON.stringify({ type: "call-invite", targetUserId: "test-Grace" }));
+  assert.deepEqual(await invitation, {
+    type: "call-invite",
+    fromUserId: "test-Ada",
+    fromName: "Ada",
+    roomId: "friend:test-Ada:test-Grace",
+  });
+
+  const forbidden = nextMessage(grace);
+  grace.send(JSON.stringify({ type: "call-invite", targetUserId: "stranger" }));
+  assert.deepEqual(await forbidden, {
+    type: "forbidden",
+    channelId: "stranger",
+  });
+});
 
 test("online presence is scoped to an authorized server", async () => {
   const url = await startServer();
@@ -72,6 +131,24 @@ test("online presence is scoped to an authorized server", async () => {
   assert.deepEqual(await forbidden, {
     type: "forbidden",
     channelId: "private",
+  });
+});
+
+test("opening the website broadcasts online presence to every server", async () => {
+  const url = await startServer();
+  const observer = await connect(url, "Ada");
+  const initial = nextMessage(observer);
+  observer.send(
+    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+  );
+  await initial;
+
+  const updated = nextMessage(observer);
+  await connect(url, "Grace", permittedChannelIds, ["server-1"]);
+  assert.deepEqual(await updated, {
+    type: "online-presence",
+    serverId: "server-1",
+    userIds: ["test-Ada", "test-Grace"],
   });
 });
 

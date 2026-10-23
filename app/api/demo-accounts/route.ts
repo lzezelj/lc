@@ -215,7 +215,7 @@ export async function PATCH(request: Request) {
     const serverIds = [...new Set(body.serverIds ?? [])];
     if (serverIds.length === 0)
       return NextResponse.json(
-        { error: "At least one server is required" },
+        { error: "Demo accounts must keep at least one server." },
         { status: 400 },
       );
     const owned = await db

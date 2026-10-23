@@ -108,6 +108,38 @@ export function createSignalingServer({
         .catch(() => response.writeHead(400).end("Invalid JSON"));
       return;
     }
+    if (request.method === "POST" && request.url === "/internal/user-event") {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret)) {
+        response.writeHead(401).end("Unauthorized");
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.userId !== "string" ||
+            !body.event ||
+            typeof body.event.type !== "string"
+          ) {
+            response.writeHead(400).end("Invalid user event");
+            return;
+          }
+          for (const client of ws.clients) {
+            if (
+              client.identity?.sub === body.userId &&
+              client.readyState === WebSocket.OPEN
+            ) {
+              client.send(JSON.stringify(body.event));
+            }
+          }
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     response.writeHead(426, { "Content-Type": "text/plain" });
     response.end("Upgrade Required");
   });
@@ -230,7 +262,21 @@ export function createSignalingServer({
     socket.allowedChannelIds = new Set(socket.identity.channelIds);
     let joinedRoomId;
 
-    const isAllowed = (channelId) => socket.allowedChannelIds.has(channelId);
+    // A website-level socket makes the user online in every server they can
+    // access, regardless of which application screen they are viewing.
+    socket.identity.serverIds.forEach(broadcastOnlinePresence);
+
+    const isAllowed = (channelId) => {
+      if (socket.allowedChannelIds.has(channelId)) return true;
+      if (typeof channelId !== "string" || !channelId.startsWith("friend:"))
+        return false;
+      const pair = channelId.slice("friend:".length).split(":");
+      return (
+        pair.length === 2 &&
+        pair.includes(socket.identity.sub) &&
+        socket.identity.friendIds.some((friendId) => pair.includes(friendId))
+      );
+    };
     const rejectForbidden = (channelId) =>
       socket.send(JSON.stringify({ type: "forbidden", channelId }));
 
@@ -280,6 +326,34 @@ export function createSignalingServer({
             channelId: socket.subscribedTextChannelId,
           }),
         );
+        return;
+      }
+
+      if (
+        ["call-invite", "call-decline", "call-cancel"].includes(message.type) &&
+        typeof message.targetUserId === "string"
+      ) {
+        if (!socket.identity.friendIds.includes(message.targetUserId)) {
+          rejectForbidden(message.targetUserId);
+          return;
+        }
+        const roomId = `friend:${[socket.identity.sub, message.targetUserId]
+          .sort()
+          .join(":")}`;
+        const outgoing = JSON.stringify({
+          type: message.type,
+          fromUserId: socket.identity.sub,
+          fromName: socket.identity.name,
+          roomId,
+        });
+        for (const client of ws.clients) {
+          if (
+            client.identity?.sub === message.targetUserId &&
+            client.readyState === WebSocket.OPEN
+          ) {
+            client.send(outgoing);
+          }
+        }
         return;
       }
 
