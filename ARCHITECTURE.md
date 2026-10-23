@@ -332,6 +332,16 @@ when ICE selects a peer-to-peer route. The in-call diagnostics identify whether
 the selected local candidate is `host`, `srflx`, or `relay` and report audio
 jitter, packet loss, concealment, codec, bitrate, and transport protocol.
 
+The TURN hostname must resolve directly to the coturn host (Cloudflare **DNS
+only**). Cloudflare's ordinary HTTP proxy does not forward TURN UDP/TCP on 3478.
+An orange-clouded TURN record can leave SDP/signaling fully working but ICE
+failed, with host/srflx candidates and no relay candidate. An initial unauthenticated
+TURN allocation returning 401 is the normal authentication challenge, not a failed
+credential test. Successful authenticated allocation and media relay require a
+separate test. The optional browser check supports `--turn` to require relay
+candidates and `--turn --direct-ip` to isolate hostname routing using the configured
+server IP; temporary credentials are generated in memory and never printed.
+
 Direct-call audio prefers Opus with a 64 kbps sender ceiling. Offers and answers
 use the browser's native SDP rather than manually rewriting codec parameters;
 receive jitter buffering also uses browser defaults. Incoming signaling messages
@@ -408,6 +418,11 @@ Transport between participants and LiveKit is encrypted, but the current
 LiveKit deployment does not enable application-level end-to-end encryption.
 The SFU must process media packets to route them. LiveKit offers UDP media and
 ICE/TCP fallback, but TURN has not yet been configured.
+
+Remote group media attaches to playback elements only when the actual track
+changes or the view unmounts. Parent callbacks are read through a ref, so speaking
+and diagnostic updates do not detach and reattach audio. Audio tracks do not run
+the video stats poller; audio/network metrics come from the room collector.
 
 ## Membership revocation and moderation
 

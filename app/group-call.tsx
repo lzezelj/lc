@@ -83,21 +83,27 @@ function RemoteTrackView({
   const element = useRef<HTMLMediaElement>(null);
   const [quality, setQuality] = useState("");
   const [networkStats, setNetworkStats] = useState("");
+  const pingCallback = useRef(onPingChange);
+
+  useEffect(() => {
+    pingCallback.current = onPingChange;
+  }, [onPingChange]);
 
   useEffect(() => {
     const mediaElement = element.current;
     if (!mediaElement) return;
     media.track.attach(mediaElement);
-    const stopStats = monitorTrackVideo(
-      media.track,
-      setNetworkStats,
-      onPingChange,
-    );
+    const stopStats =
+      media.track.kind === Track.Kind.Video
+        ? monitorTrackVideo(media.track, setNetworkStats, (ping) =>
+            pingCallback.current(ping),
+          )
+        : () => {};
     return () => {
       stopStats();
       media.track.detach(mediaElement);
     };
-  }, [media.track, onPingChange]);
+  }, [media.track]);
 
   if (media.track.kind === Track.Kind.Audio) {
     return <audio ref={element as RefObject<HTMLAudioElement>} autoPlay />;

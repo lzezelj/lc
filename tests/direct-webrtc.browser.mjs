@@ -5,6 +5,32 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import WebSocket from "ws";
 import ts from "typescript";
+import { createHmac } from "node:crypto";
+import { parse } from "dotenv";
+
+const useTurn = process.argv.includes("--turn");
+const directIp = process.argv.includes("--direct-ip");
+let rtcConfiguration = {};
+if (useTurn) {
+  const local = parse(await readFile(new URL("../.env", import.meta.url)));
+  const config = { ...local, ...process.env };
+  if (!config.TURN_SECRET || !config.TURN_URLS)
+    throw new Error("TURN configuration is missing");
+  const username = `${Math.floor(Date.now() / 1000) + 600}:connectivity-test`;
+  const credential = createHmac("sha1", config.TURN_SECRET)
+    .update(username)
+    .digest("base64");
+  const urls = config.TURN_URLS.split(",").map((url) => {
+    const trimmed = url.trim();
+    return directIp
+      ? trimmed.replace(/^(turns?:)[^:]+:/, `$1${config.TURN_EXTERNAL_IP}:`)
+      : trimmed;
+  });
+  rtcConfiguration = {
+    iceServers: [{ urls, username, credential }],
+    iceTransportPolicy: "relay",
+  };
+}
 
 // Optional Windows integration check. Uses real browser ICE/DTLS/RTP and a
 // generated tone, without requiring microphone access or an external service.
@@ -107,7 +133,10 @@ try {
     const tone = context.createOscillator();
     const capture = context.createMediaStreamDestination();
     tone.connect(capture); tone.start();
-    const peers = [new RTCPeerConnection(), new RTCPeerConnection()];
+    const config = ${JSON.stringify(rtcConfiguration)};
+    const peers = [new RTCPeerConnection(config), new RTCPeerConnection(config)];
+    const gathered = [[], []];
+    const iceErrors = [];
     const candidates = [[], []];
     const errors = [];
     const receive = peers.map((peer, index) => createSignalQueue(async (message) => {
@@ -126,8 +155,12 @@ try {
     peers.forEach((peer, index) => {
       capture.stream.getTracks().forEach(track => peer.addTrack(track, capture.stream));
       peer.onicecandidate = event => {
-        if (event.candidate) void receive[1-index]({ type: 'candidate', candidate: event.candidate.toJSON() });
+        if (event.candidate) {
+          gathered[index].push(event.candidate.type);
+          void receive[1-index]({ type: 'candidate', candidate: event.candidate.toJSON() });
+        }
       };
+      peer.onicecandidateerror = event => iceErrors.push({ peer: index, code: event.errorCode });
     });
     await peers[0].setLocalDescription(await peers[0].createOffer());
     await receive[1]({ type: 'offer', sdp: peers[0].localDescription.toJSON() });
@@ -142,7 +175,7 @@ try {
     }
     const states = peers.map(peer => peer.connectionState);
     peers.forEach(peer => peer.close()); tone.stop(); await context.close();
-    return { received, states, errors };
+    return { received, states, errors, gathered, iceErrors };
   })()`,
     },
     sessionId,
@@ -150,6 +183,17 @@ try {
   if (result.exceptionDetails)
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
+  console.log(
+    "WebRTC connectivity result:",
+    JSON.stringify({
+      mode: useTurn
+        ? directIp
+          ? "TURN via configured server IP"
+          : "TURN via hostname"
+        : "direct",
+      ...data,
+    }),
+  );
   assert.deepEqual(data.errors, []);
   assert.deepEqual(data.states, ["connected", "connected"]);
   assert.ok(
