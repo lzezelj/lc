@@ -11,9 +11,10 @@ single-server design as production infrastructure for a large public service.
 
 ## Goals
 
-- Let one owner sign in with an allowlisted Google account.
+- Let one owner and a server-managed allowlist of Google accounts sign in.
 - Let the owner create temporary demo accounts and invite them to a server.
-- Persist servers, channels, memberships, and text messages.
+- Persist servers, channels, memberships, and text messages, with non-owner
+  accounts limited to three servers they create.
 - Deliver new messages and voice presence in real time.
 - Support direct two-person voice/video with native WebRTC.
 - Support group voice/video without requiring every participant to upload one
@@ -95,7 +96,7 @@ Next.js provides the React interface and server-side API routes. Its server
 responsibilities include:
 
 - Auth.js authentication and session validation.
-- Owner and server-membership authorization.
+- Owner, server-owner, and server-membership authorization.
 - Owner-authorized renaming of servers, channels, and managed demo users, plus
   authenticated self-service username changes.
 - Drizzle queries and transactions.
@@ -155,15 +156,20 @@ issues participant tokens scoped to a single `channel-{id}` room.
 
 ## Authentication and authorization
 
-### Owner login
+### Google login and allowlist
 
-The owner signs in through Google OAuth. Authentication succeeds only when
-Google reports a verified email matching `OWNER_EMAIL`. Auth.js uses a signed
-JWT session strategy, while linked OAuth account data is stored in PostgreSQL.
-Whenever the session is accessed, the JWT callback revalidates that the user
-still exists and is neither disabled nor expired. Invalid sessions return no
-session and Auth.js clears their session cookie. The browser refreshes its
-session state at least once per minute and whenever the window regains focus.
+Google authentication succeeds only when Google reports a verified email that
+matches `OWNER_EMAIL` or one of the comma-separated addresses in
+`ALLOWED_EMAILS`. Both variables are deployment configuration; there is no API
+or UI for changing the allowlist. The `OWNER_EMAIL` account retains the global
+`owner` role. Other allowlisted accounts receive the `member` role, can create
+and administer up to three servers they own, and cannot administer demo
+accounts. Auth.js uses a signed JWT session strategy, while linked OAuth
+account data is stored in PostgreSQL. Whenever the session is accessed, the
+JWT callback revalidates that the user still exists and is neither disabled nor
+expired. Invalid sessions return no session and Auth.js clears their session
+cookie. The browser refreshes its session state at least once per minute and
+whenever the window regains focus.
 
 ### Demo login
 
@@ -188,7 +194,9 @@ values as login credentials.
 
 The server never accepts a client-supplied author identity. API routes derive
 the user from the authenticated session and verify the relevant server or
-channel membership before reading or modifying data.
+channel membership before reading or modifying data. Server creators receive a
+server-owner membership and may administer only those servers; the global owner
+retains demo-account administration.
 
 Users may inspect and delete messages authored by their own account. The owner
 may do the same only for demo accounts that the owner created. Ordinary message
@@ -249,6 +257,12 @@ message remains stored and clients recover it when they reconnect or reload the
 latest history. Replies store the referenced message ID. Deletions follow the
 same API-to-signaling path as new messages, so connected channel subscribers
 replace the content immediately without polling.
+
+Channel history is fetched newest-first in cursor pages of 50 messages. The
+browser displays each page chronologically and requests the next 50 older
+messages only when the user selects the load-more control. The cursor contains
+the oldest message timestamp and ID, which makes pages stable when timestamps
+are shared and new messages arrive concurrently.
 
 ## Direct WebRTC call flow
 
@@ -370,6 +384,22 @@ client configuration such as `NEXT_PUBLIC_SIGNALING_URL` is intentionally
 embedded during the frontend build; credentials such as OAuth, database,
 signaling, and LiveKit secrets remain server-side.
 
+`ALLOWED_EMAILS` is also server-only configuration. It is a comma-separated
+Google-email allowlist in the local development `.env` and production
+`.env.production`; production Compose passes it only to the Next.js service.
+
+## Rate limiting
+
+The single Next.js instance keeps short-lived rate-limit counters in memory.
+Login starts are limited to 10 attempts per IP address per 15 minutes. Message
+creation is limited to 10 messages per authenticated user per 10 seconds.
+Server and channel changes are limited to 10 per user per hour, and demo-account
+administration is limited to 30 owner actions per hour. Signaling and LiveKit
+token issuance are limited to 30 requests per user per minute. Rejections use
+HTTP 429 and a `Retry-After` header. This prevents ordinary burst spam but is
+not shared across processes; a multi-instance deployment must move counters to
+Redis or an equivalent shared rate-limit store.
+
 ## Failure behavior
 
 - **Signaling interruption:** WebSocket clients reconnect and resubscribe. Text
@@ -415,6 +445,8 @@ application-level owner dashboard yet.
   issued. Administrative changes actively close sockets, but purely time-based
   expiry is enforced when the session/token is next refreshed.
 - Monitoring is mostly manual.
+- Rate-limit counters are local to one Next.js process and reset on restart;
+  they are not suitable for horizontally scaled application instances.
 - Demo-account expiry removes server access but intentionally retains the user
   and message records until an authorized user explicitly deletes messages or
   a later account-deletion workflow anonymizes them.

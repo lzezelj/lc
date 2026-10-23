@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { channels, serverMembers } from "../../../../../db/schema";
+import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,18 @@ export async function POST(
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const rateLimit = checkRateLimit(
+    `livekit-token:${session.user.id}`,
+    rateLimits.signalingToken,
+  );
+  if (!rateLimit.allowed)
+    return NextResponse.json(
+      { error: "Too many connection attempts. Please try again later." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
 
   const [channel] = await db
     .select({ id: channels.id, serverId: channels.serverId })

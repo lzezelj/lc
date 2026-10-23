@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { channels, serverMembers } from "../../../../../db/schema";
+import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
 
 async function membership(userId: string, serverId: string) {
   const [result] = await db
@@ -39,6 +40,18 @@ export async function POST(
   const member = session && (await membership(session.user.id, serverId));
   if (!session || member?.role !== "owner")
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const rateLimit = checkRateLimit(
+    `server-mutation:${session.user.id}`,
+    rateLimits.serverMutation,
+  );
+  if (!rateLimit.allowed)
+    return NextResponse.json(
+      { error: "Too many server changes. Please try again later." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
   const body = (await request.json()) as {
     name?: string;
     type?: "text" | "voice_direct" | "voice_group";

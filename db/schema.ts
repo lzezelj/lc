@@ -11,7 +11,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-export const userRole = pgEnum("user_role", ["owner", "demo"]);
+export const userRole = pgEnum("user_role", ["owner", "member", "demo"]);
 export const serverRole = pgEnum("server_role", ["owner", "member"]);
 export const channelType = pgEnum("channel_type", [
   "text",
@@ -23,7 +23,7 @@ export const users = pgTable(
   "users",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    role: userRole("role").default("owner").notNull(),
+    role: userRole("role").default("member").notNull(),
     name: text("name").notNull(),
     email: text("email"),
     emailVerified: timestamp("email_verified", { withTimezone: true }),

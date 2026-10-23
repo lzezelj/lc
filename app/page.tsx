@@ -108,6 +108,11 @@ export default function Home() {
   const [deleteMessagesPending, setDeleteMessagesPending] = useState(false);
   const [returnToDemoManager, setReturnToDemoManager] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [nextMessageCursor, setNextMessageCursor] = useState<{
+    beforeCreatedAt: string;
+    beforeId: string;
+  } | null>(null);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [messageMenu, setMessageMenu] = useState<{
     message: ChatMessage;
@@ -317,9 +322,22 @@ export default function Home() {
         if (!response.ok) throw new Error(apiErrorMessage(data));
         return data;
       })
-      .then((data) => {
-        if (!Array.isArray(data)) return;
-        setMessages(data.map(toChatMessage));
+      .then((data: unknown) => {
+        if (
+          !data ||
+          typeof data !== "object" ||
+          !Array.isArray((data as { messages?: unknown }).messages)
+        )
+          return;
+        const page = data as {
+          messages: Parameters<typeof toChatMessage>[0][];
+          nextCursor: {
+            beforeCreatedAt: string;
+            beforeId: string;
+          } | null;
+        };
+        setMessages(page.messages.map(toChatMessage));
+        setNextMessageCursor(page.nextCursor);
       })
       .catch((error: unknown) =>
         setErrorMessage(
@@ -329,6 +347,34 @@ export default function Home() {
         ),
       );
   }, [channels, selectedChannelId]);
+
+  async function loadMoreMessages() {
+    if (!selectedChannelId || !nextMessageCursor || loadingMoreMessages) return;
+    setLoadingMoreMessages(true);
+    try {
+      const parameters = new URLSearchParams(nextMessageCursor);
+      const response = await fetch(
+        `/api/channels/${selectedChannelId}/messages?${parameters}`,
+      );
+      const data = await readJsonResponse<{
+        messages?: Parameters<typeof toChatMessage>[0][];
+        nextCursor?: { beforeCreatedAt: string; beforeId: string } | null;
+      }>(response);
+      if (!response.ok) throw new Error(apiErrorMessage(data));
+      const messageRows = data.messages;
+      if (!Array.isArray(messageRows)) return;
+      setMessages((current) => [...messageRows.map(toChatMessage), ...current]);
+      setNextMessageCursor(data.nextCursor ?? null);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Older messages could not be loaded.",
+      );
+    } finally {
+      setLoadingMoreMessages(false);
+    }
+  }
 
   useEffect(() => {
     const selected = channels.find(
@@ -1503,6 +1549,9 @@ export default function Home() {
   );
   const displayedChannel =
     callViewOpen && activeVoiceChannel ? activeVoiceChannel : selectedChannel;
+  const isSelectedServerOwner = members.some(
+    (member) => member.id === session?.user.id && member.role === "owner",
+  );
 
   if (authStatus !== "authenticated" || !serversLoaded) {
     return (
@@ -1518,11 +1567,30 @@ export default function Home() {
       <main className="noServerPage">
         <section>
           <div className="workspaceLogo">LC</div>
-          <h1>No server access</h1>
-          <p>
-            Unfortunately, you currently don&apos;t have access to any servers.
-            Please contact the owner.
-          </p>
+          <h1>No servers yet</h1>
+          {session.user.role === "demo" ? (
+            <p>
+              Unfortunately, you currently don&apos;t have access to any
+              servers. Please contact the owner.
+            </p>
+          ) : (
+            <>
+              <p>Create your first server to get started.</p>
+              <form onSubmit={createServer}>
+                <label>
+                  Server name
+                  <input
+                    autoFocus
+                    maxLength={60}
+                    required
+                    value={formName}
+                    onChange={(event) => setFormName(event.target.value)}
+                  />
+                </label>
+                <button type="submit">Create server</button>
+              </form>
+            </>
+          )}
           <button onClick={() => void signOut({ callbackUrl: "/login" })}>
             Log out
           </button>
@@ -1560,7 +1628,7 @@ export default function Home() {
             </span>
           </div>
         ))}
-        {session.user.role === "owner" && (
+        {session.user.role !== "demo" && (
           <button
             className="workspaceButton"
             aria-label="Create server"
@@ -1576,7 +1644,7 @@ export default function Home() {
             {servers.find((server) => server.id === selectedServerId)?.name ??
               "LC"}
           </strong>
-          {session.user.role === "owner" && selectedServerId && (
+          {isSelectedServerOwner && selectedServerId && (
             <span className="headerActions">
               <button
                 onClick={() => {
@@ -1618,7 +1686,7 @@ export default function Home() {
                 >
                   {channel.name}
                 </button>
-                {session.user.role === "owner" && (
+                {isSelectedServerOwner && (
                   <button
                     className="renameChannel"
                     aria-label={`Rename ${channel.name}`}
@@ -1648,7 +1716,7 @@ export default function Home() {
                       <PingIndicator ping={channelPing[channel.id]} />
                     )}
                 </button>
-                {session.user.role === "owner" && (
+                {isSelectedServerOwner && (
                   <button
                     className="renameChannel"
                     aria-label={`Rename ${channel.name}`}
@@ -1966,6 +2034,15 @@ export default function Home() {
         {selectedChannel?.type === "text" && !callViewOpen && (
           <section className="chat">
             <div className="chatLog">
+              {nextMessageCursor && (
+                <button
+                  type="button"
+                  onClick={() => void loadMoreMessages()}
+                  disabled={loadingMoreMessages}
+                >
+                  {loadingMoreMessages ? "Loading…" : "Load 50 older messages"}
+                </button>
+              )}
               {messages.length === 0 && (
                 <p className="empty">
                   {selectedChannelId
@@ -2048,8 +2125,7 @@ export default function Home() {
             className="member online"
             key={member.id}
             onContextMenu={(event) => {
-              if (session.user.role !== "owner" || member.role === "owner")
-                return;
+              if (!isSelectedServerOwner || member.role === "owner") return;
               event.preventDefault();
               setMemberMenu({
                 member,
@@ -2073,8 +2149,7 @@ export default function Home() {
             className="member offline"
             key={member.id}
             onContextMenu={(event) => {
-              if (session.user.role !== "owner" || member.role === "owner")
-                return;
+              if (!isSelectedServerOwner || member.role === "owner") return;
               event.preventDefault();
               setMemberMenu({
                 member,

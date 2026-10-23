@@ -14,6 +14,26 @@ import {
   users,
 } from "./db/schema";
 
+function normalizedEmails(value: string | undefined) {
+  return new Set(
+    (value ?? "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function isOwnerEmail(email: string) {
+  return email === process.env.OWNER_EMAIL?.trim().toLowerCase();
+}
+
+function isAllowedGoogleEmail(email: string) {
+  return (
+    isOwnerEmail(email) ||
+    normalizedEmails(process.env.ALLOWED_EMAILS).has(email)
+  );
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: DrizzleAdapter(db, {
     usersTable: users,
@@ -67,17 +87,28 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
-    async signIn({ account, profile }) {
+    async signIn({ account, profile, user }) {
       if (account?.provider !== "google") return true;
       const googleProfile = profile as {
         email?: string;
         email_verified?: boolean;
       };
-      return Boolean(
-        googleProfile.email_verified &&
-        googleProfile.email?.toLowerCase() ===
-          process.env.OWNER_EMAIL?.toLowerCase(),
-      );
+      const email = googleProfile.email?.trim().toLowerCase();
+      if (
+        !googleProfile.email_verified ||
+        !email ||
+        !isAllowedGoogleEmail(email)
+      ) {
+        return false;
+      }
+      if (!user.id) return false;
+      const role = isOwnerEmail(email) ? "owner" : "member";
+      await db
+        .update(users)
+        .set({ role, updatedAt: new Date() })
+        .where(eq(users.id, user.id));
+      user.role = role;
+      return true;
     },
     async jwt({ token, user }) {
       if (user?.id) {

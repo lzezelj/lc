@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
@@ -9,6 +9,7 @@ import {
   serverMembers,
   users,
 } from "../../../../../db/schema";
+import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
 
 const repliedMessages = alias(messages, "replied_messages");
 const repliedAuthors = alias(users, "replied_authors");
@@ -23,13 +24,29 @@ async function canAccess(userId: string, channelId: string) {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ channelId: string }> },
 ) {
   const session = await auth();
   const { channelId } = await params;
   if (!session || !(await canAccess(session.user.id, channelId)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const url = new URL(request.url);
+  const beforeCreatedAt = url.searchParams.get("beforeCreatedAt");
+  const beforeId = url.searchParams.get("beforeId");
+  const cursorDate = beforeCreatedAt ? new Date(beforeCreatedAt) : null;
+  if (
+    (beforeCreatedAt || beforeId) &&
+    (!beforeCreatedAt ||
+      !beforeId ||
+      !cursorDate ||
+      Number.isNaN(cursorDate.getTime()))
+  )
+    return NextResponse.json(
+      { error: "Invalid message cursor" },
+      { status: 400 },
+    );
+  const pageSize = 50;
   const result = await db
     .select({
       id: messages.id,
@@ -42,10 +59,25 @@ export async function GET(
     })
     .from(messages)
     .innerJoin(users, eq(users.id, messages.authorId))
-    .where(eq(messages.channelId, channelId))
+    .where(
+      and(
+        eq(messages.channelId, channelId),
+        cursorDate && beforeId
+          ? or(
+              lt(messages.createdAt, cursorDate),
+              and(
+                eq(messages.createdAt, cursorDate),
+                lt(messages.id, beforeId),
+              ),
+            )
+          : undefined,
+      ),
+    )
     .orderBy(desc(messages.createdAt))
-    .limit(100);
-  const replyIds = result.flatMap((message) =>
+    .limit(pageSize + 1);
+  const hasMore = result.length > pageSize;
+  const page = hasMore ? result.slice(0, pageSize) : result;
+  const replyIds = page.flatMap((message) =>
     message.replyToId ? [message.replyToId] : [],
   );
   const replyRows = replyIds.length
@@ -73,8 +105,9 @@ export async function GET(
       },
     ]),
   );
-  return NextResponse.json(
-    result.reverse().map((message) => ({
+  const oldestMessage = page.at(-1);
+  return NextResponse.json({
+    messages: page.reverse().map((message) => ({
       ...message,
       text: message.deletedAt ? "Deleted message" : message.text,
       deleted: Boolean(message.deletedAt),
@@ -82,7 +115,14 @@ export async function GET(
         ? (replies.get(message.replyToId) ?? null)
         : null,
     })),
-  );
+    nextCursor:
+      hasMore && oldestMessage
+        ? {
+            beforeCreatedAt: oldestMessage.createdAt.toISOString(),
+            beforeId: oldestMessage.id,
+          }
+        : null,
+  });
 }
 
 export async function POST(
@@ -93,6 +133,18 @@ export async function POST(
   const { channelId } = await params;
   if (!session || !(await canAccess(session.user.id, channelId)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const rateLimit = checkRateLimit(
+    `message:${session.user.id}`,
+    rateLimits.message,
+  );
+  if (!rateLimit.allowed)
+    return NextResponse.json(
+      { error: "You are sending messages too quickly." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
   const body = (await request.json()) as { text?: string; replyToId?: string };
   const text = body.text?.trim();
   if (!text || text.length > 4000)

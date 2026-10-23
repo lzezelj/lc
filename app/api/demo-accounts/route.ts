@@ -12,6 +12,18 @@ import {
   users,
 } from "../../../db/schema";
 import { disconnectUserEverywhere } from "../../../server/disconnect-user";
+import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
+
+function adminRateLimit(userId: string) {
+  return checkRateLimit(`admin-mutation:${userId}`, rateLimits.adminMutation);
+}
+
+function rateLimitedResponse(retryAfterSeconds: number) {
+  return NextResponse.json(
+    { error: "Too many account changes. Please try again later." },
+    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+  );
+}
 
 export async function GET() {
   const session = await auth();
@@ -95,6 +107,9 @@ export async function POST(request: Request) {
   if (!session || session.user.role !== "owner") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+  const rateLimit = adminRateLimit(session.user.id);
+  if (!rateLimit.allowed)
+    return rateLimitedResponse(rateLimit.retryAfterSeconds);
   const body = (await request.json()) as { name?: string; serverId?: string };
   const name = body.name?.trim();
   const serverId = body.serverId;
@@ -152,6 +167,9 @@ export async function PATCH(request: Request) {
   if (!session || session.user.role !== "owner") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+  const rateLimit = adminRateLimit(session.user.id);
+  if (!rateLimit.allowed)
+    return rateLimitedResponse(rateLimit.retryAfterSeconds);
   const body = (await request.json()) as {
     demoUserId?: string;
     action?: string;
@@ -300,6 +318,9 @@ export async function DELETE(request: Request) {
   const session = await auth();
   if (!session || session.user.role !== "owner")
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const rateLimit = adminRateLimit(session.user.id);
+  if (!rateLimit.allowed)
+    return rateLimitedResponse(rateLimit.retryAfterSeconds);
   const body = (await request.json()) as {
     demoUserId?: string;
     deleteMessages?: boolean;

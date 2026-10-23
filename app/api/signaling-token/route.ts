@@ -4,12 +4,25 @@ import { auth } from "../../../auth";
 import { db } from "../../../db";
 import { channels, serverMembers } from "../../../db/schema";
 import { createSignalingToken } from "../../../server/signaling-auth.mjs";
+import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
 
 export async function POST() {
   const session = await auth();
   if (!session?.user.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const rateLimit = checkRateLimit(
+    `signaling-token:${session.user.id}`,
+    rateLimits.signalingToken,
+  );
+  if (!rateLimit.allowed)
+    return NextResponse.json(
+      { error: "Too many connection attempts. Please try again later." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
   const secret = process.env.AUTH_SECRET;
   if (!secret) {
     return NextResponse.json(

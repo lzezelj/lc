@@ -14,7 +14,9 @@ export default function LoginPage() {
           LC is an active portfolio project and may change while it is being
           developed.
         </p>
-        <p>Owner access is restricted to the configured Google account.</p>
+        <p>
+          Access is restricted to Google accounts allowed by the server owner.
+        </p>
         <button onClick={() => signIn("google", { callbackUrl: "/" })}>
           Continue with Google
         </button>

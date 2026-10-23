@@ -10,7 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "format": "eslint . --fix",
-    "test": "node --test tests/signaling.test.mjs tests/auth-account.test.mjs",
+    "test": "node --test tests/signaling.test.mjs tests/auth-account.test.mjs tests/rate-limit.test.mjs",
     "test:db": "node --test tests/database.test.mjs",
     "test:all": "npm run test && npm run test:db",
     "db:generate": "drizzle-kit generate",
