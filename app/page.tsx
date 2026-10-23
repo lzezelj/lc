@@ -5,6 +5,11 @@ import { signOut, useSession } from "next-auth/react";
 import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
 import { DeviceMenu, MediaDeviceOption, MediaIcon } from "./device-menu";
 import { GroupCall } from "./group-call";
+import {
+  microphoneProcessing,
+  monitorVoiceActivity,
+  prepareVoiceActivity,
+} from "./voice-activity";
 
 type ChatMessage = {
   id: string;
@@ -64,6 +69,7 @@ type VoiceParticipant = {
   speaking: boolean;
 };
 type CallDiagnostics = {
+  microphone?: string;
   status: string;
   route: string;
   protocol: string;
@@ -1074,7 +1080,7 @@ export default function Home() {
     stopSpeechMonitor.current?.();
     const audioTrack = stream.current?.getAudioTracks()[0];
     if (!audioTrack) return;
-    stopSpeechMonitor.current = monitorSpeaking(audioTrack, (speaking) => {
+    stopSpeechMonitor.current = monitorVoiceActivity(audioTrack, (speaking) => {
       setDirectLocalSpeaking(speaking);
       setDirectParticipantSpeaking(session?.user.id, speaking);
       send({
@@ -1168,7 +1174,16 @@ export default function Home() {
           [activeVoiceChannelId]: ping,
         }));
       },
-      setCallDiagnostics,
+      (diagnostics) => {
+        const track = stream.current?.getAudioTracks()[0];
+        const settings = track?.getSettings();
+        setCallDiagnostics({
+          ...diagnostics,
+          microphone: track
+            ? `${track.readyState}${track.muted ? " / capture interrupted" : ""}${!track.enabled ? " / muted" : ""} / ${settings?.sampleRate ?? "?"} Hz`
+            : "unavailable",
+        });
+      },
     );
     return peer;
   }
@@ -1360,6 +1375,7 @@ export default function Home() {
   }
 
   async function changeActiveMicrophone(deviceId: string) {
+    prepareVoiceActivity();
     selectMicrophone(deviceId);
     if (!joined || !stream.current) return;
     try {
@@ -1369,6 +1385,7 @@ export default function Home() {
       const nextTrack = replacement.getAudioTracks()[0];
       nextTrack.contentHint = "speech";
       const oldTrack = stream.current.getAudioTracks()[0];
+      nextTrack.enabled = oldTrack?.enabled ?? !muted;
       const sender = connection.current
         ?.getSenders()
         .find((candidate) => candidate.track?.kind === "audio");
@@ -1381,11 +1398,11 @@ export default function Home() {
         oldTrack.stop();
       }
       stream.current.addTrack(nextTrack);
-      setMuted(false);
+      setMuted(!nextTrack.enabled);
       startDirectSpeechMonitor();
       send({
         type: "media-state",
-        muted: false,
+        muted: !nextTrack.enabled,
         camera: !cameraOff,
         screen: false,
         speaking: false,
@@ -2175,6 +2192,7 @@ export default function Home() {
 
   function selectVoiceChannel(channel: Channel) {
     if (activeVoiceChannelId === channel.id) return;
+    prepareVoiceActivity();
     prepareVoiceSounds();
     leaveRoom();
     setActiveVoiceChannelId(channel.id);
@@ -2550,6 +2568,7 @@ export default function Home() {
                   devices={microphones}
                   selectedId={microphoneId}
                   onAction={toggleAudio}
+                  onRestart={() => void changeActiveMicrophone(microphoneId)}
                   onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
                 />
                 <DeviceMenu
@@ -3071,6 +3090,7 @@ export default function Home() {
                     devices={microphones}
                     selectedId={microphoneId}
                     onAction={toggleAudio}
+                    onRestart={() => void changeActiveMicrophone(microphoneId)}
                     onSelect={(deviceId) =>
                       void changeActiveMicrophone(deviceId)
                     }
@@ -4254,9 +4274,7 @@ function audioConstraints(deviceId: string): MediaTrackConstraints {
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
     channelCount: { ideal: 1 },
     sampleRate: { ideal: 48_000 },
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
+    ...microphoneProcessing(),
   };
 }
 
@@ -4356,61 +4374,6 @@ function tuneOpusDescription(
     );
   }
   return { ...description, sdp: lines.join("\r\n") };
-}
-
-function monitorSpeaking(
-  audioTrack: MediaStreamTrack,
-  onChange: (speaking: boolean) => void,
-) {
-  const context = new AudioContext();
-  void context.resume();
-  const source = context.createMediaStreamSource(new MediaStream([audioTrack]));
-  const analyser = context.createAnalyser();
-  analyser.fftSize = 512;
-  analyser.smoothingTimeConstant = 0.15;
-  const samples = new Uint8Array(analyser.fftSize);
-  let animationFrame = 0;
-  let lastSpeaking = false;
-  let lastLoudAt = 0;
-  let noiseFloor = 0.004;
-  source.connect(analyser);
-
-  const sample = () => {
-    analyser.getByteTimeDomainData(samples);
-    let sum = 0;
-    let peak = 0;
-    for (const value of samples) {
-      const normalized = (value - 128) / 128;
-      sum += normalized * normalized;
-      peak = Math.max(peak, Math.abs(normalized));
-    }
-    const level = Math.sqrt(sum / samples.length);
-    const threshold = Math.max(
-      0.0035,
-      noiseFloor * (lastSpeaking ? 1.45 : 1.8),
-    );
-    const loud =
-      (level > threshold || peak > threshold * 2.5) && audioTrack.enabled;
-    if (!lastSpeaking && !loud) {
-      noiseFloor = noiseFloor * 0.96 + Math.min(level, 0.025) * 0.04;
-    }
-    if (loud) lastLoudAt = performance.now();
-    const speaking =
-      loud || (lastSpeaking && performance.now() - lastLoudAt < 220);
-    if (speaking !== lastSpeaking) {
-      lastSpeaking = speaking;
-      onChange(speaking);
-    }
-    animationFrame = requestAnimationFrame(sample);
-  };
-  sample();
-
-  return () => {
-    cancelAnimationFrame(animationFrame);
-    source.disconnect();
-    void context.close();
-    if (lastSpeaking) onChange(false);
-  };
 }
 
 function monitorPeerVideo(
@@ -4611,6 +4574,9 @@ function DiagnosticsIndicator({
             <span>Connection: {diagnostics.status}</span>
             <span>Protocol: {diagnostics.protocol}</span>
             <span>Codec: {diagnostics.codec}</span>
+            {diagnostics.microphone && (
+              <span>Microphone: {diagnostics.microphone}</span>
+            )}
             <span>Audio: {diagnostics.audioBitrate}</span>
             <span>Jitter: {diagnostics.jitterMs ?? "—"} ms</span>
             <span>Packet loss: {diagnostics.packetLoss}</span>

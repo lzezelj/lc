@@ -11,6 +11,7 @@ type DeviceMenuProps = {
   selectedId: string;
   onAction: () => void;
   onSelect: (deviceId: string) => void;
+  onRestart?: () => void;
 };
 
 export function DeviceMenu({
@@ -20,8 +21,10 @@ export function DeviceMenu({
   selectedId,
   onAction,
   onSelect,
+  onRestart,
 }: DeviceMenuProps) {
   const [open, setOpen] = useState(false);
+  const [processing, setProcessing] = useState(true);
   const menu = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -66,12 +69,44 @@ export function DeviceMenu({
         className="deviceMenuTrigger"
         aria-label={`Choose ${kind}`}
         aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          setProcessing(
+            localStorage.getItem("lc.microphoneProcessing") !== "off",
+          );
+          setOpen((current) => !current);
+        }}
       >
         ▴
       </button>
       {open && (
         <div className="deviceDropdown">
+          {onRestart && (
+            <>
+              <button
+                onClick={() => {
+                  onRestart();
+                  setOpen(false);
+                }}
+              >
+                Restart microphone
+              </button>
+              <button
+                onClick={() => {
+                  const next =
+                    localStorage.getItem("lc.microphoneProcessing") === "off";
+                  localStorage.setItem(
+                    "lc.microphoneProcessing",
+                    next ? "on" : "off",
+                  );
+                  setProcessing(next);
+                  onRestart();
+                  setOpen(false);
+                }}
+              >
+                {processing ? "Disable" : "Enable"} microphone processing
+              </button>
+            </>
+          )}
           <button
             className={!selectedId ? "selected" : ""}
             onClick={() => {

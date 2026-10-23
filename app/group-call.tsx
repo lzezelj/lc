@@ -8,9 +8,15 @@ import {
   Room,
   RoomEvent,
   Track,
+  TrackEvent,
 } from "livekit-client";
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { playVoiceSound } from "./call-sounds";
+import {
+  microphoneProcessing,
+  monitorVoiceActivity,
+  prepareVoiceActivity,
+} from "./voice-activity";
 
 type TokenResponse = {
   server_url?: string;
@@ -25,6 +31,7 @@ type RemoteMedia = {
 };
 
 type GroupCallDiagnostics = {
+  microphone?: string;
   status: string;
   route: string;
   protocol: string;
@@ -160,6 +167,38 @@ export function GroupCall({
     onConnectionChangeRef.current = onConnectionChange;
   }, [onConnectionChange]);
 
+  function startSpeakingMonitor(room: Room) {
+    stopSpeakingMonitor.current?.();
+    stopSpeakingMonitor.current = null;
+    const track = room.localParticipant.getTrackPublication(
+      Track.Source.Microphone,
+    )?.track;
+    if (!track) return;
+    let stopActivity: (() => void) | undefined;
+    const bind = () => {
+      stopActivity?.();
+      stopActivity = monitorVoiceActivity(
+        track.mediaStreamTrack,
+        (speaking) => {
+          localSpeaking.current = speaking;
+          onMediaStateChange({
+            muted: mutedRef.current,
+            camera: !cameraOffRef.current,
+            screen: false,
+            speaking,
+          });
+        },
+        () => !mutedRef.current && !track.isMuted,
+      );
+    };
+    bind();
+    track.on(TrackEvent.Restarted, bind);
+    stopSpeakingMonitor.current = () => {
+      track.off(TrackEvent.Restarted, bind);
+      stopActivity?.();
+    };
+  }
+
   function publishPresence(room: Room, connected: boolean) {
     const names = connected
       ? [
@@ -235,6 +274,7 @@ export function GroupCall({
 
   async function join() {
     if (joining || joined || roomRef.current) return;
+    prepareVoiceActivity();
     setJoining(true);
     setStatus("Requesting a group media token...");
     const response = await fetch(`/api/channels/${channelId}/livekit-token`, {
@@ -260,6 +300,7 @@ export function GroupCall({
     roomRef.current = room;
     const updatePresence = () => publishPresence(room, true);
     room
+      .on(RoomEvent.LocalTrackPublished, () => startSpeakingMonitor(room))
       .on(
         RoomEvent.TrackSubscribed,
         (
@@ -338,25 +379,7 @@ export function GroupCall({
           true,
           voiceCaptureOptions(microphoneId),
         );
-        const track = room.localParticipant.getTrackPublication(
-          Track.Source.Microphone,
-        )?.track?.mediaStreamTrack;
-        if (track) {
-          stopSpeakingMonitor.current?.();
-          stopSpeakingMonitor.current = monitorGroupSpeaking(
-            track,
-            (speaking) => {
-              if (localSpeaking.current === speaking) return;
-              localSpeaking.current = speaking;
-              onMediaStateChange({
-                muted: mutedRef.current,
-                camera: !cameraOffRef.current,
-                screen: false,
-                speaking,
-              });
-            },
-          );
-        }
+        startSpeakingMonitor(room);
       } catch {
         setMuted(true);
         mutedRef.current = true;
@@ -389,6 +412,7 @@ export function GroupCall({
       );
       setMuted((current) => !current);
       mutedRef.current = !muted;
+      startSpeakingMonitor(room);
       onMediaStateChange({
         muted: !muted,
         camera: !cameraOff,
@@ -449,11 +473,34 @@ export function GroupCall({
   async function changeMicrophone(deviceId: string) {
     onMicrophoneChange(deviceId);
     const room = roomRef.current;
-    if (!room || !deviceId) return;
+    if (!room) return;
     try {
-      await room.switchActiveDevice("audioinput", deviceId, true);
+      await room.switchActiveDevice("audioinput", deviceId || "default", true);
+      startSpeakingMonitor(room);
     } catch {
       onError("The selected microphone could not be opened.");
+    }
+  }
+
+  async function restartMicrophone() {
+    prepareVoiceActivity();
+    const room = roomRef.current;
+    if (!room) return;
+    try {
+      const track = room.localParticipant.getTrackPublication(
+        Track.Source.Microphone,
+      )?.audioTrack;
+      if (track) await track.restartTrack(voiceCaptureOptions(microphoneId));
+      else
+        await room.localParticipant.setMicrophoneEnabled(
+          true,
+          voiceCaptureOptions(microphoneId),
+        );
+      startSpeakingMonitor(room);
+    } catch {
+      onError(
+        "Microphone could not be restarted. Check the device and browser permission.",
+      );
     }
   }
 
@@ -542,6 +589,7 @@ export function GroupCall({
               devices={microphones}
               selectedId={microphoneId}
               onAction={() => void toggleAudio()}
+              onRestart={() => void restartMicrophone()}
               onSelect={(deviceId) => void changeMicrophone(deviceId)}
             />
             <DeviceMenu
@@ -572,49 +620,7 @@ function voiceCaptureOptions(deviceId: string) {
     ...(deviceId ? { deviceId } : {}),
     channelCount: 1,
     sampleRate: 48_000,
-    echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: true,
-  };
-}
-
-function monitorGroupSpeaking(
-  track: MediaStreamTrack,
-  onChange: (speaking: boolean) => void,
-) {
-  const context = new AudioContext();
-  void context.resume();
-  const source = context.createMediaStreamSource(new MediaStream([track]));
-  const analyser = context.createAnalyser();
-  analyser.fftSize = 512;
-  source.connect(analyser);
-  const samples = new Uint8Array(analyser.fftSize);
-  let frame = 0;
-  let active = false;
-  let lastLoud = 0;
-  let floor = 0.004;
-  const sample = () => {
-    analyser.getByteTimeDomainData(samples);
-    let power = 0;
-    for (const value of samples) power += ((value - 128) / 128) ** 2;
-    const level = Math.sqrt(power / samples.length);
-    const loud =
-      track.enabled && level > Math.max(0.0035, floor * (active ? 1.45 : 1.8));
-    if (!active && !loud) floor = floor * 0.96 + Math.min(level, 0.025) * 0.04;
-    if (loud) lastLoud = performance.now();
-    const next = loud || (active && performance.now() - lastLoud < 220);
-    if (next !== active) {
-      active = next;
-      onChange(next);
-    }
-    frame = requestAnimationFrame(sample);
-  };
-  sample();
-  return () => {
-    cancelAnimationFrame(frame);
-    source.disconnect();
-    void context.close();
-    if (active) onChange(false);
+    ...microphoneProcessing(),
   };
 }
 
@@ -781,6 +787,14 @@ function monitorRoomDiagnostics(
 
       const packetTotal = received + lost;
       const nextDiagnostics: GroupCallDiagnostics = {
+        microphone: (() => {
+          const track = room.localParticipant.getTrackPublication(
+            Track.Source.Microphone,
+          )?.track?.mediaStreamTrack;
+          return track
+            ? `${track.readyState}${track.muted ? " / capture interrupted" : ""}${!track.enabled ? " / muted" : ""} / ${track.getSettings().sampleRate ?? "?"} Hz`
+            : "unavailable";
+        })(),
         status: room.state,
         route: localCandidate
           ? `${String(localCandidate.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`

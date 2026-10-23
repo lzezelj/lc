@@ -345,6 +345,17 @@ signaling connection so every channel observer sees the same prompt indicator.
 Decoded-audio health remains available through receiver diagnostics; using the
 decoded output to drive highlighting would add the receive jitter-buffer delay.
 
+Direct and group calls share a floating-point audio detector and a reusable
+AudioContext unlocked during a call gesture. Its silent output connection keeps
+analysis active on mobile browsers without playing microphone audio. Capture
+mute/end and context suspension clear the light immediately; group track
+restarts and device changes reattach the detector. Microphone menus expose a
+restart action and a persistent processing toggle for comparing browser echo
+cancellation, noise suppression, and gain control during audio troubleshooting.
+Diagnostics include actual capture state and sample rate. Browser/device
+crackling has not been verified resolved; low lifetime packet loss alone does
+not rule out brief network loss or capture/output distortion.
+
 Direct server voice rooms remain joined when the other participant leaves. The
 remaining browser keeps its signaling room and local media, discards the stale
 peer connection, and negotiates a new peer connection when another participant
