@@ -946,19 +946,19 @@ export default function Home() {
           message.roomId &&
           Array.isArray(message.participants)
         ) {
-          setVoicePresence((current) => {
-            const previous = current[message.roomId!] ?? [];
-            const participants = message.participants!.map(normalizePresence);
-            if (message.roomId === directRoomId.current) {
-              participants.forEach((participant) => {
-                const existing = previous.find(
-                  (candidate) => candidate.userId === participant.userId,
-                );
-                participant.speaking = existing?.speaking ?? false;
-              });
-            }
-            return { ...current, [message.roomId!]: participants };
-          });
+          const participants = message.participants.map(normalizePresence);
+          if (message.roomId === directRoomId.current) {
+            setDirectRemoteSpeaking(
+              participants.some(
+                (participant) =>
+                  participant.userId !== currentUserId && participant.speaking,
+              ),
+            );
+          }
+          setVoicePresence((current) => ({
+            ...current,
+            [message.roomId!]: participants,
+          }));
         }
         if (
           message.type === "online-presence" &&
@@ -1130,18 +1130,6 @@ export default function Home() {
     peer.ontrack = (event) => {
       if (event.track.kind === "audio") {
         preferStableAudio(event.receiver);
-        stopRemoteSpeechMonitor.current?.();
-        stopRemoteSpeechMonitor.current = monitorSpeaking(
-          event.track,
-          (speaking) => {
-            setDirectRemoteSpeaking(speaking);
-            setDirectParticipantSpeaking(
-              friendCallPartnerId.current || undefined,
-              speaking,
-              true,
-            );
-          },
-        );
       }
       if (remoteVideo.current) remoteVideo.current.srcObject = event.streams[0];
       if (event.track.kind === "video") {
@@ -4235,7 +4223,7 @@ async function preferResilientAudio(sender: RTCRtpSender) {
   const parameters = sender.getParameters();
   parameters.encodings ??= [{}];
   for (const encoding of parameters.encodings) {
-    encoding.maxBitrate = 32_000;
+    encoding.maxBitrate = 64_000;
   }
   try {
     await sender.setParameters(parameters);
@@ -4263,14 +4251,9 @@ function preferOpus(peer: RTCPeerConnection, sender: RTCRtpSender) {
 }
 
 function preferStableAudio(receiver: RTCRtpReceiver) {
-  const stableReceiver = receiver as RTCRtpReceiver & {
-    jitterBufferTarget?: number;
-  };
-  try {
-    stableReceiver.jitterBufferTarget = 200;
-  } catch {
-    // Browsers without configurable jitter buffers use their adaptive default.
-  }
+  // Keep the browser's adaptive jitter buffer. A fixed 200 ms target added
+  // avoidable latency and did not improve this connection's measured loss.
+  void receiver;
 }
 
 function tuneOpusDescription(
@@ -4287,8 +4270,8 @@ function tuneOpusDescription(
     stereo: "0",
     "sprop-stereo": "0",
     useinbandfec: "1",
-    usedtx: "1",
-    maxaveragebitrate: "32000",
+    usedtx: "0",
+    maxaveragebitrate: "64000",
   };
   const fmtpIndex = lines.findIndex((line) =>
     line.startsWith(`a=fmtp:${payload} `),
@@ -4339,13 +4322,19 @@ function monitorSpeaking(
   const sample = () => {
     analyser.getByteTimeDomainData(samples);
     let sum = 0;
+    let peak = 0;
     for (const value of samples) {
       const normalized = (value - 128) / 128;
       sum += normalized * normalized;
+      peak = Math.max(peak, Math.abs(normalized));
     }
     const level = Math.sqrt(sum / samples.length);
-    const threshold = Math.max(0.007, noiseFloor * (lastSpeaking ? 1.7 : 2.25));
-    const loud = level > threshold && audioTrack.enabled;
+    const threshold = Math.max(
+      0.0035,
+      noiseFloor * (lastSpeaking ? 1.45 : 1.8),
+    );
+    const loud =
+      (level > threshold || peak > threshold * 2.5) && audioTrack.enabled;
     if (!lastSpeaking && !loud) {
       noiseFloor = noiseFloor * 0.96 + Math.min(level, 0.025) * 0.04;
     }
@@ -4379,6 +4368,7 @@ function monitorPeerVideo(
     string,
     { bytes: number; timestamp: number }
   >();
+  let lastDiagnostics: CallDiagnostics | null = null;
   const interval = window.setInterval(async () => {
     try {
       const report = await peer.getStats();
@@ -4405,13 +4395,14 @@ function monitorPeerVideo(
         if (
           stat.type === "candidate-pair" &&
           stat.state === "succeeded" &&
-          (stat.nominated === true || selectedPair === undefined) &&
-          stat.currentRoundTripTime !== undefined
+          (stat.nominated === true || selectedPair === undefined)
         ) {
           selectedPair = stat;
-          const milliseconds = Math.round(stat.currentRoundTripTime * 1000);
-          ping = `${milliseconds} ms ping`;
-          onPing(milliseconds);
+          if (stat.currentRoundTripTime !== undefined) {
+            const milliseconds = Math.round(stat.currentRoundTripTime * 1000);
+            ping = `${milliseconds} ms ping`;
+            onPing(milliseconds);
+          }
         }
         if (
           stat.type === "inbound-rtp" &&
@@ -4448,8 +4439,9 @@ function monitorPeerVideo(
         values.push(`${direction} ${kbps} kbps${fps}`);
       });
       if (selectedPairId) {
-        selectedPair = report.get(selectedPairId) as
+        const transportPair = report.get(selectedPairId) as
           (RTCStats & Record<string, unknown>) | undefined;
+        if (transportPair) selectedPair = transportPair;
       }
       const localCandidate = selectedPair?.localCandidateId
         ? (report.get(String(selectedPair.localCandidateId)) as
@@ -4484,11 +4476,17 @@ function monitorPeerVideo(
         })
         .filter(Boolean)
         .join(" / ");
-      onDiagnostics({
+      const nextDiagnostics: CallDiagnostics = {
         status: peer.connectionState,
-        route: `${String(localCandidate?.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`,
-        protocol: String(localCandidate?.protocol ?? "unknown").toUpperCase(),
-        codec: String(codec?.mimeType ?? "unknown").replace("audio/", ""),
+        route: localCandidate
+          ? `${String(localCandidate.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`
+          : (lastDiagnostics?.route ?? "unknown → unknown"),
+        protocol: localCandidate?.protocol
+          ? String(localCandidate.protocol).toUpperCase()
+          : (lastDiagnostics?.protocol ?? "unknown"),
+        codec: codec?.mimeType
+          ? String(codec.mimeType).replace("audio/", "")
+          : (lastDiagnostics?.codec ?? "unknown"),
         jitterMs:
           inboundAudio?.jitter === undefined
             ? null
@@ -4499,21 +4497,31 @@ function monitorPeerVideo(
         concealedAudio: totalSamples
           ? `${((concealedSamples / totalSamples) * 100).toFixed(1)}%`
           : "0%",
-        audioBitrate: audioRates || "measuring…",
-      });
+        audioBitrate:
+          audioRates || lastDiagnostics?.audioBitrate || "measuring…",
+      };
+      lastDiagnostics = nextDiagnostics;
+      onDiagnostics(nextDiagnostics);
       onChange([...values, ping].filter(Boolean).join(" · "));
     } catch {
       onChange("");
-      onDiagnostics({
-        status: "statistics unavailable",
-        route: "unknown → unknown",
-        protocol: "unknown",
-        codec: "unknown",
-        jitterMs: null,
-        packetLoss: "unknown",
-        concealedAudio: "unknown",
-        audioBitrate: "unknown",
-      });
+      if (lastDiagnostics) {
+        onDiagnostics({
+          ...lastDiagnostics,
+          status: `${peer.connectionState} (stats delayed)`,
+        });
+      } else {
+        onDiagnostics({
+          status: "statistics unavailable",
+          route: "unknown → unknown",
+          protocol: "unknown",
+          codec: "unknown",
+          jitterMs: null,
+          packetLoss: "unknown",
+          concealedAudio: "unknown",
+          audioBitrate: "unknown",
+        });
+      }
     }
   }, 1000);
   return () => window.clearInterval(interval);

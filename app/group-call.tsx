@@ -654,6 +654,7 @@ function monitorRoomDiagnostics(
   onPing: (ping: number) => void,
 ) {
   const previousBytes = new Map<string, { bytes: number; timestamp: number }>();
+  let lastDiagnostics: GroupCallDiagnostics | null = null;
   const interval = window.setInterval(async () => {
     try {
       const reports: RTCStatsReport[] = [];
@@ -662,7 +663,6 @@ function monitorRoomDiagnostics(
       if (publisher) reports.push(publisher);
       if (subscriber) reports.push(subscriber);
 
-      let selectedPair: (RTCStats & Record<string, unknown>) | undefined;
       let localCandidate: (RTCStats & Record<string, unknown>) | undefined;
       let remoteCandidate: (RTCStats & Record<string, unknown>) | undefined;
       let codec = "unknown";
@@ -674,6 +674,7 @@ function monitorRoomDiagnostics(
       const rates: string[] = [];
 
       for (const report of reports) {
+        let selectedPair: (RTCStats & Record<string, unknown>) | undefined;
         let selectedPairId = "";
         report.forEach((raw) => {
           const stat = raw as RTCStats & Record<string, unknown>;
@@ -719,8 +720,9 @@ function monitorRoomDiagnostics(
           }
         });
         if (selectedPairId) {
-          selectedPair = report.get(selectedPairId) as
+          const transportPair = report.get(selectedPairId) as
             (RTCStats & Record<string, unknown>) | undefined;
+          if (transportPair) selectedPair = transportPair;
         }
         if (selectedPair) {
           localCandidate = selectedPair.localCandidateId
@@ -740,11 +742,15 @@ function monitorRoomDiagnostics(
       }
 
       const packetTotal = received + lost;
-      onChange({
+      const nextDiagnostics: GroupCallDiagnostics = {
         status: room.state,
-        route: `${String(localCandidate?.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`,
-        protocol: String(localCandidate?.protocol ?? "unknown").toUpperCase(),
-        codec,
+        route: localCandidate
+          ? `${String(localCandidate.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`
+          : (lastDiagnostics?.route ?? "unknown → unknown"),
+        protocol: localCandidate?.protocol
+          ? String(localCandidate.protocol).toUpperCase()
+          : (lastDiagnostics?.protocol ?? "unknown"),
+        codec: codec !== "unknown" ? codec : (lastDiagnostics?.codec ?? codec),
         jitterMs,
         packetLoss: packetTotal
           ? `${((lost / packetTotal) * 100).toFixed(1)}%`
@@ -752,19 +758,26 @@ function monitorRoomDiagnostics(
         concealedAudio: totalSamples
           ? `${((concealedSamples / totalSamples) * 100).toFixed(1)}%`
           : "0%",
-        audioBitrate: rates.join(" / ") || "measuring…",
-      });
+        audioBitrate:
+          rates.join(" / ") || lastDiagnostics?.audioBitrate || "measuring…",
+      };
+      lastDiagnostics = nextDiagnostics;
+      onChange(nextDiagnostics);
     } catch {
-      onChange({
-        status: "statistics unavailable",
-        route: "unknown → unknown",
-        protocol: "unknown",
-        codec: "unknown",
-        jitterMs: null,
-        packetLoss: "unknown",
-        concealedAudio: "unknown",
-        audioBitrate: "unknown",
-      });
+      if (lastDiagnostics) {
+        onChange({ ...lastDiagnostics, status: "connected (stats delayed)" });
+      } else {
+        onChange({
+          status: "statistics unavailable",
+          route: "unknown → unknown",
+          protocol: "unknown",
+          codec: "unknown",
+          jitterMs: null,
+          packetLoss: "unknown",
+          concealedAudio: "unknown",
+          audioBitrate: "unknown",
+        });
+      }
     }
   }, 1000);
   return () => window.clearInterval(interval);

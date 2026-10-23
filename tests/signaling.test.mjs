@@ -257,6 +257,39 @@ test("peers join, relay messages, and announce departure", async () => {
   assert.deepEqual(await peerLeft, { type: "peer-left" });
 });
 
+test("a direct-room peer remains joined and accepts a replacement peer", async () => {
+  const url = await startServer();
+  const remaining = await connect(url, "Remaining");
+  const leaving = await connect(url, "Leaving");
+
+  const remainingJoined = nextMessage(remaining);
+  remaining.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await remainingJoined;
+  const leavingJoined = nextMessage(leaving);
+  const firstPeerJoined = nextMessage(remaining);
+  leaving.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await leavingJoined;
+  await firstPeerJoined;
+
+  const peerLeft = nextMessage(remaining);
+  leaving.close();
+  assert.deepEqual(await peerLeft, { type: "peer-left" });
+
+  const replacement = await connect(url, "Replacement");
+  const replacementJoined = nextMessage(replacement);
+  const replacementAnnounced = nextMessage(remaining);
+  replacement.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  assert.deepEqual(await replacementJoined, {
+    type: "joined",
+    initiator: false,
+  });
+  assert.deepEqual(await replacementAnnounced, { type: "peer-joined" });
+
+  const relayed = nextMessage(remaining);
+  replacement.send(JSON.stringify({ type: "candidate", candidate: "fresh" }));
+  assert.deepEqual(await relayed, { type: "candidate", candidate: "fresh" });
+});
+
 test("room capacity is configurable and rejected peers never join", async () => {
   const url = await startServer({ maxPeers: 1 });
   const first = await connect(url);

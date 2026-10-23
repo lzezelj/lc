@@ -332,20 +332,18 @@ when ICE selects a peer-to-peer route. The in-call diagnostics identify whether
 the selected local candidate is `host`, `srflx`, or `relay` and report audio
 jitter, packet loss, concealment, codec, bitrate, and transport protocol.
 
-Direct-call audio prefers mono Opus at 32 kbps with in-band forward-error
-correction and discontinuous transmission. Where supported, the receiver uses
-a 200 ms jitter-buffer target. These settings trade a small amount of latency
-and fidelity for more stable speech over lossy internet paths; they cannot
-repair a path that requires a TURN relay or has sustained severe packet loss.
+Direct-call audio prefers mono Opus at up to 64 kbps with in-band forward-error
+correction. Discontinuous transmission is disabled, and receive jitter buffering
+is left to the browser's adaptive implementation. This avoids the latency and
+audio discontinuities caused by the earlier forced 200 ms buffer and 32 kbps
+DTX configuration.
 
-Direct-call speaking indicators are measured locally at the point relevant to
-the viewer. A user's own name reacts immediately to energy on their captured
-microphone track. Other participants' names react to energy on decoded incoming
-WebRTC audio tracks, so remote highlighting represents audio that reached the
-receiving browser rather than a speaking flag sent by the remote browser. The
-detector uses a fast attack, short release hold, and a continuously learned
-noise floor instead of a fixed volume threshold, allowing it to follow quieter
-browser-processed microphones without waiting on signaling latency.
+Direct-call speaking indicators use a fast local detector with a continuously
+learned noise floor. A user's own name updates immediately from their captured
+microphone track. The resulting speaking state is sent over the authenticated
+signaling connection so every channel observer sees the same prompt indicator.
+Decoded-audio health remains available through receiver diagnostics; using the
+decoded output to drive highlighting would add the receive jitter-buffer delay.
 
 Direct server voice rooms remain joined when the other participant leaves. The
 remaining browser keeps its signaling room and local media, discards the stale
