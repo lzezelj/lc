@@ -56,6 +56,7 @@ type AccountMessage = {
   serverName: string;
 };
 type VoiceParticipant = {
+  userId?: string;
   name: string;
   muted: boolean;
   camera: boolean;
@@ -267,6 +268,9 @@ export default function Home() {
   const [directVideoStats, setDirectVideoStats] = useState("");
   const [callDiagnostics, setCallDiagnostics] =
     useState<CallDiagnostics | null>(null);
+  const [directPing, setDirectPing] = useState<number | null>(null);
+  const [directLocalSpeaking, setDirectLocalSpeaking] = useState(false);
+  const [directRemoteSpeaking, setDirectRemoteSpeaking] = useState(false);
   const [channelPing, setChannelPing] = useState<Record<string, number>>({});
   const localVideo = useRef<HTMLVideoElement>(null);
   const remoteVideo = useRef<HTMLVideoElement>(null);
@@ -304,6 +308,7 @@ export default function Home() {
   const closeCallViewRef = useRef<() => void>(() => undefined);
   const serverSwitchRequest = useRef(0);
   const stopSpeechMonitor = useRef<(() => void) | null>(null);
+  const stopRemoteSpeechMonitor = useRef<(() => void) | null>(null);
   const stopDirectStats = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -940,10 +945,19 @@ export default function Home() {
           message.roomId &&
           Array.isArray(message.participants)
         ) {
-          setVoicePresence((current) => ({
-            ...current,
-            [message.roomId!]: message.participants!.map(normalizePresence),
-          }));
+          setVoicePresence((current) => {
+            const previous = current[message.roomId!] ?? [];
+            const participants = message.participants!.map(normalizePresence);
+            if (message.roomId === directRoomId.current) {
+              participants.forEach((participant) => {
+                const existing = previous.find(
+                  (candidate) => candidate.userId === participant.userId,
+                );
+                participant.speaking = existing?.speaking ?? false;
+              });
+            }
+            return { ...current, [message.roomId!]: participants };
+          });
         }
         if (
           message.type === "online-presence" &&
@@ -1059,6 +1073,8 @@ export default function Home() {
     const audioTrack = stream.current?.getAudioTracks()[0];
     if (!audioTrack) return;
     stopSpeechMonitor.current = monitorSpeaking(audioTrack, (speaking) => {
+      setDirectLocalSpeaking(speaking);
+      setDirectParticipantSpeaking(session?.user.id, speaking);
       send({
         type: "media-state",
         muted: !audioTrack.enabled,
@@ -1067,6 +1083,27 @@ export default function Home() {
         speaking,
       });
     });
+  }
+
+  function setDirectParticipantSpeaking(
+    userId: string | undefined,
+    speaking: boolean,
+    remote = false,
+  ) {
+    const roomId = directRoomId.current;
+    if (!roomId) return;
+    setVoicePresence((current) => ({
+      ...current,
+      [roomId]: (current[roomId] ?? []).map((participant) =>
+        userId
+          ? participant.userId === userId
+            ? { ...participant, speaking }
+            : participant
+          : participant.userId !== session?.user.id && remote
+            ? { ...participant, speaking }
+            : participant,
+      ),
+    }));
   }
 
   async function ensureConnection() {
@@ -1090,7 +1127,21 @@ export default function Home() {
       }
     };
     peer.ontrack = (event) => {
-      if (event.track.kind === "audio") preferStableAudio(event.receiver);
+      if (event.track.kind === "audio") {
+        preferStableAudio(event.receiver);
+        stopRemoteSpeechMonitor.current?.();
+        stopRemoteSpeechMonitor.current = monitorSpeaking(
+          event.track,
+          (speaking) => {
+            setDirectRemoteSpeaking(speaking);
+            setDirectParticipantSpeaking(
+              friendCallPartnerId.current || undefined,
+              speaking,
+              true,
+            );
+          },
+        );
+      }
       if (remoteVideo.current) remoteVideo.current.srcObject = event.streams[0];
       if (event.track.kind === "video") {
         setRemoteHasVideo(true);
@@ -1110,11 +1161,13 @@ export default function Home() {
     stopDirectStats.current = monitorPeerVideo(
       peer,
       setDirectVideoStats,
-      (ping) =>
+      (ping) => {
+        setDirectPing(ping);
         setChannelPing((current) => ({
           ...current,
           [activeVoiceChannelId]: ping,
-        })),
+        }));
+      },
       setCallDiagnostics,
     );
     return peer;
@@ -1470,6 +1523,8 @@ export default function Home() {
   function stopMedia() {
     stopSpeechMonitor.current?.();
     stopSpeechMonitor.current = null;
+    stopRemoteSpeechMonitor.current?.();
+    stopRemoteSpeechMonitor.current = null;
     stopDirectStats.current?.();
     stopDirectStats.current = null;
     stream.current?.getTracks().forEach((track) => track.stop());
@@ -1507,6 +1562,9 @@ export default function Home() {
     setRemoteVideoQuality("");
     setDirectVideoStats("");
     setCallDiagnostics(null);
+    setDirectPing(null);
+    setDirectLocalSpeaking(false);
+    setDirectRemoteSpeaking(false);
     setStatus("Not connected");
     setFocusedDirectVideo(null);
     if (wasConnected) playVoiceSound("leave");
@@ -2418,8 +2476,14 @@ export default function Home() {
             <section className="friendsCallPanel" aria-live="polite">
               <div className="friendsCallIdentity">
                 <small>{joined ? "Direct call" : "Calling"}</small>
-                <strong>{activeVoiceChannel.name}</strong>
+                <strong className={directRemoteSpeaking ? "speaking" : ""}>
+                  {activeVoiceChannel.name}
+                </strong>
                 <span>{joining ? "Connecting…" : status}</span>
+                <ConnectionDiagnostics
+                  ping={directPing}
+                  diagnostics={callDiagnostics}
+                />
               </div>
               <div className="friendsCallVideo">
                 <video ref={remoteVideo} autoPlay playsInline />
@@ -2677,13 +2741,12 @@ export default function Home() {
                 >
                   {channel.type === "voice_group" ? "◉" : "\u{1F50A}"}{" "}
                   {channel.name}
-                  {channel.id === activeVoiceChannelId &&
-                    channelPing[channel.id] !== undefined && (
-                      <span className="connectionIndicators">
-                        <PingIndicator ping={channelPing[channel.id]} />
-                        <DiagnosticsIndicator diagnostics={callDiagnostics} />
-                      </span>
-                    )}
+                  {channel.id === activeVoiceChannelId && (
+                    <ConnectionDiagnostics
+                      ping={directPing ?? channelPing[channel.id]}
+                      diagnostics={callDiagnostics}
+                    />
+                  )}
                 </button>
                 {isSelectedServerOwner && (
                   <button
@@ -2755,7 +2818,7 @@ export default function Home() {
             ref={accountMenu}
           >
             <button
-              className="accountMenuTrigger"
+              className={`accountMenuTrigger ${directLocalSpeaking ? "speaking" : ""}`}
               onClick={() => setAccountMenuOpen((current) => !current)}
             >
               <span>
@@ -2928,6 +2991,12 @@ export default function Home() {
               {directVideoStats && (
                 <small className="networkBadge">{directVideoStats}</small>
               )}
+              <div className="callDiagnosticsControl">
+                <ConnectionDiagnostics
+                  ping={directPing}
+                  diagnostics={callDiagnostics}
+                />
+              </div>
             </div>
             <div className="controls voiceDock">
               {joined ? (
@@ -4409,16 +4478,22 @@ function DiagnosticsIndicator({
 }: {
   diagnostics: CallDiagnostics | null;
 }) {
+  const [open, setOpen] = useState(false);
   return (
     <span
       className="diagnosticsIndicator"
       tabIndex={0}
       role="button"
+      aria-expanded={open}
       aria-label="Call diagnostics"
-      onClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        setOpen((current) => !current);
+      }}
+      onBlur={() => setOpen(false)}
     >
       i
-      <span className="diagnosticsTooltip">
+      <span className={`diagnosticsTooltip ${open ? "open" : ""}`}>
         <strong>Call diagnostics</strong>
         {diagnostics ? (
           <>
@@ -4434,6 +4509,21 @@ function DiagnosticsIndicator({
           <span>Waiting for connection statistics…</span>
         )}
       </span>
+    </span>
+  );
+}
+
+function ConnectionDiagnostics({
+  ping,
+  diagnostics,
+}: {
+  ping: number | null | undefined;
+  diagnostics: CallDiagnostics | null;
+}) {
+  return (
+    <span className="connectionIndicators">
+      {ping !== null && ping !== undefined && <PingIndicator ping={ping} />}
+      <DiagnosticsIndicator diagnostics={diagnostics} />
     </span>
   );
 }

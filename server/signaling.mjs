@@ -170,6 +170,7 @@ export function createSignalingServer({
 
   const presenceFor = (roomId) => [
     ...[...peersFor(roomId)].map((peer) => ({
+      userId: peer.identity.sub,
       name: peer.participantName ?? "Guest",
       muted: Boolean(peer.mediaState?.muted),
       camera: Boolean(peer.mediaState?.camera),
@@ -374,6 +375,7 @@ export function createSignalingServer({
         if (message.present) {
           const name = socket.identity.name;
           socket.groupPresence.set(message.roomId, {
+            userId: socket.identity.sub,
             name,
             muted: Boolean(message.muted),
             camera: Boolean(message.camera),

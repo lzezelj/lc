@@ -445,6 +445,7 @@ test("presence observers see occupants without joining the call", async () => {
     roomId: "lounge",
     participants: [
       {
+        userId: "test-Ada",
         name: "Ada",
         muted: false,
         camera: false,
@@ -468,6 +469,7 @@ test("presence observers see occupants without joining the call", async () => {
     roomId: "lounge",
     participants: [
       {
+        userId: "test-Ada",
         name: "Ada",
         muted: true,
         camera: true,
@@ -511,6 +513,7 @@ test("group presence is broadcast immediately on join and leave", async () => {
     roomId: "group-room",
     participants: [
       {
+        userId: "test-Grace",
         name: "Grace",
         muted: false,
         camera: false,

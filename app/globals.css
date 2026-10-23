@@ -188,6 +188,15 @@ button {
 }
 
 .friendsCallIdentity { display: grid; justify-items: center; gap: 4px; text-align: center; }
+.friendsCallIdentity strong,
+.accountMenuTrigger strong {
+  transition: color 100ms ease, text-shadow 100ms ease;
+}
+.friendsCallIdentity strong.speaking,
+.accountMenuTrigger.speaking strong {
+  color: #64e6a5;
+  text-shadow: 0 0 10px rgb(66 201 135 / 38%);
+}
 .friendsCallPanel small,
 .friendsCallPanel span { color: var(--muted); }
 .friendsCallPanel button { padding: 9px 12px; border: 0; border-radius: 8px; color: white; }
@@ -443,6 +452,13 @@ button {
   gap: 7px;
 }
 
+.callDiagnosticsControl {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+}
+
 .diagnosticsIndicator {
   position: relative;
   display: inline-grid;
@@ -489,7 +505,8 @@ button {
 
 .diagnosticsIndicator:hover .diagnosticsTooltip,
 .diagnosticsIndicator:focus .diagnosticsTooltip,
-.diagnosticsIndicator:focus-visible .diagnosticsTooltip {
+.diagnosticsIndicator:focus-visible .diagnosticsTooltip,
+.diagnosticsTooltip.open {
   display: grid;
 }
 

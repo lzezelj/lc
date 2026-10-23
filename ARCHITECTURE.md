@@ -338,6 +338,12 @@ a 200 ms jitter-buffer target. These settings trade a small amount of latency
 and fidelity for more stable speech over lossy internet paths; they cannot
 repair a path that requires a TURN relay or has sustained severe packet loss.
 
+Direct-call speaking indicators are measured locally at the point relevant to
+the viewer. A user's own name reacts immediately to energy on their captured
+microphone track. Other participants' names react to energy on decoded incoming
+WebRTC audio tracks, so remote highlighting represents audio that reached the
+receiving browser rather than a speaking flag sent by the remote browser.
+
 ## Group-call flow
 
 ```mermaid
