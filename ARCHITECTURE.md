@@ -42,6 +42,7 @@ flowchart TB
 
   browser -->|WSS control: livekit.lzezelj.com| caddy
   browser <-->|WebRTC media: UDP 7882 or ICE/TCP 7881| livekit
+  browser <-->|Relayed direct-call media: 3478 + UDP 49160-49200| turn[coturn]
   caddy -->|HTTP 7880 on host| livekit
 
   app -->|SQL on private Docker network| postgres
@@ -323,9 +324,13 @@ seconds, the caller cancels the invitation and records `User unavailable`.
 Signaling and media are separate planes. The signaling service introduces the
 peers and relays negotiation metadata; after ICE succeeds, direct media does
 not pass through it. A Google STUN server helps each browser discover a public
-candidate. There is currently no TURN relay for direct calls, so restrictive or
-symmetric NATs can prevent a connection. A direct peer connection may also
-expose each participant's network address to the other participant.
+candidate. When `TURN_URLS` and `TURN_SECRET` are configured, an authenticated
+Next.js endpoint mints one-hour TURN REST credentials and coturn can relay
+direct-call media for restrictive or symmetric NATs. The shared TURN secret
+remains server-side. A direct peer connection can still expose network addresses
+when ICE selects a peer-to-peer route. The in-call diagnostics identify whether
+the selected local candidate is `host`, `srflx`, or `relay` and report audio
+jitter, packet loss, concealment, codec, bitrate, and transport protocol.
 
 Direct-call audio prefers mono Opus at 32 kbps with in-band forward-error
 correction and discontinuous transmission. Where supported, the receiver uses
@@ -389,6 +394,8 @@ group media rather than waiting for the browser to refresh.
 | `3001/tcp` | Docker-private | signaling service |
 | `5432/tcp` | Docker-private | PostgreSQL |
 | `7880/tcp` | Host-local, blocked by cloud firewall | LiveKit HTTP/WebSocket origin |
+| `3478/tcp + udp` | Public | TURN allocation and fallback transport |
+| `49160-49200/udp` | Public | coturn relay media range |
 
 PostgreSQL has no production host-port mapping. Next.js and signaling are
 reachable externally only through Caddy. The Hetzner firewall is the public
@@ -480,7 +487,9 @@ application-level owner dashboard yet.
 - The signaling service stores rooms in process memory and cannot be scaled
   horizontally without shared state or a message broker such as Redis.
 - LiveKit is a single node and has no Redis-backed multi-node routing.
-- Direct WebRTC calls have STUN but no TURN relay.
+- Direct WebRTC calls depend on the single-host coturn service whenever a
+  peer-to-peer ICE route cannot be established; that relay has no regional
+  redundancy.
 - LiveKit has UDP and ICE/TCP but no TURN/TLS relay for highly restrictive
   networks.
 - Signaling permissions are captured when the short-lived connection token is
@@ -503,7 +512,8 @@ be:
 
 1. Add external monitoring, structured logs, alerts, and tested PostgreSQL
    logical backups.
-2. Add TURN over TLS and measure call success, bandwidth, and relay cost.
+2. Add TURN over TLS on port 5349 and measure call success, bandwidth, and relay
+   cost; the initial coturn deployment supports TURN over UDP/TCP on port 3478.
 3. Move PostgreSQL to a separately backed-up host or managed service.
 4. Add Redis for shared signaling presence and LiveKit multi-node coordination.
 5. Run multiple stateless Next.js and signaling instances behind a load

@@ -62,6 +62,15 @@ type VoiceParticipant = {
   screen: boolean;
   speaking: boolean;
 };
+type CallDiagnostics = {
+  route: string;
+  protocol: string;
+  codec: string;
+  jitterMs: number | null;
+  packetLoss: string;
+  concealedAudio: string;
+  audioBitrate: string;
+};
 type Signal = {
   type: string;
   serverId?: string;
@@ -82,7 +91,33 @@ type Signal = {
   message?: Parameters<typeof toChatMessage>[0];
 };
 
-const iceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+const fallbackIceServers: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+];
+let cachedIceServers: { servers: RTCIceServer[]; expiresAt: number } | null =
+  null;
+
+async function loadIceServers() {
+  if (cachedIceServers && cachedIceServers.expiresAt > Date.now() + 60_000) {
+    return cachedIceServers.servers;
+  }
+  try {
+    const response = await fetch("/api/ice-servers");
+    if (!response.ok) return fallbackIceServers;
+    const data = (await response.json()) as {
+      iceServers?: RTCIceServer[];
+      expiresAt?: number | null;
+    };
+    if (!data.iceServers?.length) return fallbackIceServers;
+    cachedIceServers = {
+      servers: data.iceServers,
+      expiresAt: data.expiresAt ? data.expiresAt * 1000 : Date.now() + 300_000,
+    };
+    return data.iceServers;
+  } catch {
+    return fallbackIceServers;
+  }
+}
 
 function formatLocalDateTime(value: string) {
   const date = new Date(value);
@@ -230,6 +265,8 @@ export default function Home() {
   const [localVideoQuality, setLocalVideoQuality] = useState("");
   const [remoteVideoQuality, setRemoteVideoQuality] = useState("");
   const [directVideoStats, setDirectVideoStats] = useState("");
+  const [callDiagnostics, setCallDiagnostics] =
+    useState<CallDiagnostics | null>(null);
   const [channelPing, setChannelPing] = useState<Record<string, number>>({});
   const localVideo = useRef<HTMLVideoElement>(null);
   const remoteVideo = useRef<HTMLVideoElement>(null);
@@ -1035,7 +1072,7 @@ export default function Home() {
   async function ensureConnection() {
     if (connection.current) return connection.current;
 
-    const peer = new RTCPeerConnection({ iceServers });
+    const peer = new RTCPeerConnection({ iceServers: await loadIceServers() });
     stream.current?.getTracks().forEach((track) => {
       const sender = peer.addTrack(track, stream.current!);
       if (track.kind === "video") {
@@ -1078,6 +1115,7 @@ export default function Home() {
           ...current,
           [activeVoiceChannelId]: ping,
         })),
+      setCallDiagnostics,
     );
     return peer;
   }
@@ -1468,6 +1506,7 @@ export default function Home() {
     setLocalVideoQuality("");
     setRemoteVideoQuality("");
     setDirectVideoStats("");
+    setCallDiagnostics(null);
     setStatus("Not connected");
     setFocusedDirectVideo(null);
     if (wasConnected) playVoiceSound("leave");
@@ -2640,7 +2679,10 @@ export default function Home() {
                   {channel.name}
                   {channel.id === activeVoiceChannelId &&
                     channelPing[channel.id] !== undefined && (
-                      <PingIndicator ping={channelPing[channel.id]} />
+                      <span className="connectionIndicators">
+                        <PingIndicator ping={channelPing[channel.id]} />
+                        <DiagnosticsIndicator diagnostics={callDiagnostics} />
+                      </span>
                     )}
                 </button>
                 {isSelectedServerOwner && (
@@ -4234,31 +4276,54 @@ function monitorPeerVideo(
   peer: RTCPeerConnection,
   onChange: (stats: string) => void,
   onPing: (ping: number) => void,
+  onDiagnostics: (diagnostics: CallDiagnostics) => void,
 ) {
   const previousBytes = new Map<string, { bytes: number; timestamp: number }>();
+  const previousAudioBytes = new Map<
+    string,
+    { bytes: number; timestamp: number }
+  >();
   const interval = window.setInterval(async () => {
     try {
       const report = await peer.getStats();
       const values: string[] = [];
       let ping = "";
+      let selectedPair: (RTCStats & Record<string, unknown>) | undefined;
+      let inboundAudio: (RTCStats & Record<string, unknown>) | undefined;
+      let outboundAudio: (RTCStats & Record<string, unknown>) | undefined;
       report.forEach((raw) => {
-        const stat = raw as RTCStats & {
-          kind?: string;
-          mediaType?: string;
-          bytesSent?: number;
-          bytesReceived?: number;
-          framesPerSecond?: number;
-          currentRoundTripTime?: number;
-          state?: string;
-        };
+        const stat = raw as RTCStats &
+          Record<string, unknown> & {
+            kind?: string;
+            mediaType?: string;
+            bytesSent?: number;
+            bytesReceived?: number;
+            framesPerSecond?: number;
+            currentRoundTripTime?: number;
+            state?: string;
+          };
         if (
           stat.type === "candidate-pair" &&
           stat.state === "succeeded" &&
+          (stat.nominated === true || selectedPair === undefined) &&
           stat.currentRoundTripTime !== undefined
         ) {
+          selectedPair = stat;
           const milliseconds = Math.round(stat.currentRoundTripTime * 1000);
           ping = `${milliseconds} ms ping`;
           onPing(milliseconds);
+        }
+        if (
+          stat.type === "inbound-rtp" &&
+          (stat.kind ?? stat.mediaType) === "audio"
+        ) {
+          inboundAudio = stat;
+        }
+        if (
+          stat.type === "outbound-rtp" &&
+          (stat.kind ?? stat.mediaType) === "audio"
+        ) {
+          outboundAudio = stat;
         }
         if (
           !["inbound-rtp", "outbound-rtp"].includes(stat.type) ||
@@ -4282,12 +4347,95 @@ function monitorPeerVideo(
           : "";
         values.push(`${direction} ${kbps} kbps${fps}`);
       });
+      const localCandidate = selectedPair?.localCandidateId
+        ? (report.get(String(selectedPair.localCandidateId)) as
+            (RTCStats & Record<string, unknown>) | undefined)
+        : undefined;
+      const remoteCandidate = selectedPair?.remoteCandidateId
+        ? (report.get(String(selectedPair.remoteCandidateId)) as
+            (RTCStats & Record<string, unknown>) | undefined)
+        : undefined;
+      const codec = inboundAudio?.codecId
+        ? (report.get(String(inboundAudio.codecId)) as
+            (RTCStats & Record<string, unknown>) | undefined)
+        : undefined;
+      const received = Number(inboundAudio?.packetsReceived ?? 0);
+      const lost = Number(inboundAudio?.packetsLost ?? 0);
+      const total = received + Math.max(0, lost);
+      const totalSamples = Number(inboundAudio?.totalSamplesReceived ?? 0);
+      const concealedSamples = Number(inboundAudio?.concealedSamples ?? 0);
+      const audioRates = [inboundAudio, outboundAudio]
+        .map((stat, index) => {
+          if (!stat) return "";
+          const bytes = Number(stat.bytesReceived ?? stat.bytesSent ?? 0);
+          const previous = previousAudioBytes.get(stat.id);
+          previousAudioBytes.set(stat.id, { bytes, timestamp: stat.timestamp });
+          if (!previous) return "";
+          const seconds = (stat.timestamp - previous.timestamp) / 1000;
+          if (seconds <= 0) return "";
+          const kbps = Math.round(
+            ((bytes - previous.bytes) * 8) / seconds / 1000,
+          );
+          return `${index === 0 ? "down" : "up"} ${kbps} kbps`;
+        })
+        .filter(Boolean)
+        .join(" / ");
+      onDiagnostics({
+        route: `${String(localCandidate?.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`,
+        protocol: String(localCandidate?.protocol ?? "unknown").toUpperCase(),
+        codec: String(codec?.mimeType ?? "unknown").replace("audio/", ""),
+        jitterMs:
+          inboundAudio?.jitter === undefined
+            ? null
+            : Math.round(Number(inboundAudio.jitter) * 1000),
+        packetLoss: total
+          ? `${((Math.max(0, lost) / total) * 100).toFixed(1)}%`
+          : "0%",
+        concealedAudio: totalSamples
+          ? `${((concealedSamples / totalSamples) * 100).toFixed(1)}%`
+          : "0%",
+        audioBitrate: audioRates || "measuring…",
+      });
       onChange([...values, ping].filter(Boolean).join(" · "));
     } catch {
       onChange("");
     }
   }, 1000);
   return () => window.clearInterval(interval);
+}
+
+function DiagnosticsIndicator({
+  diagnostics,
+}: {
+  diagnostics: CallDiagnostics | null;
+}) {
+  return (
+    <span
+      className="diagnosticsIndicator"
+      tabIndex={0}
+      role="button"
+      aria-label="Call diagnostics"
+      onClick={(event) => event.stopPropagation()}
+    >
+      i
+      <span className="diagnosticsTooltip">
+        <strong>Call diagnostics</strong>
+        {diagnostics ? (
+          <>
+            <span>Route: {diagnostics.route}</span>
+            <span>Protocol: {diagnostics.protocol}</span>
+            <span>Codec: {diagnostics.codec}</span>
+            <span>Audio: {diagnostics.audioBitrate}</span>
+            <span>Jitter: {diagnostics.jitterMs ?? "—"} ms</span>
+            <span>Packet loss: {diagnostics.packetLoss}</span>
+            <span>Concealed audio: {diagnostics.concealedAudio}</span>
+          </>
+        ) : (
+          <span>Waiting for connection statistics…</span>
+        )}
+      </span>
+    </span>
+  );
 }
 
 function PingIndicator({ ping }: { ping: number }) {

@@ -437,6 +437,62 @@ button {
   cursor: help;
 }
 
+.connectionIndicators {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.diagnosticsIndicator {
+  position: relative;
+  display: inline-grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+  border: 1px solid #8f9bb3;
+  border-radius: 50%;
+  color: #b8c3d9;
+  font-family: serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+}
+
+.diagnosticsTooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 30;
+  display: none;
+  width: 235px;
+  transform: translateX(-50%);
+  gap: 4px;
+  border: 1px solid #30384c;
+  border-radius: 7px;
+  padding: 9px 11px;
+  background: #090c13;
+  color: #dbe4f5;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-align: left;
+  white-space: nowrap;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 35%);
+}
+
+.diagnosticsTooltip strong {
+  margin-bottom: 2px;
+  color: #fff;
+}
+
+.diagnosticsIndicator:hover .diagnosticsTooltip,
+.diagnosticsIndicator:focus .diagnosticsTooltip,
+.diagnosticsIndicator:focus-visible .diagnosticsTooltip {
+  display: grid;
+}
+
 .pingDot {
   width: 8px;
   height: 8px;
