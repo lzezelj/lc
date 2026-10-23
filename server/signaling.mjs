@@ -140,6 +140,43 @@ export function createSignalingServer({
         .catch(() => response.writeHead(400).end("Invalid JSON"));
       return;
     }
+    if (request.method === "POST" && request.url === "/internal/kick-voice") {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret)) {
+        response.writeHead(401).end("Unauthorized");
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.userId !== "string" ||
+            typeof body.roomId !== "string"
+          ) {
+            response.writeHead(400).end("Invalid voice target");
+            return;
+          }
+          for (const client of peersFor(body.roomId)) {
+            if (client.identity?.sub === body.userId) {
+              client.send(JSON.stringify({ type: "voice-kicked" }));
+              client.close(4003, "Removed from voice");
+            }
+          }
+          for (const client of ws.clients) {
+            if (
+              client.identity?.sub === body.userId &&
+              client.groupPresence?.delete(body.roomId)
+            ) {
+              broadcastPresence(body.roomId);
+            }
+          }
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     response.writeHead(426, { "Content-Type": "text/plain" });
     response.end("Upgrade Required");
   });
@@ -408,6 +445,12 @@ export function createSignalingServer({
         }
 
         const peers = peersFor(message.roomId);
+        for (const oldPeer of peers) {
+          if (oldPeer.identity?.sub === socket.identity.sub) {
+            peers.delete(oldPeer);
+            oldPeer.close(4000, "Replaced by new connection");
+          }
+        }
         if (peers.size >= maxPeers) {
           socket.send(JSON.stringify({ type: "room-full" }));
           return;
@@ -447,7 +490,7 @@ export function createSignalingServer({
       if (!joinedRoomId) return;
 
       const peers = peersFor(joinedRoomId);
-      peers.delete(socket);
+      if (!peers.delete(socket)) return;
       for (const peer of peers) {
         if (peer.readyState === WebSocket.OPEN) {
           peer.send(JSON.stringify({ type: "peer-left" }));

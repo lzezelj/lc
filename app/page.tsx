@@ -275,6 +275,7 @@ export default function Home() {
   const [channelPing, setChannelPing] = useState<Record<string, number>>({});
   const localVideo = useRef<HTMLVideoElement>(null);
   const remoteVideo = useRef<HTMLVideoElement>(null);
+  const remoteAudio = useRef<HTMLAudioElement | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const presenceSocket = useRef<WebSocket | null>(null);
   const textSocket = useRef<WebSocket | null>(null);
@@ -1130,9 +1131,19 @@ export default function Home() {
     peer.ontrack = (event) => {
       if (event.track.kind === "audio") {
         preferStableAudio(event.receiver);
+        remoteAudio.current ??= new Audio();
+        remoteAudio.current.autoplay = true;
+        remoteAudio.current.srcObject = new MediaStream([event.track]);
+        void remoteAudio.current.play().catch(() => {
+          setMediaNotice(
+            "Audio playback was blocked. Click the page to enable sound.",
+          );
+        });
       }
-      if (remoteVideo.current) remoteVideo.current.srcObject = event.streams[0];
       if (event.track.kind === "video") {
+        if (remoteVideo.current)
+          remoteVideo.current.srcObject =
+            event.streams[0] ?? new MediaStream([event.track]);
         setRemoteHasVideo(true);
         event.track.addEventListener("ended", () => setRemoteHasVideo(false), {
           once: true,
@@ -1179,6 +1190,13 @@ export default function Home() {
   async function handleSignal(
     message: Signal | { type: "chat"; text: string },
   ) {
+    if (message.type === "voice-kicked") {
+      setNoticeMessage(
+        "You were disconnected from the voice channel by its owner.",
+      );
+      returnToPreviousTextChannel();
+      return;
+    }
     if (message.type === "joined") {
       setJoining(false);
       setJoined(true);
@@ -1252,6 +1270,7 @@ export default function Home() {
         stopDirectStats.current?.();
         stopDirectStats.current = null;
         if (remoteVideo.current) remoteVideo.current.srcObject = null;
+        if (remoteAudio.current) remoteAudio.current.srcObject = null;
         setRemoteHasVideo(false);
         setRemoteVideoQuality("");
         setDirectRemoteSpeaking(false);
@@ -1517,6 +1536,7 @@ export default function Home() {
       );
     };
     ws.onclose = () => {
+      if (socket.current !== ws) return;
       if (socket.current === ws) socket.current = null;
       setJoining(false);
       setJoined(false);
@@ -1560,6 +1580,7 @@ export default function Home() {
     pendingCandidates.current = [];
     stopMedia();
     if (remoteVideo.current) remoteVideo.current.srcObject = null;
+    if (remoteAudio.current) remoteAudio.current.srcObject = null;
     setJoined(false);
     setJoining(false);
     setMuted(false);
@@ -1960,6 +1981,22 @@ export default function Home() {
     setKickCandidate(null);
     setMemberMenu(null);
     setNoticeMessage("Member removed from the server.");
+  }
+
+  async function kickVoiceParticipant(userId: string, channelId: string) {
+    const response = await fetch(
+      `/api/servers/${selectedServerId}/voice-kick`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, channelId }),
+      },
+    );
+    if (!response.ok) {
+      setErrorMessage("Could not disconnect this person from voice.");
+      return;
+    }
+    setNoticeMessage("Participant disconnected from voice.");
   }
 
   async function openAccountMessages(
@@ -2790,8 +2827,10 @@ export default function Home() {
                   <div className="voicePresence">
                     {voicePresence[channel.id].map((participant, index) => (
                       <span
-                        className={`voiceParticipant ${participant.speaking ? "speaking" : ""}`}
-                        key={`${participant.name}-${index}`}
+                        className={`voiceParticipant ${channel.id === activeVoiceChannelId && participant.speaking ? "speaking" : ""}`}
+                        key={
+                          participant.userId ?? `${participant.name}-${index}`
+                        }
                       >
                         <i>{participant.name[0]?.toUpperCase()}</i>
                         <b>{participant.name}</b>
@@ -2812,6 +2851,23 @@ export default function Home() {
                             </span>
                           )}
                         </em>
+                        {isSelectedServerOwner &&
+                          participant.userId &&
+                          participant.userId !== session.user.id && (
+                            <button
+                              type="button"
+                              className="voiceKick"
+                              title={`Disconnect ${participant.name} from voice`}
+                              onClick={() =>
+                                void kickVoiceParticipant(
+                                  participant.userId!,
+                                  channel.id,
+                                )
+                              }
+                            >
+                              Kick
+                            </button>
+                          )}
                       </span>
                     ))}
                   </div>

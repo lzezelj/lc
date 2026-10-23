@@ -151,6 +151,7 @@ export function GroupCall({
   const stopLocalStats = useRef<(() => void) | null>(null);
   const stopRoomPing = useRef<(() => void) | null>(null);
   const stopRoomDiagnostics = useRef<(() => void) | null>(null);
+  const stopSpeakingMonitor = useRef<(() => void) | null>(null);
   const speakingReleaseTimer = useRef<number | null>(null);
   const localSpeaking = useRef(false);
   const onConnectionChangeRef = useRef(onConnectionChange);
@@ -188,6 +189,8 @@ export function GroupCall({
     stopRoomPing.current = null;
     stopRoomDiagnostics.current?.();
     stopRoomDiagnostics.current = null;
+    stopSpeakingMonitor.current?.();
+    stopSpeakingMonitor.current = null;
     onDiagnosticsChange(null);
     if (speakingReleaseTimer.current !== null) {
       window.clearTimeout(speakingReleaseTimer.current);
@@ -219,6 +222,10 @@ export function GroupCall({
       if (room) {
         stopRoomPing.current?.();
         stopRoomPing.current = null;
+        stopRoomDiagnostics.current?.();
+        stopRoomDiagnostics.current = null;
+        stopSpeakingMonitor.current?.();
+        stopSpeakingMonitor.current = null;
         playVoiceSound("leave");
         onConnectionChangeRef.current(false);
         void room.disconnect();
@@ -291,34 +298,6 @@ export function GroupCall({
         );
         updatePresence();
       })
-      .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
-        const speaking = speakers.some(
-          (participant) =>
-            participant.identity === room.localParticipant.identity,
-        );
-        if (speakingReleaseTimer.current !== null) {
-          window.clearTimeout(speakingReleaseTimer.current);
-          speakingReleaseTimer.current = null;
-        }
-        const publishSpeaking = (next: boolean) => {
-          if (localSpeaking.current === next) return;
-          localSpeaking.current = next;
-          onMediaStateChange({
-            muted: mutedRef.current,
-            camera: !cameraOffRef.current,
-            screen: false,
-            speaking: next,
-          });
-        };
-        if (speaking) {
-          publishSpeaking(true);
-        } else {
-          speakingReleaseTimer.current = window.setTimeout(
-            () => publishSpeaking(false),
-            350,
-          );
-        }
-      })
       .on(RoomEvent.Disconnected, () => {
         if (roomRef.current !== room) return;
         onConnectionChange(false);
@@ -359,6 +338,25 @@ export function GroupCall({
           true,
           voiceCaptureOptions(microphoneId),
         );
+        const track = room.localParticipant.getTrackPublication(
+          Track.Source.Microphone,
+        )?.track?.mediaStreamTrack;
+        if (track) {
+          stopSpeakingMonitor.current?.();
+          stopSpeakingMonitor.current = monitorGroupSpeaking(
+            track,
+            (speaking) => {
+              if (localSpeaking.current === speaking) return;
+              localSpeaking.current = speaking;
+              onMediaStateChange({
+                muted: mutedRef.current,
+                camera: !cameraOffRef.current,
+                screen: false,
+                speaking,
+              });
+            },
+          );
+        }
       } catch {
         setMuted(true);
         mutedRef.current = true;
@@ -577,6 +575,46 @@ function voiceCaptureOptions(deviceId: string) {
     echoCancellation: true,
     noiseSuppression: true,
     autoGainControl: true,
+  };
+}
+
+function monitorGroupSpeaking(
+  track: MediaStreamTrack,
+  onChange: (speaking: boolean) => void,
+) {
+  const context = new AudioContext();
+  void context.resume();
+  const source = context.createMediaStreamSource(new MediaStream([track]));
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  const samples = new Uint8Array(analyser.fftSize);
+  let frame = 0;
+  let active = false;
+  let lastLoud = 0;
+  let floor = 0.004;
+  const sample = () => {
+    analyser.getByteTimeDomainData(samples);
+    let power = 0;
+    for (const value of samples) power += ((value - 128) / 128) ** 2;
+    const level = Math.sqrt(power / samples.length);
+    const loud =
+      track.enabled && level > Math.max(0.0035, floor * (active ? 1.45 : 1.8));
+    if (!active && !loud) floor = floor * 0.96 + Math.min(level, 0.025) * 0.04;
+    if (loud) lastLoud = performance.now();
+    const next = loud || (active && performance.now() - lastLoud < 220);
+    if (next !== active) {
+      active = next;
+      onChange(next);
+    }
+    frame = requestAnimationFrame(sample);
+  };
+  sample();
+  return () => {
+    cancelAnimationFrame(frame);
+    source.disconnect();
+    void context.close();
+    if (active) onChange(false);
   };
 }
 

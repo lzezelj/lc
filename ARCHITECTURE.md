@@ -352,6 +352,17 @@ joins. Direct friend calls retain phone-call semantics and end for both users.
 Group-call diagnostics are collected separately from LiveKit's publisher and
 subscriber peer connections rather than from the direct-call connection.
 
+Incoming direct-call audio plays through a dedicated audio element. Video can
+be hidden when the camera is off without suppressing audio playback. The
+signaling socket's close handler ignores obsolete sockets so an old disconnect
+cannot reset a newer connection. A server owner may disconnect a participant
+from a specific voice channel through an authenticated API; direct rooms close
+that participant's signaling socket, while group rooms remove the corresponding
+LiveKit participant. Server membership is unaffected.
+When a direct-room user reconnects, signaling replaces that user's previous
+socket before checking the two-person capacity; a late close from the old
+socket does not emit a false peer departure.
+
 ## Group-call flow
 
 ```mermaid

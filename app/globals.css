@@ -599,6 +599,16 @@ button {
   box-shadow: 0 0 0 2px #42c987;
 }
 
+.voiceKick {
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 5px;
+  background: #393044;
+  color: #f4b6bc;
+  font-size: 10px;
+  cursor: pointer;
+}
+
 .voiceIndicators {
   display: flex;
   gap: 3px;

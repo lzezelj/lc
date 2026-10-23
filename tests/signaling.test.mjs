@@ -235,8 +235,8 @@ function expectNoMessage(socket, duration = 75) {
 
 test("peers join, relay messages, and announce departure", async () => {
   const url = await startServer();
-  const first = await connect(url);
-  const second = await connect(url);
+  const first = await connect(url, "First");
+  const second = await connect(url, "Second");
 
   const firstJoined = nextMessage(first);
   first.send(JSON.stringify({ type: "join", roomId: "lounge" }));
@@ -290,10 +290,71 @@ test("a direct-room peer remains joined and accepts a replacement peer", async (
   assert.deepEqual(await relayed, { type: "candidate", candidate: "fresh" });
 });
 
+test("internal voice kick closes only the selected room participant", async () => {
+  const url = await startServer();
+  const owner = await connect(url, "Owner");
+  const guest = await connect(url, "Guest");
+  const ownerJoined = nextMessage(owner);
+  owner.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await ownerJoined;
+  const guestJoined = nextMessage(guest);
+  const announced = nextMessage(owner);
+  guest.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await guestJoined;
+  await announced;
+
+  const kicked = nextMessage(guest);
+  const guestClosed = once(guest, "close");
+  const peerLeft = nextMessage(owner);
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/kick-voice`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId: "test-Guest", roomId: "lounge" }),
+    },
+  );
+  assert.equal(response.status, 204);
+  assert.deepEqual(await kicked, { type: "voice-kicked" });
+  await guestClosed;
+  assert.deepEqual(await peerLeft, { type: "peer-left" });
+  assert.equal(owner.readyState, WebSocket.OPEN);
+});
+
+test("reconnecting user replaces an old room socket without evicting the peer", async () => {
+  const url = await startServer();
+  const first = await connect(url, "Ada");
+  const other = await connect(url, "Grace");
+  const firstJoined = nextMessage(first);
+  first.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await firstJoined;
+  const otherJoined = nextMessage(other);
+  const announced = nextMessage(first);
+  other.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await otherJoined;
+  await announced;
+
+  const replacement = await connect(url, "Ada");
+  const replaced = once(first, "close");
+  const replacementJoined = nextMessage(replacement);
+  const replacementAnnounced = nextMessage(other);
+  replacement.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  assert.deepEqual(await replacementJoined, {
+    type: "joined",
+    initiator: false,
+  });
+  assert.deepEqual(await replacementAnnounced, { type: "peer-joined" });
+  await replaced;
+  assert.equal(other.readyState, WebSocket.OPEN);
+});
+
 test("room capacity is configurable and rejected peers never join", async () => {
   const url = await startServer({ maxPeers: 1 });
-  const first = await connect(url);
-  const rejected = await connect(url);
+  const first = await connect(url, "First");
+  const rejected = await connect(url, "Rejected");
 
   const firstJoined = nextMessage(first);
   first.send(JSON.stringify({ type: "join", roomId: "lounge" }));
@@ -313,9 +374,9 @@ test("room capacity is configurable and rejected peers never join", async () => 
 
 test("messages are relayed only inside the sender's room", async () => {
   const url = await startServer({ maxPeers: 3 });
-  const first = await connect(url);
-  const partner = await connect(url);
-  const outsider = await connect(url);
+  const first = await connect(url, "First");
+  const partner = await connect(url, "Partner");
+  const outsider = await connect(url, "Outsider");
 
   for (const [socket, roomId] of [
     [first, "lounge"],
@@ -323,9 +384,10 @@ test("messages are relayed only inside the sender's room", async () => {
     [outsider, "other-room"],
   ]) {
     const joined = nextMessage(socket);
+    const peerJoined = socket === partner ? nextMessage(first) : null;
     socket.send(JSON.stringify({ type: "join", roomId }));
     await joined;
-    if (socket === partner) await nextMessage(first);
+    if (peerJoined) await peerJoined;
   }
 
   const partnerMessage = nextMessage(partner);
