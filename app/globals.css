@@ -481,7 +481,7 @@ button {
   left: 64px;
   z-index: 1000;
   display: none;
-  width: 235px;
+  width: min(360px, calc(100vw - 80px));
   transform: none;
   gap: 4px;
   border: 1px solid #30384c;
@@ -494,7 +494,8 @@ button {
   font-weight: 400;
   line-height: 1.35;
   text-align: left;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
   box-shadow: 0 8px 22px rgb(0 0 0 / 35%);
 }
 

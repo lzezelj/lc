@@ -5,6 +5,8 @@ import { signOut, useSession } from "next-auth/react";
 import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
 import { DeviceMenu, MediaDeviceOption, MediaIcon } from "./device-menu";
 import { GroupCall } from "./group-call";
+import { createSignalQueue } from "./direct-negotiation";
+import { createAudioWindowStats } from "./audio-window-stats";
 import {
   microphoneProcessing,
   monitorVoiceActivity,
@@ -69,6 +71,11 @@ type VoiceParticipant = {
   speaking: boolean;
 };
 type CallDiagnostics = {
+  connectivity?: string;
+  negotiation?: string;
+  playback?: string;
+  receivedAudio?: string;
+  recentAudio?: string;
   microphone?: string;
   status: string;
   route: string;
@@ -110,7 +117,9 @@ async function loadIceServers() {
     return cachedIceServers.servers;
   }
   try {
-    const response = await fetch("/api/ice-servers");
+    const response = await fetch("/api/ice-servers", {
+      signal: AbortSignal.timeout(8000),
+    });
     if (!response.ok) return fallbackIceServers;
     const data = (await response.json()) as {
       iceServers?: RTCIceServer[];
@@ -286,6 +295,9 @@ export default function Home() {
   const presenceSocket = useRef<WebSocket | null>(null);
   const textSocket = useRef<WebSocket | null>(null);
   const connection = useRef<RTCPeerConnection | null>(null);
+  const creatingConnection = useRef<Promise<RTCPeerConnection> | null>(null);
+  const peerGeneration = useRef(0);
+  const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false);
   const stream = useRef<MediaStream | null>(null);
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
   const accountMenu = useRef<HTMLDivElement>(null);
@@ -904,6 +916,8 @@ export default function Home() {
       presenceSocket.current?.close();
       textSocket.current?.close();
       connection.current?.close();
+      remoteAudio.current?.pause();
+      remoteAudio.current?.remove();
       stream.current?.getTracks().forEach((track) => track.stop());
     },
     [],
@@ -1076,6 +1090,28 @@ export default function Home() {
     }
   }
 
+  function prepareRemoteAudio() {
+    if (!remoteAudio.current) {
+      const audio = document.createElement("audio");
+      audio.autoplay = true;
+      audio.setAttribute("playsinline", "");
+      document.body.appendChild(audio);
+      remoteAudio.current = audio;
+    }
+    return remoteAudio.current;
+  }
+
+  async function playRemoteAudio() {
+    const audio = prepareRemoteAudio();
+    if (!audio.srcObject) return;
+    try {
+      await audio.play();
+      setAudioPlaybackBlocked(false);
+    } catch {
+      setAudioPlaybackBlocked(true);
+    }
+  }
+
   function startDirectSpeechMonitor() {
     stopSpeechMonitor.current?.();
     const audioTrack = stream.current?.getAudioTracks()[0];
@@ -1116,8 +1152,26 @@ export default function Home() {
 
   async function ensureConnection() {
     if (connection.current) return connection.current;
+    if (creatingConnection.current) return creatingConnection.current;
+    const generation = peerGeneration.current;
+    const pending = buildConnection(generation);
+    creatingConnection.current = pending;
+    try {
+      return await pending;
+    } finally {
+      if (creatingConnection.current === pending)
+        creatingConnection.current = null;
+    }
+  }
 
-    const peer = new RTCPeerConnection({ iceServers: await loadIceServers() });
+  async function buildConnection(generation: number) {
+    const iceServers = await loadIceServers();
+    if (generation !== peerGeneration.current)
+      throw new Error("Call changed during negotiation");
+
+    const peer = new RTCPeerConnection({ iceServers });
+    const gatheredCandidates = new Map<string, number>();
+    let iceError = "";
     stream.current?.getTracks().forEach((track) => {
       const sender = peer.addTrack(track, stream.current!);
       if (track.kind === "video") {
@@ -1128,23 +1182,28 @@ export default function Home() {
         preferOpus(peer, sender);
       }
     });
+    if (!stream.current?.getAudioTracks().length) {
+      peer.addTransceiver("audio", { direction: "recvonly" });
+    }
 
     peer.onicecandidate = (event) => {
+      if (connection.current !== peer) return;
       if (event.candidate) {
+        const type = event.candidate.type ?? "unknown";
+        gatheredCandidates.set(type, (gatheredCandidates.get(type) ?? 0) + 1);
         send({ type: "candidate", candidate: event.candidate.toJSON() });
       }
     };
+    peer.onicecandidateerror = (event) => {
+      iceError = ` / ICE server error ${event.errorCode}`;
+    };
     peer.ontrack = (event) => {
+      if (connection.current !== peer) return;
       if (event.track.kind === "audio") {
         preferStableAudio(event.receiver);
-        remoteAudio.current ??= new Audio();
-        remoteAudio.current.autoplay = true;
-        remoteAudio.current.srcObject = new MediaStream([event.track]);
-        void remoteAudio.current.play().catch(() => {
-          setMediaNotice(
-            "Audio playback was blocked. Click the page to enable sound.",
-          );
-        });
+        const audio = prepareRemoteAudio();
+        audio.srcObject = new MediaStream([event.track]);
+        void playRemoteAudio();
       }
       if (event.track.kind === "video") {
         if (remoteVideo.current)
@@ -1155,9 +1214,11 @@ export default function Home() {
           once: true,
         });
       }
-      setStatus("Connected to guest");
+      setStatus("Remote audio negotiated; checking media connection…");
     };
     peer.onconnectionstatechange = () => {
+      if (peer !== connection.current) return;
+      if (peer.connectionState === "connected") setStatus("Media connected");
       if (["disconnected", "failed"].includes(peer.connectionState)) {
         setStatus("Guest disconnected");
       }
@@ -1166,8 +1227,11 @@ export default function Home() {
     stopDirectStats.current?.();
     stopDirectStats.current = monitorPeerVideo(
       peer,
-      setDirectVideoStats,
+      (stats) => {
+        if (connection.current === peer) setDirectVideoStats(stats);
+      },
       (ping) => {
+        if (connection.current !== peer) return;
         setDirectPing(ping);
         setChannelPing((current) => ({
           ...current,
@@ -1175,10 +1239,18 @@ export default function Home() {
         }));
       },
       (diagnostics) => {
+        if (connection.current !== peer) return;
         const track = stream.current?.getAudioTracks()[0];
         const settings = track?.getSettings();
         setCallDiagnostics({
           ...diagnostics,
+          connectivity: `${iceServers.some((server) => (Array.isArray(server.urls) ? server.urls : [server.urls]).some((url) => /^turns?:/.test(url))) ? "TURN configured" : "STUN only"} / gathered ${[...gatheredCandidates].map(([type, count]) => `${type}: ${count}`).join(", ") || "none"}${iceError}`,
+          negotiation: `ICE ${peer.iceConnectionState} / gathering ${peer.iceGatheringState} / SDP ${peer.signalingState} / local ${peer.localDescription?.type ?? "none"} / remote ${peer.remoteDescription?.type ?? "none"}`,
+          playback: !remoteAudio.current?.srcObject
+            ? "No remote audio track"
+            : remoteAudio.current.paused
+              ? "Paused or blocked — use Enable sound"
+              : "Playing",
           microphone: track
             ? `${track.readyState}${track.muted ? " / capture interrupted" : ""}${!track.enabled ? " / muted" : ""} / ${settings?.sampleRate ?? "?"} Hz`
             : "unavailable",
@@ -1191,9 +1263,9 @@ export default function Home() {
   async function createOffer() {
     const peer = await ensureConnection();
     const offer = await peer.createOffer();
-    const tunedOffer = tuneOpusDescription(offer);
-    await peer.setLocalDescription(tunedOffer);
-    send({ type: "offer", sdp: tunedOffer });
+    await peer.setLocalDescription(offer);
+    if (connection.current !== peer) return;
+    send({ type: "offer", sdp: peer.localDescription!.toJSON() });
     setStatus("Calling guest...");
   }
 
@@ -1241,6 +1313,7 @@ export default function Home() {
     if (message.type === "peer-joined") {
       setCallPeerPresent(true);
       playVoiceSound("join");
+      connection.current?.restartIce();
       await createOffer();
       send({ type: "camera-state", enabled: !cameraOff });
       return;
@@ -1251,9 +1324,9 @@ export default function Home() {
       await peer.setRemoteDescription(message.sdp);
       await addPendingCandidates(peer);
       const answer = await peer.createAnswer();
-      const tunedAnswer = tuneOpusDescription(answer);
-      await peer.setLocalDescription(tunedAnswer);
-      send({ type: "answer", sdp: tunedAnswer });
+      await peer.setLocalDescription(answer);
+      if (connection.current !== peer) return;
+      send({ type: "answer", sdp: peer.localDescription!.toJSON() });
       return;
     }
     if (message.type === "answer" && "sdp" in message && message.sdp) {
@@ -1277,6 +1350,8 @@ export default function Home() {
     if (message.type === "peer-left" || message.type === "hangup") {
       playVoiceSound("leave");
       if (!directRoomId.current.startsWith("friend:")) {
+        peerGeneration.current += 1;
+        creatingConnection.current = null;
         connection.current?.close();
         connection.current = null;
         pendingCandidates.current = [];
@@ -1539,11 +1614,20 @@ export default function Home() {
       );
       setStatus("Joining signaling room...");
     };
-    ws.onmessage = (event) => {
-      void handleSignal(JSON.parse(event.data)).catch(() => {
+    const receiveSignal = createSignalQueue<Signal>(
+      async (message) => {
+        if (socket.current === ws) await handleSignal(message);
+      },
+      (error) => {
+        if (socket.current !== ws) return;
         setStatus("WebRTC negotiation failed");
-        setErrorMessage("WebRTC negotiation failed. Leave and try again.");
-      });
+        setErrorMessage(
+          `WebRTC negotiation failed: ${error instanceof Error ? error.name + ": " + error.message : "unknown error"}`,
+        );
+      },
+    );
+    ws.onmessage = (event) => {
+      void receiveSignal(JSON.parse(event.data));
     };
     ws.onerror = () => {
       setJoining(false);
@@ -1558,6 +1642,10 @@ export default function Home() {
       setJoining(false);
       setJoined(false);
       setStatus("Signaling disconnected");
+      peerGeneration.current += 1;
+      creatingConnection.current = null;
+      stopDirectStats.current?.();
+      stopDirectStats.current = null;
       connection.current?.close();
       connection.current = null;
       pendingCandidates.current = [];
@@ -1578,6 +1666,9 @@ export default function Home() {
   }
 
   function leaveRoom() {
+    setAudioPlaybackBlocked(false);
+    peerGeneration.current += 1;
+    creatingConnection.current = null;
     directRoomId.current = "";
     directReconnectInProgress.current = false;
     directReconnectAttempt.current = 0;
@@ -2193,6 +2284,7 @@ export default function Home() {
   function selectVoiceChannel(channel: Channel) {
     if (activeVoiceChannelId === channel.id) return;
     prepareVoiceActivity();
+    prepareRemoteAudio();
     prepareVoiceSounds();
     leaveRoom();
     setActiveVoiceChannelId(channel.id);
@@ -2562,6 +2654,11 @@ export default function Home() {
                 />
               </div>
               <div className="controls voiceDock friendsCallControls">
+                {audioPlaybackBlocked && (
+                  <button type="button" onClick={() => void playRemoteAudio()}>
+                    Enable sound
+                  </button>
+                )}
                 <DeviceMenu
                   kind="microphone"
                   disabled={muted}
@@ -3082,6 +3179,11 @@ export default function Home() {
               </div>
             </div>
             <div className="controls voiceDock">
+              {audioPlaybackBlocked && (
+                <button type="button" onClick={() => void playRemoteAudio()}>
+                  Enable sound
+                </button>
+              )}
               {joined ? (
                 <>
                   <DeviceMenu
@@ -4330,52 +4432,6 @@ function preferStableAudio(receiver: RTCRtpReceiver) {
   void receiver;
 }
 
-function tuneOpusDescription(
-  description: RTCSessionDescriptionInit,
-): RTCSessionDescriptionInit {
-  if (!description.sdp) return description;
-  const lines = description.sdp.split("\r\n");
-  const opusLine = lines.find((line) =>
-    /^a=rtpmap:\d+ opus\/48000/i.test(line),
-  );
-  const payload = opusLine?.match(/^a=rtpmap:(\d+)/i)?.[1];
-  if (!payload) return description;
-  const parameters = {
-    stereo: "0",
-    "sprop-stereo": "0",
-    useinbandfec: "1",
-    usedtx: "0",
-    maxaveragebitrate: "64000",
-  };
-  const fmtpIndex = lines.findIndex((line) =>
-    line.startsWith(`a=fmtp:${payload} `),
-  );
-  if (fmtpIndex >= 0) {
-    const existing = lines[fmtpIndex].slice(`a=fmtp:${payload} `.length);
-    const values = new Map(
-      existing
-        .split(";")
-        .map((part) => part.trim().split("=", 2) as [string, string]),
-    );
-    Object.entries(parameters).forEach(([key, value]) =>
-      values.set(key, value),
-    );
-    lines[fmtpIndex] = `a=fmtp:${payload} ${[...values]
-      .map(([key, value]) => `${key}=${value}`)
-      .join(";")}`;
-  } else {
-    const opusIndex = lines.indexOf(opusLine!);
-    lines.splice(
-      opusIndex + 1,
-      0,
-      `a=fmtp:${payload} ${Object.entries(parameters)
-        .map(([key, value]) => `${key}=${value}`)
-        .join(";")}`,
-    );
-  }
-  return { ...description, sdp: lines.join("\r\n") };
-}
-
 function monitorPeerVideo(
   peer: RTCPeerConnection,
   onChange: (stats: string) => void,
@@ -4388,6 +4444,7 @@ function monitorPeerVideo(
     { bytes: number; timestamp: number }
   >();
   let lastDiagnostics: CallDiagnostics | null = null;
+  const audioWindow = createAudioWindowStats();
   const interval = window.setInterval(async () => {
     try {
       const report = await peer.getStats();
@@ -4496,6 +4553,15 @@ function monitorPeerVideo(
         .filter(Boolean)
         .join(" / ");
       const nextDiagnostics: CallDiagnostics = {
+        receivedAudio: inboundAudio
+          ? `${received} packets / ${Number(inboundAudio.bytesReceived ?? 0)} bytes`
+          : "No incoming audio packets yet",
+        recentAudio: audioWindow({
+          received,
+          lost,
+          concealed: concealedSamples,
+          samples: totalSamples,
+        }),
         status: peer.connectionState,
         route: localCandidate
           ? `${String(localCandidate.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`
@@ -4572,6 +4638,19 @@ function DiagnosticsIndicator({
           <>
             <span>Route: {diagnostics.route}</span>
             <span>Connection: {diagnostics.status}</span>
+            {diagnostics.connectivity && (
+              <span>{diagnostics.connectivity}</span>
+            )}
+            {diagnostics.negotiation && <span>{diagnostics.negotiation}</span>}
+            {diagnostics.playback && (
+              <span>Playback: {diagnostics.playback}</span>
+            )}
+            {diagnostics.receivedAudio && (
+              <span>Received: {diagnostics.receivedAudio}</span>
+            )}
+            {diagnostics.recentAudio && (
+              <span>Latest sample: {diagnostics.recentAudio}</span>
+            )}
             <span>Protocol: {diagnostics.protocol}</span>
             <span>Codec: {diagnostics.codec}</span>
             {diagnostics.microphone && (

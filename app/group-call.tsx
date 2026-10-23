@@ -12,6 +12,7 @@ import {
 } from "livekit-client";
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { playVoiceSound } from "./call-sounds";
+import { createAudioWindowStats } from "./audio-window-stats";
 import {
   microphoneProcessing,
   monitorVoiceActivity,
@@ -31,6 +32,8 @@ type RemoteMedia = {
 };
 
 type GroupCallDiagnostics = {
+  recentAudio?: string;
+  receivedAudio?: string;
   microphone?: string;
   status: string;
   route: string;
@@ -699,6 +702,7 @@ function monitorRoomDiagnostics(
 ) {
   const previousBytes = new Map<string, { bytes: number; timestamp: number }>();
   let lastDiagnostics: GroupCallDiagnostics | null = null;
+  const audioWindow = createAudioWindowStats();
   const interval = window.setInterval(async () => {
     try {
       const reports: RTCStatsReport[] = [];
@@ -787,6 +791,13 @@ function monitorRoomDiagnostics(
 
       const packetTotal = received + lost;
       const nextDiagnostics: GroupCallDiagnostics = {
+        receivedAudio: `${received} packets`,
+        recentAudio: audioWindow({
+          received,
+          lost,
+          concealed: concealedSamples,
+          samples: totalSamples,
+        }),
         microphone: (() => {
           const track = room.localParticipant.getTrackPublication(
             Track.Source.Microphone,

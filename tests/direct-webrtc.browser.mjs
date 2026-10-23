@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+import WebSocket from "ws";
+import ts from "typescript";
+
+// Optional Windows integration check. Uses real browser ICE/DTLS/RTP and a
+// generated tone, without requiring microphone access or an external service.
+const directory = await mkdtemp(join(tmpdir(), "lc-webrtc-"));
+const browser = spawn(
+  process.env.LC_TEST_BROWSER ??
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+  [
+    "--headless",
+    "--autoplay-policy=no-user-gesture-required",
+    "--disable-gpu",
+    "--no-first-run",
+    "--remote-debugging-port=0",
+    `--user-data-dir=${directory}`,
+    "about:blank",
+  ],
+  { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
+);
+let socket;
+try {
+  const endpoint = await new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(
+      () => reject(new Error("Browser debugging endpoint did not start")),
+      15000,
+    );
+    browser.once("error", reject);
+    browser.stderr.on("data", (chunk) => {
+      output += chunk;
+      const match = output.match(/DevTools listening on (ws:\/\/\S+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve(match[1]);
+      }
+    });
+  });
+  socket = new WebSocket(endpoint);
+  await new Promise((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  let id = 0;
+  const pending = new Map();
+  socket.on("message", (raw) => {
+    const message = JSON.parse(raw);
+    const request = pending.get(message.id);
+    if (request) {
+      pending.delete(message.id);
+      if (message.error) request.reject(new Error(message.error.message));
+      else request.resolve(message.result);
+    }
+  });
+  const call = (method, params = {}, sessionId) =>
+    new Promise((resolve, reject) => {
+      const requestId = ++id;
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        reject(new Error(`Browser command timed out: ${method}`));
+      }, 20000);
+      pending.set(requestId, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      socket.send(JSON.stringify({ id: requestId, method, params, sessionId }));
+    });
+  const { targetId } = await call("Target.createTarget", {
+    url: "about:blank",
+  });
+  const { sessionId } = await call("Target.attachToTarget", {
+    targetId,
+    flatten: true,
+  });
+  const source = await readFile(
+    new URL("../app/direct-negotiation.ts", import.meta.url),
+    "utf8",
+  );
+  const queueCode = ts
+    .transpile(source, {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+    })
+    .replace("export function", "function");
+  const result = await call(
+    "Runtime.evaluate",
+    {
+      awaitPromise: true,
+      userGesture: true,
+      returnByValue: true,
+      timeout: 20000,
+      expression: `(async () => {
+    ${queueCode}
+    const context = new AudioContext();
+    await context.resume();
+    const tone = context.createOscillator();
+    const capture = context.createMediaStreamDestination();
+    tone.connect(capture); tone.start();
+    const peers = [new RTCPeerConnection(), new RTCPeerConnection()];
+    const candidates = [[], []];
+    const errors = [];
+    const receive = peers.map((peer, index) => createSignalQueue(async (message) => {
+      if (message.type === 'candidate') {
+        if (peer.remoteDescription) await peer.addIceCandidate(message.candidate);
+        else candidates[index].push(message.candidate);
+        return;
+      }
+      await peer.setRemoteDescription(message.sdp);
+      for (const candidate of candidates[index].splice(0)) await peer.addIceCandidate(candidate);
+      if (message.type === 'offer') {
+        await peer.setLocalDescription(await peer.createAnswer());
+        void receive[1-index]({ type: 'answer', sdp: peer.localDescription.toJSON() });
+      }
+    }, error => errors.push(error.message)));
+    peers.forEach((peer, index) => {
+      capture.stream.getTracks().forEach(track => peer.addTrack(track, capture.stream));
+      peer.onicecandidate = event => {
+        if (event.candidate) void receive[1-index]({ type: 'candidate', candidate: event.candidate.toJSON() });
+      };
+    });
+    await peers[0].setLocalDescription(await peers[0].createOffer());
+    await receive[1]({ type: 'offer', sdp: peers[0].localDescription.toJSON() });
+    let received = [0,0];
+    const deadline = performance.now() + 10000;
+    while (performance.now() < deadline && received.some(bytes => bytes === 0)) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      for (let i=0; i<peers.length; i++) {
+        const stats = await peers[i].getStats();
+        stats.forEach(stat => { if (stat.type === 'inbound-rtp' && stat.kind === 'audio') received[i] = stat.bytesReceived; });
+      }
+    }
+    const states = peers.map(peer => peer.connectionState);
+    peers.forEach(peer => peer.close()); tone.stop(); await context.close();
+    return { received, states, errors };
+  })()`,
+    },
+    sessionId,
+  );
+  if (result.exceptionDetails)
+    throw new Error(JSON.stringify(result.exceptionDetails));
+  const data = result.result.value;
+  assert.deepEqual(data.errors, []);
+  assert.deepEqual(data.states, ["connected", "connected"]);
+  assert.ok(
+    data.received.every((bytes) => bytes > 0),
+    "Both browsers must receive audio RTP bytes",
+  );
+  console.log("Real browser direct WebRTC audio passed:", JSON.stringify(data));
+} finally {
+  socket?.close();
+  browser.kill();
+  await new Promise((resolve) =>
+    browser.exitCode !== null ? resolve() : browser.once("exit", resolve),
+  );
+  await rm(directory, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 200,
+  }).catch(() => {});
+}

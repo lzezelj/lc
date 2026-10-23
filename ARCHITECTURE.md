@@ -332,11 +332,12 @@ when ICE selects a peer-to-peer route. The in-call diagnostics identify whether
 the selected local candidate is `host`, `srflx`, or `relay` and report audio
 jitter, packet loss, concealment, codec, bitrate, and transport protocol.
 
-Direct-call audio prefers mono Opus at up to 64 kbps with in-band forward-error
-correction. Discontinuous transmission is disabled, and receive jitter buffering
-is left to the browser's adaptive implementation. This avoids the latency and
-audio discontinuities caused by the earlier forced 200 ms buffer and 32 kbps
-DTX configuration.
+Direct-call audio prefers Opus with a 64 kbps sender ceiling. Offers and answers
+use the browser's native SDP rather than manually rewriting codec parameters;
+receive jitter buffering also uses browser defaults. Incoming signaling messages
+are applied serially so an asynchronous SDP operation completes before the next
+ICE candidate. Concurrent setup requests share one pending peer creation, and
+generation guards prevent setup for an ended call from attaching a stale peer.
 
 Direct-call speaking indicators use a fast local detector with a continuously
 learned noise floor. A user's own name updates immediately from their captured
@@ -373,6 +374,17 @@ LiveKit participant. Server membership is unaffected.
 When a direct-room user reconnects, signaling replaces that user's previous
 socket before checking the two-person capacity; a late close from the old
 socket does not emit a false peer departure.
+
+Direct audio elements are attached to the document; blocked autoplay exposes an
+Enable sound control that retries playback from a user gesture. Direct-call
+diagnostics expose ICE/gathering/SDP states, local and remote description types,
+TURN configuration, gathered candidate types, playback state, and received RTP
+packet totals. Both call modes report loss/concealment for each latest sample
+alongside lifetime values so intermittent glitches remain visible. Obsolete peer
+collectors cannot overwrite the diagnostics of a replacement connection.
+`npm run test:webrtc-browser` runs an optional headless Edge check with real
+ICE/DTLS/RTP and generated audio; it verifies packet delivery, not physical
+microphone or speaker quality.
 
 ## Group-call flow
 
