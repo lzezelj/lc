@@ -338,6 +338,12 @@ export default function Home() {
   }, [unreadMessageCount]);
 
   useEffect(() => {
+    if (!noticeMessage) return;
+    const timeout = window.setTimeout(() => setNoticeMessage(""), 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [noticeMessage]);
+
+  useEffect(() => {
     const enableCallAudio = () => prepareVoiceSounds();
     document.addEventListener("pointerdown", enableCallAudio, { once: true });
     return () => document.removeEventListener("pointerdown", enableCallAudio);
@@ -768,6 +774,9 @@ export default function Home() {
         textSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
+        setErrorMessage((current) =>
+          current === "Live messaging is reconnecting." ? "" : current,
+        );
         openedSocket.send(
           JSON.stringify({
             type: "subscribe-text",
@@ -1029,7 +1038,13 @@ export default function Home() {
     const peer = new RTCPeerConnection({ iceServers });
     stream.current?.getTracks().forEach((track) => {
       const sender = peer.addTrack(track, stream.current!);
-      if (track.kind === "video") void preferVideoDetail(sender);
+      if (track.kind === "video") {
+        void preferVideoDetail(sender);
+      } else {
+        track.contentHint = "speech";
+        void preferResilientAudio(sender);
+        preferOpus(peer, sender);
+      }
     });
 
     peer.onicecandidate = (event) => {
@@ -1038,6 +1053,7 @@ export default function Home() {
       }
     };
     peer.ontrack = (event) => {
+      if (event.track.kind === "audio") preferStableAudio(event.receiver);
       if (remoteVideo.current) remoteVideo.current.srcObject = event.streams[0];
       if (event.track.kind === "video") {
         setRemoteHasVideo(true);
@@ -1069,8 +1085,9 @@ export default function Home() {
   async function createOffer() {
     const peer = await ensureConnection();
     const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    send({ type: "offer", sdp: offer });
+    const tunedOffer = tuneOpusDescription(offer);
+    await peer.setLocalDescription(tunedOffer);
+    send({ type: "offer", sdp: tunedOffer });
     setStatus("Calling guest...");
   }
 
@@ -1121,8 +1138,9 @@ export default function Home() {
       await peer.setRemoteDescription(message.sdp);
       await addPendingCandidates(peer);
       const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      send({ type: "answer", sdp: answer });
+      const tunedAnswer = tuneOpusDescription(answer);
+      await peer.setLocalDescription(tunedAnswer);
+      send({ type: "answer", sdp: tunedAnswer });
       return;
     }
     if (message.type === "answer" && "sdp" in message && message.sdp) {
@@ -1231,11 +1249,15 @@ export default function Home() {
         audio: audioConstraints(deviceId),
       });
       const nextTrack = replacement.getAudioTracks()[0];
+      nextTrack.contentHint = "speech";
       const oldTrack = stream.current.getAudioTracks()[0];
       const sender = connection.current
         ?.getSenders()
         .find((candidate) => candidate.track?.kind === "audio");
-      if (sender) await sender.replaceTrack(nextTrack);
+      if (sender) {
+        await sender.replaceTrack(nextTrack);
+        await preferResilientAudio(sender);
+      }
       if (oldTrack) {
         stream.current.removeTrack(oldTrack);
         oldTrack.stop();
@@ -4075,6 +4097,94 @@ async function preferVideoDetail(sender: RTCRtpSender) {
   } catch {
     // Some browsers do not allow changing this encoder preference.
   }
+}
+
+async function preferResilientAudio(sender: RTCRtpSender) {
+  const parameters = sender.getParameters();
+  parameters.encodings ??= [{}];
+  for (const encoding of parameters.encodings) {
+    encoding.maxBitrate = 32_000;
+  }
+  try {
+    await sender.setParameters(parameters);
+  } catch {
+    // The SDP preferences below still apply in browsers that reject this.
+  }
+}
+
+function preferOpus(peer: RTCPeerConnection, sender: RTCRtpSender) {
+  const capabilities = RTCRtpReceiver.getCapabilities?.("audio");
+  const transceiver = peer
+    .getTransceivers()
+    .find((candidate) => candidate.sender === sender);
+  if (!capabilities || !transceiver?.setCodecPreferences) return;
+  const codecs = [...capabilities.codecs].sort((left, right) => {
+    const leftOpus = left.mimeType.toLowerCase() === "audio/opus";
+    const rightOpus = right.mimeType.toLowerCase() === "audio/opus";
+    return Number(rightOpus) - Number(leftOpus);
+  });
+  try {
+    transceiver.setCodecPreferences(codecs);
+  } catch {
+    // Codec preference is advisory and is not supported by every browser.
+  }
+}
+
+function preferStableAudio(receiver: RTCRtpReceiver) {
+  const stableReceiver = receiver as RTCRtpReceiver & {
+    jitterBufferTarget?: number;
+  };
+  try {
+    stableReceiver.jitterBufferTarget = 200;
+  } catch {
+    // Browsers without configurable jitter buffers use their adaptive default.
+  }
+}
+
+function tuneOpusDescription(
+  description: RTCSessionDescriptionInit,
+): RTCSessionDescriptionInit {
+  if (!description.sdp) return description;
+  const lines = description.sdp.split("\r\n");
+  const opusLine = lines.find((line) =>
+    /^a=rtpmap:\d+ opus\/48000/i.test(line),
+  );
+  const payload = opusLine?.match(/^a=rtpmap:(\d+)/i)?.[1];
+  if (!payload) return description;
+  const parameters = {
+    stereo: "0",
+    "sprop-stereo": "0",
+    useinbandfec: "1",
+    usedtx: "1",
+    maxaveragebitrate: "32000",
+  };
+  const fmtpIndex = lines.findIndex((line) =>
+    line.startsWith(`a=fmtp:${payload} `),
+  );
+  if (fmtpIndex >= 0) {
+    const existing = lines[fmtpIndex].slice(`a=fmtp:${payload} `.length);
+    const values = new Map(
+      existing
+        .split(";")
+        .map((part) => part.trim().split("=", 2) as [string, string]),
+    );
+    Object.entries(parameters).forEach(([key, value]) =>
+      values.set(key, value),
+    );
+    lines[fmtpIndex] = `a=fmtp:${payload} ${[...values]
+      .map(([key, value]) => `${key}=${value}`)
+      .join(";")}`;
+  } else {
+    const opusIndex = lines.indexOf(opusLine!);
+    lines.splice(
+      opusIndex + 1,
+      0,
+      `a=fmtp:${payload} ${Object.entries(parameters)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(";")}`,
+    );
+  }
+  return { ...description, sdp: lines.join("\r\n") };
 }
 
 function monitorSpeaking(

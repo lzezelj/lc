@@ -327,6 +327,12 @@ candidate. There is currently no TURN relay for direct calls, so restrictive or
 symmetric NATs can prevent a connection. A direct peer connection may also
 expose each participant's network address to the other participant.
 
+Direct-call audio prefers mono Opus at 32 kbps with in-band forward-error
+correction and discontinuous transmission. Where supported, the receiver uses
+a 200 ms jitter-buffer target. These settings trade a small amount of latency
+and fidelity for more stable speech over lossy internet paths; they cannot
+repair a path that requires a TURN relay or has sustained severe packet loss.
+
 ## Group-call flow
 
 ```mermaid
