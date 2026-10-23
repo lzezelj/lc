@@ -342,7 +342,17 @@ Direct-call speaking indicators are measured locally at the point relevant to
 the viewer. A user's own name reacts immediately to energy on their captured
 microphone track. Other participants' names react to energy on decoded incoming
 WebRTC audio tracks, so remote highlighting represents audio that reached the
-receiving browser rather than a speaking flag sent by the remote browser.
+receiving browser rather than a speaking flag sent by the remote browser. The
+detector uses a fast attack, short release hold, and a continuously learned
+noise floor instead of a fixed volume threshold, allowing it to follow quieter
+browser-processed microphones without waiting on signaling latency.
+
+Direct server voice rooms remain joined when the other participant leaves. The
+remaining browser keeps its signaling room and local media, discards the stale
+peer connection, and negotiates a new peer connection when another participant
+joins. Direct friend calls retain phone-call semantics and end for both users.
+Group-call diagnostics are collected separately from LiveKit's publisher and
+subscriber peer connections rather than from the direct-call connection.
 
 ## Group-call flow
 

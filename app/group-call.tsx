@@ -24,6 +24,17 @@ type RemoteMedia = {
   track: RemoteTrack;
 };
 
+type GroupCallDiagnostics = {
+  status: string;
+  route: string;
+  protocol: string;
+  codec: string;
+  jitterMs: number | null;
+  packetLoss: string;
+  concealedAudio: string;
+  audioBitrate: string;
+};
+
 type GroupCallProps = {
   channelId: string;
   currentUserName: string;
@@ -43,6 +54,7 @@ type GroupCallProps = {
     speaking: boolean;
   }) => void;
   onPingChange: (ping: number) => void;
+  onDiagnosticsChange: (diagnostics: GroupCallDiagnostics | null) => void;
   onLeave: () => void;
   onError: (message: string) => void;
 };
@@ -116,6 +128,7 @@ export function GroupCall({
   onConnectionChange,
   onMediaStateChange,
   onPingChange,
+  onDiagnosticsChange,
   onLeave,
   onError,
 }: GroupCallProps) {
@@ -137,6 +150,7 @@ export function GroupCall({
   const cameraOffRef = useRef(true);
   const stopLocalStats = useRef<(() => void) | null>(null);
   const stopRoomPing = useRef<(() => void) | null>(null);
+  const stopRoomDiagnostics = useRef<(() => void) | null>(null);
   const speakingReleaseTimer = useRef<number | null>(null);
   const localSpeaking = useRef(false);
   const onConnectionChangeRef = useRef(onConnectionChange);
@@ -172,6 +186,9 @@ export function GroupCall({
     stopLocalStats.current = null;
     stopRoomPing.current?.();
     stopRoomPing.current = null;
+    stopRoomDiagnostics.current?.();
+    stopRoomDiagnostics.current = null;
+    onDiagnosticsChange(null);
     if (speakingReleaseTimer.current !== null) {
       window.clearTimeout(speakingReleaseTimer.current);
       speakingReleaseTimer.current = null;
@@ -324,6 +341,12 @@ export function GroupCall({
         if (ping > 0) onPingChange(ping);
       }, 1000);
       stopRoomPing.current = () => window.clearInterval(pingInterval);
+      stopRoomDiagnostics.current?.();
+      stopRoomDiagnostics.current = monitorRoomDiagnostics(
+        room,
+        onDiagnosticsChange,
+        onPingChange,
+      );
       onMediaStateChange({
         muted: false,
         camera: false,
@@ -620,6 +643,128 @@ function monitorTrackVideo(
       onChange([next, ping].filter(Boolean).join(" · "));
     } catch {
       onChange("");
+    }
+  }, 1000);
+  return () => window.clearInterval(interval);
+}
+
+function monitorRoomDiagnostics(
+  room: Room,
+  onChange: (diagnostics: GroupCallDiagnostics) => void,
+  onPing: (ping: number) => void,
+) {
+  const previousBytes = new Map<string, { bytes: number; timestamp: number }>();
+  const interval = window.setInterval(async () => {
+    try {
+      const reports: RTCStatsReport[] = [];
+      const publisher = await room.engine.pcManager?.publisher.getStats();
+      const subscriber = await room.engine.pcManager?.subscriber?.getStats();
+      if (publisher) reports.push(publisher);
+      if (subscriber) reports.push(subscriber);
+
+      let selectedPair: (RTCStats & Record<string, unknown>) | undefined;
+      let localCandidate: (RTCStats & Record<string, unknown>) | undefined;
+      let remoteCandidate: (RTCStats & Record<string, unknown>) | undefined;
+      let codec = "unknown";
+      let jitterMs: number | null = null;
+      let received = 0;
+      let lost = 0;
+      let totalSamples = 0;
+      let concealedSamples = 0;
+      const rates: string[] = [];
+
+      for (const report of reports) {
+        let selectedPairId = "";
+        report.forEach((raw) => {
+          const stat = raw as RTCStats & Record<string, unknown>;
+          if (stat.type === "transport" && stat.selectedCandidatePairId) {
+            selectedPairId = String(stat.selectedCandidatePairId);
+          }
+          if (
+            stat.type === "candidate-pair" &&
+            stat.state === "succeeded" &&
+            (stat.nominated === true || !selectedPair)
+          ) {
+            selectedPair = stat;
+          }
+          if (
+            ["inbound-rtp", "outbound-rtp"].includes(stat.type) &&
+            (stat.kind ?? stat.mediaType) === "audio"
+          ) {
+            if (stat.type === "inbound-rtp") {
+              jitterMs = Math.round(Number(stat.jitter ?? 0) * 1000);
+              received += Number(stat.packetsReceived ?? 0);
+              lost += Math.max(0, Number(stat.packetsLost ?? 0));
+              totalSamples += Number(stat.totalSamplesReceived ?? 0);
+              concealedSamples += Number(stat.concealedSamples ?? 0);
+            }
+            const codecStat = stat.codecId
+              ? (report.get(String(stat.codecId)) as
+                  (RTCStats & Record<string, unknown>) | undefined)
+              : undefined;
+            if (codecStat?.mimeType) {
+              codec = String(codecStat.mimeType).replace("audio/", "");
+            }
+            const bytes = Number(stat.bytesReceived ?? stat.bytesSent ?? 0);
+            const previous = previousBytes.get(stat.id);
+            previousBytes.set(stat.id, { bytes, timestamp: stat.timestamp });
+            if (previous) {
+              const seconds = (stat.timestamp - previous.timestamp) / 1000;
+              if (seconds > 0) {
+                rates.push(
+                  `${stat.type === "inbound-rtp" ? "down" : "up"} ${Math.round(((bytes - previous.bytes) * 8) / seconds / 1000)} kbps`,
+                );
+              }
+            }
+          }
+        });
+        if (selectedPairId) {
+          selectedPair = report.get(selectedPairId) as
+            (RTCStats & Record<string, unknown>) | undefined;
+        }
+        if (selectedPair) {
+          localCandidate = selectedPair.localCandidateId
+            ? (report.get(String(selectedPair.localCandidateId)) as
+                (RTCStats & Record<string, unknown>) | undefined)
+            : localCandidate;
+          remoteCandidate = selectedPair.remoteCandidateId
+            ? (report.get(String(selectedPair.remoteCandidateId)) as
+                (RTCStats & Record<string, unknown>) | undefined)
+            : remoteCandidate;
+          if (selectedPair.currentRoundTripTime !== undefined) {
+            onPing(
+              Math.round(Number(selectedPair.currentRoundTripTime) * 1000),
+            );
+          }
+        }
+      }
+
+      const packetTotal = received + lost;
+      onChange({
+        status: room.state,
+        route: `${String(localCandidate?.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`,
+        protocol: String(localCandidate?.protocol ?? "unknown").toUpperCase(),
+        codec,
+        jitterMs,
+        packetLoss: packetTotal
+          ? `${((lost / packetTotal) * 100).toFixed(1)}%`
+          : "0%",
+        concealedAudio: totalSamples
+          ? `${((concealedSamples / totalSamples) * 100).toFixed(1)}%`
+          : "0%",
+        audioBitrate: rates.join(" / ") || "measuring…",
+      });
+    } catch {
+      onChange({
+        status: "statistics unavailable",
+        route: "unknown → unknown",
+        protocol: "unknown",
+        codec: "unknown",
+        jitterMs: null,
+        packetLoss: "unknown",
+        concealedAudio: "unknown",
+        audioBitrate: "unknown",
+      });
     }
   }, 1000);
   return () => window.clearInterval(interval);

@@ -64,6 +64,7 @@ type VoiceParticipant = {
   speaking: boolean;
 };
 type CallDiagnostics = {
+  status: string;
   route: string;
   protocol: string;
   codec: string;
@@ -1254,6 +1255,25 @@ export default function Home() {
     }
     if (message.type === "peer-left" || message.type === "hangup") {
       playVoiceSound("leave");
+      if (!directRoomId.current.startsWith("friend:")) {
+        connection.current?.close();
+        connection.current = null;
+        pendingCandidates.current = [];
+        stopRemoteSpeechMonitor.current?.();
+        stopRemoteSpeechMonitor.current = null;
+        stopDirectStats.current?.();
+        stopDirectStats.current = null;
+        if (remoteVideo.current) remoteVideo.current.srcObject = null;
+        setRemoteHasVideo(false);
+        setRemoteVideoQuality("");
+        setDirectRemoteSpeaking(false);
+        setCallDiagnostics(null);
+        setDirectPing(null);
+        setDirectVideoStats("");
+        setCallPeerPresent(false);
+        setStatus("Waiting for another person...");
+        return;
+      }
       friendCallStartedAt.current = 0;
       friendCallPartnerId.current = "";
       setCallPeerPresent(false);
@@ -3065,6 +3085,7 @@ export default function Home() {
                 [activeVoiceChannel.id]: ping,
               }))
             }
+            onDiagnosticsChange={setCallDiagnostics}
             onLeave={returnToPreviousTextChannel}
             onError={setErrorMessage}
           />
@@ -4303,13 +4324,16 @@ function monitorSpeaking(
   onChange: (speaking: boolean) => void,
 ) {
   const context = new AudioContext();
+  void context.resume();
   const source = context.createMediaStreamSource(new MediaStream([audioTrack]));
   const analyser = context.createAnalyser();
+  analyser.fftSize = 512;
+  analyser.smoothingTimeConstant = 0.15;
   const samples = new Uint8Array(analyser.fftSize);
   let animationFrame = 0;
   let lastSpeaking = false;
   let lastLoudAt = 0;
-  let loudFrames = 0;
+  let noiseFloor = 0.004;
   source.connect(analyser);
 
   const sample = () => {
@@ -4320,11 +4344,14 @@ function monitorSpeaking(
       sum += normalized * normalized;
     }
     const level = Math.sqrt(sum / samples.length);
-    const loud = level > (lastSpeaking ? 0.025 : 0.04) && audioTrack.enabled;
-    loudFrames = loud ? loudFrames + 1 : 0;
+    const threshold = Math.max(0.007, noiseFloor * (lastSpeaking ? 1.7 : 2.25));
+    const loud = level > threshold && audioTrack.enabled;
+    if (!lastSpeaking && !loud) {
+      noiseFloor = noiseFloor * 0.96 + Math.min(level, 0.025) * 0.04;
+    }
     if (loud) lastLoudAt = performance.now();
     const speaking =
-      loudFrames >= 2 || (lastSpeaking && performance.now() - lastLoudAt < 350);
+      loud || (lastSpeaking && performance.now() - lastLoudAt < 220);
     if (speaking !== lastSpeaking) {
       lastSpeaking = speaking;
       onChange(speaking);
@@ -4358,6 +4385,7 @@ function monitorPeerVideo(
       const values: string[] = [];
       let ping = "";
       let selectedPair: (RTCStats & Record<string, unknown>) | undefined;
+      let selectedPairId = "";
       let inboundAudio: (RTCStats & Record<string, unknown>) | undefined;
       let outboundAudio: (RTCStats & Record<string, unknown>) | undefined;
       report.forEach((raw) => {
@@ -4371,6 +4399,9 @@ function monitorPeerVideo(
             currentRoundTripTime?: number;
             state?: string;
           };
+        if (stat.type === "transport" && stat.selectedCandidatePairId) {
+          selectedPairId = String(stat.selectedCandidatePairId);
+        }
         if (
           stat.type === "candidate-pair" &&
           stat.state === "succeeded" &&
@@ -4416,6 +4447,10 @@ function monitorPeerVideo(
           : "";
         values.push(`${direction} ${kbps} kbps${fps}`);
       });
+      if (selectedPairId) {
+        selectedPair = report.get(selectedPairId) as
+          (RTCStats & Record<string, unknown>) | undefined;
+      }
       const localCandidate = selectedPair?.localCandidateId
         ? (report.get(String(selectedPair.localCandidateId)) as
             (RTCStats & Record<string, unknown>) | undefined)
@@ -4450,6 +4485,7 @@ function monitorPeerVideo(
         .filter(Boolean)
         .join(" / ");
       onDiagnostics({
+        status: peer.connectionState,
         route: `${String(localCandidate?.candidateType ?? "unknown")} → ${String(remoteCandidate?.candidateType ?? "unknown")}`,
         protocol: String(localCandidate?.protocol ?? "unknown").toUpperCase(),
         codec: String(codec?.mimeType ?? "unknown").replace("audio/", ""),
@@ -4468,6 +4504,16 @@ function monitorPeerVideo(
       onChange([...values, ping].filter(Boolean).join(" · "));
     } catch {
       onChange("");
+      onDiagnostics({
+        status: "statistics unavailable",
+        route: "unknown → unknown",
+        protocol: "unknown",
+        codec: "unknown",
+        jitterMs: null,
+        packetLoss: "unknown",
+        concealedAudio: "unknown",
+        audioBitrate: "unknown",
+      });
     }
   }, 1000);
   return () => window.clearInterval(interval);
@@ -4498,6 +4544,7 @@ function DiagnosticsIndicator({
         {diagnostics ? (
           <>
             <span>Route: {diagnostics.route}</span>
+            <span>Connection: {diagnostics.status}</span>
             <span>Protocol: {diagnostics.protocol}</span>
             <span>Codec: {diagnostics.codec}</span>
             <span>Audio: {diagnostics.audioBitrate}</span>
