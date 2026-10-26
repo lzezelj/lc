@@ -9,3 +9,8 @@ Backups and database migrations
 Browser/device testing
 Automated tests for permissions and authorization
 Monitoring and structured logs
+
+
+
+New users dont get a real username
+Changing from a call to server ends the call

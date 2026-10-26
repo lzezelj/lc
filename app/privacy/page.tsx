@@ -18,7 +18,7 @@ export default function PrivacyPage() {
           ← Back to LC
         </Link>
         <h1>Privacy notice</h1>
-        <p className="legalUpdated">Last updated: 22 October 2026</p>
+        <p className="legalUpdated">Last updated: 26 October 2026</p>
 
         <section>
           <h2>1. Controller</h2>
@@ -107,7 +107,10 @@ export default function PrivacyPage() {
           <ul>
             <li>
               <strong>Hetzner Online GmbH:</strong> hosts the application,
-              database, signaling service, and LiveKit media server in Germany.
+              database, signaling service, and LiveKit media server in Germany
+              and processes the associated account, communication, connection,
+              and technical data on our behalf under a data processing agreement
+              pursuant to Article 28 GDPR.
             </li>
             <li>
               <strong>Cloudflare, Inc.:</strong> provides DNS, proxy, transport
