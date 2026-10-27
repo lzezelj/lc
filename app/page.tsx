@@ -198,6 +198,10 @@ export default function Home() {
   const [editingDemoServers, setEditingDemoServers] = useState<string[]>([]);
   const [editingDemoAccount, setEditingDemoAccount] =
     useState<DemoAccount | null>(null);
+  const [extendingDemoAccount, setExtendingDemoAccount] =
+    useState<DemoAccount | null>(null);
+  const [demoExtensionHours, setDemoExtensionHours] = useState("4");
+  const [extendingDemoAccess, setExtendingDemoAccess] = useState(false);
   const [demoInviteLinks, setDemoInviteLinks] = useState<
     Record<string, string>
   >({});
@@ -2054,6 +2058,49 @@ export default function Home() {
     );
   }
 
+  async function extendDemoAccess(event: FormEvent) {
+    event.preventDefault();
+    if (!extendingDemoAccount || extendingDemoAccess) return;
+    setExtendingDemoAccess(true);
+    try {
+      const response = await fetch("/api/demo-accounts", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          demoUserId: extendingDemoAccount.id,
+          action: "extend",
+          extensionHours: Number(demoExtensionHours),
+        }),
+      });
+      const result = await readJsonResponse<{
+        id?: string;
+        expiresAt?: string;
+        error?: string;
+      }>(response);
+      if (!response.ok || !result.expiresAt)
+        throw new Error(result.error ?? "Demo access could not be extended.");
+      setDemoAccounts((current) =>
+        current.map((account) =>
+          account.id === result.id
+            ? { ...account, expiresAt: result.expiresAt! }
+            : account,
+        ),
+      );
+      setExtendingDemoAccount(null);
+      setNoticeMessage(
+        `Demo access extended until ${formatLocalDateTime(result.expiresAt)}.`,
+      );
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : "Demo access could not be extended.",
+      );
+    } finally {
+      setExtendingDemoAccess(false);
+    }
+  }
+
   async function deleteDemoAccount() {
     if (!deleteDemoCandidate) return;
     const response = await fetch("/api/demo-accounts", {
@@ -3746,6 +3793,19 @@ export default function Home() {
                       </p>
                     )}
                     <div className="demoAccountActions">
+                      {(account.status === "active" ||
+                        account.status === "pending") &&
+                        account.servers.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExtendingDemoAccount(account);
+                              setDemoExtensionHours("4");
+                            }}
+                          >
+                            Extend access
+                          </button>
+                        )}
                       <button
                         type="button"
                         onClick={() =>
@@ -4065,6 +4125,67 @@ export default function Home() {
               </button>
             </div>
           </section>
+        </div>
+      )}
+      {extendingDemoAccount && (
+        <div
+          className="modalBackdrop nestedModalBackdrop"
+          onMouseDown={() => {
+            if (!extendingDemoAccess) setExtendingDemoAccount(null);
+          }}
+        >
+          <form
+            className="modalCard demoExtensionModal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="extend-demo-title"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => void extendDemoAccess(event)}
+          >
+            <h2 id="extend-demo-title">
+              Extend access for {extendingDemoAccount.name}
+            </h2>
+            <p>
+              Add time to the current expiry without interrupting their login or
+              changing their invitation.
+            </p>
+            {extendingDemoAccount.expiresAt && (
+              <p>
+                Current expiry:{" "}
+                {formatLocalDateTime(extendingDemoAccount.expiresAt)}
+              </p>
+            )}
+            <label>
+              Additional access (hours)
+              <input
+                autoFocus
+                type="number"
+                min={1}
+                max={720}
+                step={1}
+                required
+                value={demoExtensionHours}
+                onChange={(event) => setDemoExtensionHours(event.target.value)}
+              />
+            </label>
+            <small>Choose 1–720 hours (up to 30 additional days).</small>
+            <div className="modalActions">
+              <button
+                type="button"
+                disabled={extendingDemoAccess}
+                onClick={() => setExtendingDemoAccount(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                type="submit"
+                disabled={extendingDemoAccess}
+              >
+                {extendingDemoAccess ? "Extending…" : "Extend access"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
       {deleteMessageCandidate && (

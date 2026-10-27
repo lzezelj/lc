@@ -177,12 +177,22 @@ matches `OWNER_EMAIL` or one of the comma-separated addresses in
 or UI for changing the allowlist. The `OWNER_EMAIL` account retains the global
 `owner` role. Other allowlisted accounts receive the `member` role, can create
 and administer up to three servers they own, and cannot administer demo
-accounts. Auth.js uses a signed JWT session strategy, while linked OAuth
+accounts. Auth.js uses an encrypted JWT session strategy, while linked OAuth
 account data is stored in PostgreSQL. Whenever the session is accessed, the
 JWT callback revalidates that the user still exists and is neither disabled nor
 expired. Invalid sessions return no session and Auth.js clears their session
 cookie. The browser refreshes its session state at least once per minute and
 whenever the window regains focus.
+
+Login sessions use a renewable 24-hour lifetime. Successful session refreshes
+issue a fresh JWT/cookie for another 24 hours, including background session polls;
+this is not a hard deadline measured from the original login. The JWT callback
+also checks the token's issued-at timestamp against 24 hours so legacy cookies
+issued with the former 30-day lifetime cannot bypass the shorter policy. A
+missing database user or disabled account invalidates authentication on its next
+check. Manual database deletion does not itself notify already-open WebSocket
+or LiveKit connections; the application account-management flow explicitly
+disconnects those connections. Allowlist changes still apply at Google sign-in.
 
 ### Demo login
 
@@ -194,6 +204,16 @@ whenever the window regains focus.
 5. Redemption atomically requires the invitation to be unexpired, unrevoked,
    and unused, then marks it as redeemed.
 6. Revocation disables the demo user and removes its server memberships.
+
+The owner can extend an active or pending demo account by 1–720 whole hours per
+operation. An owner-authorized, rate-limited transaction locks the account and
+invitation, checks current access/membership, and adds time to the existing
+deadline. Account and invitation expiry update together; token hashes,
+redemption/revocation state, memberships and ongoing calls are preserved.
+Existing logins see the new account deadline on their next validation. Demo
+account expiry remains an independent limit even while the 24-hour login cookie
+renews. Expired/revoked accounts use the existing invitation/server-assignment
+reactivation flow instead of extension. No database migration is required.
 
 Expired demo accounts are also excluded from server and member queries. Their
 membership rows are removed when expiration is observed during session

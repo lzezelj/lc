@@ -4,7 +4,11 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
-import { isAccountActive } from "./auth-account.mjs";
+import {
+  isAccountActive,
+  isSessionWithinLifetime,
+  SESSION_MAX_AGE_SECONDS,
+} from "./auth-account.mjs";
 import { db } from "./db";
 import {
   accounts,
@@ -65,7 +69,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     accountsTable: accounts,
     sessionsTable: sessions,
   }),
-  session: { strategy: "jwt" },
+  session: { strategy: "jwt", maxAge: SESSION_MAX_AGE_SECONDS },
   providers: [
     GoogleProvider({
       clientId: process.env.AUTH_GOOGLE_ID ?? "",
@@ -143,7 +147,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         return token;
       }
 
-      if (!token.userId) return null;
+      if (!token.userId || !isSessionWithinLifetime(token.iat)) return null;
       const [currentUser] = await db
         .select({
           id: users.id,

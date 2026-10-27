@@ -13,6 +13,10 @@ import {
 } from "../../../db/schema";
 import { disconnectUserEverywhere } from "../../../server/disconnect-user";
 import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
+import {
+  extendDemoDeadline,
+  parseDemoExtensionHours,
+} from "../../../server/demo-duration";
 
 function adminRateLimit(userId: string) {
   return checkRateLimit(`admin-mutation:${userId}`, rateLimits.adminMutation);
@@ -175,6 +179,7 @@ export async function PATCH(request: Request) {
     action?: string;
     serverIds?: string[];
     name?: string;
+    extensionHours?: number;
   };
   if (!body.demoUserId || !body.action) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
@@ -195,6 +200,64 @@ export async function PATCH(request: Request) {
       { error: "Demo account not found" },
       { status: 404 },
     );
+  }
+
+  if (body.action === "extend") {
+    const hours = parseDemoExtensionHours(body.extensionHours);
+    if (hours === null)
+      return NextResponse.json(
+        { error: "Choose a whole number of hours between 1 and 720." },
+        { status: 400 },
+      );
+    const result = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ expiresAt: users.expiresAt, disabledAt: users.disabledAt })
+        .from(users)
+        .where(
+          and(
+            eq(users.id, demoUser.id),
+            eq(users.createdBy, session.user.id),
+            eq(users.role, "demo"),
+          ),
+        )
+        .for("update");
+      const now = new Date();
+      if (!current?.expiresAt || current.disabledAt || current.expiresAt <= now)
+        return null;
+      const [invite] = await tx
+        .select({ revokedAt: demoInvites.revokedAt })
+        .from(demoInvites)
+        .where(eq(demoInvites.demoUserId, demoUser.id))
+        .for("update");
+      if (!invite || invite.revokedAt) return null;
+      const [membership] = await tx
+        .select({ serverId: serverMembers.serverId })
+        .from(serverMembers)
+        .where(eq(serverMembers.userId, demoUser.id))
+        .limit(1);
+      if (!membership) return null;
+      const expiresAt = extendDemoDeadline(current.expiresAt, hours);
+      await tx
+        .update(users)
+        .set({ expiresAt, updatedAt: now })
+        .where(eq(users.id, demoUser.id));
+      // Keep redemption/revocation state and the token hash intact. A used
+      // invitation must not become usable again when access is extended.
+      await tx
+        .update(demoInvites)
+        .set({ expiresAt })
+        .where(eq(demoInvites.demoUserId, demoUser.id));
+      return { id: demoUser.id, expiresAt };
+    });
+    if (!result)
+      return NextResponse.json(
+        {
+          error:
+            "Only active or pending demo accounts with server access can be extended. Reactivate expired or revoked accounts using a new invitation and server assignment.",
+        },
+        { status: 409 },
+      );
+    return NextResponse.json(result);
   }
 
   if (body.action === "rename") {

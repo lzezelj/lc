@@ -1865,6 +1865,20 @@ button {
   z-index: 45;
 }
 
+.demoExtensionModal {
+  width: min(480px, 100%);
+}
+
+.demoExtensionModal p,
+.demoExtensionModal small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.demoExtensionModal input {
+  width: 100%;
+}
+
 .serverAssignmentModal {
   width: min(520px, 100%);
 }
