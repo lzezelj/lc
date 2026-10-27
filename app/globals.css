@@ -38,11 +38,11 @@ button {
 
 .workspace {
   --rail-width: 72px;
-  --sidebar-width: 250px;
+  --sidebar-width: 340px;
   --channel-width: var(--sidebar-width);
   --member-width: var(--sidebar-width);
-  --sidebar-footer-height: 92px;
-  --voice-dock-height: 56px;
+  --sidebar-footer-height: 76px;
+  --voice-dock-height: 0px;
   display: grid;
   grid-template-columns: var(--rail-width) var(--channel-width) minmax(0, 1fr) var(--member-width);
   grid-template-rows: minmax(0, 1fr);
@@ -53,7 +53,7 @@ button {
   background: #1b2030;
 }
 
-.workspace > .workspaceRail { grid-column: 1; grid-row: 1; overflow-y: auto; }
+.workspace > .workspaceRail { grid-column: 1; grid-row: 1; overflow: hidden; }
 .workspace > .channelSidebar { grid-column: 2; grid-row: 1; }
 .workspace > .room { grid-column: 3; grid-row: 1; }
 .workspace > .memberSidebar { grid-column: 4; grid-row: 1; }
@@ -63,7 +63,27 @@ button {
 .workspace.channelsHidden > .channelSidebar { display: none; }
 .workspace.userListToggled { --member-width: 0px; }
 .workspace.userListToggled > .memberSidebar { display: none; }
-.panelControls { display: flex; gap: 4px; flex-shrink: 0; }
+.panelControls { display: contents; }
+.panelControls > button { position: fixed; top: 12px; z-index: 45; }
+.panelControls > button:nth-child(1) { left: max(8px, calc((var(--rail-width) - 32px) / 2)); }
+.panelControls > button:nth-child(2) { left: max(44px, calc(var(--rail-width) + var(--channel-width) - 40px)); }
+.workspace.channelsHidden .panelControls > button:nth-child(2) { left: calc(var(--rail-width) + 20px); }
+.panelControls > button:nth-child(3) { right: 12px; }
+.workspaceRail { padding-top: 58px; }
+.workspaceName { flex-shrink: 0; min-height: 100px; height: 100px; padding-right: 44px; }
+.memberSidebarHeader { padding-right: 42px; }
+.workspace.channelsHidden .roomHeader { padding-left: 64px; }
+.workspace.channelsHidden .roomHeader > strong { margin-left: 0; }
+.workspace.channelsHidden .roomHeader .panelControls { order: -1; }
+.workspace.channelsHidden .friendsRoom .roomHeader { justify-content: flex-start; }
+@media (min-width: 651px) {
+  .workspace.serverListToggled.channelsHidden .panelControls > button:nth-child(2) { left: 48px; }
+  .workspace.serverListToggled.channelsHidden .roomHeader { padding-left: 92px; }
+}
+@media (max-width: 650px) {
+  .workspace:not(.serverListToggled).channelsHidden .panelControls > button:nth-child(2) { left: 48px; }
+  .workspace:not(.serverListToggled).channelsHidden .roomHeader { padding-left: 92px; }
+}
 .panelControls button, .closeUserList {
   display: inline-flex; align-items: center; justify-content: center;
   width: 32px; height: 32px; padding: 0; border: 1px solid var(--line);
@@ -71,6 +91,8 @@ button {
 }
 .panelControls button:hover, .panelControls button:focus-visible { background: #403769; }
 .roomHeader > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace .roomHeader { padding-left: 34px; padding-right: 56px; }
+.workspace .memberSidebarHeader { padding-right: 48px; }
 .closeUserList { display: none; margin-left: auto; }
 .directMessages .chatLog article { position: relative; padding-right: 65px; }
 .directMessageDelete { position: absolute; top: 8px; right: 8px; border: 0; border-radius: 5px; padding: 4px 6px; color: #f2a9b5; background: #332331; font-size: 11px; }
@@ -82,9 +104,27 @@ button {
   align-items: center;
   flex-direction: column;
   gap: 14px;
-  padding: 14px 0;
+  padding: 58px 0 14px;
   background: #090b11;
 }
+
+.workspaceRail > .workspaceLogo,
+.workspaceRail > .addServerButton { flex-shrink: 0; }
+.serverScroller {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+.serverScroller > .serverButtonWrap { flex: 0 0 46px; }
+.serverScroller:empty { display: none; }
+.workspaceRail > .addServerButton { margin-top: 0; }
 
 .workspaceLogo,
 .workspaceButton {
@@ -105,6 +145,8 @@ button {
   border-radius: 15px;
   background: var(--accent);
 }
+
+.workspaceLogo.friendsActive { outline: 2px solid #b6a5ff; outline-offset: 3px; box-shadow: 0 0 18px #7c5cff35; }
 
 .workspaceButton.active {
   background: #213e38;
@@ -279,7 +321,20 @@ button {
   margin: 8px 0;
   padding: 10px;
   text-align: left;
+  min-width: 0;
+  border: 1px solid #30384c;
+  border-radius: 10px;
+  background: #171c29;
+  color: var(--ink);
+  transition: background 140ms ease, border-color 140ms ease;
 }
+
+button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; border-color: var(--accent); outline: none; }
+.friendRow b { color: #c8c0ff; }
+.friendRow > span { min-width: 0; gap: 4px; }
+.friendRow b, .friendRow small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friendRow .friendListAvatar { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border-radius: 12px; color: #d8ceff; background: #342b54; font-weight: 800; }
+.friendRow > button { padding: 7px 10px; border: 1px solid #45405e; border-radius: 6px; background: #302943; color: var(--ink); }
 
 .friendRow span {
   display: grid;
@@ -305,7 +360,7 @@ button {
 .directMessages header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .friendsRoom { position: relative; min-width: 0; }
-.friendsContent { max-width: 760px; margin: 0 auto; }
+.friendsContent { width: 100%; max-width: 760px; margin: 0 auto; min-width: 0; }
 .friendTabs { display: flex; gap: 8px; margin: 18px 0; border-bottom: 1px solid var(--line); }
 .friendTabs button { padding: 9px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); }
 .friendTabs button:hover,
@@ -320,8 +375,11 @@ button {
 .conversationUnreadBadge { position: absolute; right: 8px; bottom: 8px; display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 999px; background: #ed4245; color: white; font-size: 10px; font-weight: 800; }
 .friendsHomeButton { border: 0; background: transparent; color: var(--ink); font-weight: 800; }
 .friendsHomeButton:hover { color: #c8c0ff; }
+.workspaceName .friendsHomeButton { border: 1px solid transparent; border-radius: 8px; padding: 8px 12px; text-align: left; }
+.workspaceName .friendsHomeButton.active { background: #302847; border-color: #65509a; color: #e1d8ff; }
 .friendsInfoSidebar { border-left: 1px solid var(--line); }
-.friendProfileCard { display: grid; justify-items: center; gap: 8px; padding: 28px 14px; overflow: hidden; text-align: center; }
+.friendProfileCard { display: grid; justify-items: center; gap: 10px; margin: 16px 12px; padding: 28px 16px; overflow: hidden; border: 1px solid #34384f; border-radius: 12px; background: linear-gradient(160deg, #29223f, #171c29 65%); text-align: center; }
+.friendProfileCard .avatar { width: 56px; height: 56px; border-radius: 18px; background: #443368; color: #e5dfff; font-size: 22px; }
 .friendProfileCard strong,
 .friendProfileCard small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .friendProfileCard small { color: var(--muted); }
@@ -346,10 +404,10 @@ button {
 }
 
 .serverTooltip {
-  position: absolute;
-  z-index: 10;
-  top: 50%;
-  left: 58px;
+  position: fixed;
+  z-index: 60;
+  top: var(--server-tooltip-top, 80px);
+  left: calc(var(--rail-width) + 8px);
   padding: 7px 10px;
   transform: translate(-6px, -50%);
   border: 1px solid var(--line);
@@ -406,6 +464,21 @@ button {
   background: transparent;
   color: var(--muted);
 }
+
+.channelSidebar > .workspaceName {
+  height: 58px;
+  min-height: 58px;
+  flex: 0 0 58px;
+  display: flex;
+  justify-content: stretch;
+  padding: 8px 88px 8px 16px;
+}
+.workspace.serverListToggled .workspaceName { padding-left: 52px; }
+.workspaceName .serverActions { position: fixed; top: 12px; left: calc(var(--rail-width) + var(--channel-width) - 78px); z-index: 46; }
+.workspaceName .serverActions .accountMenuTrigger { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); background: #252b3b; border-radius: 7px; }
+.workspaceName .serverActions .accountMenuDropdown { left: auto; right: 0; top: 38px; }
+.workspaceName > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspaceName .serverActions { margin: 0; }
 
 .headerActions {
   display: flex;
@@ -498,6 +571,8 @@ button {
 .renameChannel:hover {
   color: var(--ink);
 }
+
+.voiceChannel > .renameChannel { top: 20px; }
 
 .channel:hover,
 .channel.active {
@@ -646,6 +721,13 @@ button {
   padding: 3px 5px;
   color: #c8cfdd;
   font-size: 12px;
+  border-radius: 6px;
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.voiceParticipant:hover {
+  background: #293147;
+  transform: translateX(2px);
 }
 
 .voiceParticipant i {
@@ -678,12 +760,12 @@ button {
   box-shadow: 0 0 0 2px #42c987;
 }
 
-.voiceKick {
+.participantMediaOpen {
   border: 0;
   border-radius: 4px;
   padding: 2px 5px;
-  background: #393044;
-  color: #f4b6bc;
+  background: transparent;
+  color: inherit;
   font-size: 10px;
   cursor: pointer;
 }
@@ -734,7 +816,54 @@ button {
   padding: 12px;
   border-top: 1px solid var(--line);
   background: #121622;
+  flex-wrap: wrap;
+  align-content: center;
 }
+
+.workspace.voiceActive { --sidebar-footer-height: 140px; --voice-dock-height: 48px; }
+.workspace .profileBar { height: 76px; flex-wrap: nowrap; align-content: normal; padding: 12px; }
+.profileIdentity { display: block; min-width: 0; padding-right: 30px; }
+.profileIdentity strong, .profileIdentity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace.voiceActive .profileIdentity { padding-right: 90px; }
+.profileBar .profileSettings { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: grid; place-items: center; padding: 0; width: 32px; height: 40px; line-height: 1; border-radius: 6px; }
+.profileBar .profileSettings:hover { background: #30384c; color: white; }
+.profileBar .profileIdleMute { position: absolute; right: 40px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; padding: 0; line-height: 1; height: 40px; width: 32px; }
+.profileBar .profileIdleMute[aria-pressed="true"] { color: #f4a6b8; background: #4a2737; border-radius: 6px; }
+.workspace:not(.voiceActive) .profileIdentity { padding-right: 74px; }
+.workspace .profileBar .profileMenu.open { z-index: 100; }
+.workspace .profileMenu .accountMenuDropdown { z-index: 101; bottom: 64px; left: -46px; width: 276px; }
+.workspace .profileConnectionDetails { position: absolute; bottom: 76px; left: 0; height: 64px; padding: 10px 14px; border-top: 1px solid var(--line); background: #121622; }
+.profileConnectionDetails strong { display: block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.workspace .voiceDock { bottom: var(--sidebar-footer-height); min-height: 48px; gap: 8px; justify-content: space-between; }
+.workspace .voiceDock > button:has(+ .soundboardPlaceholder) { flex: 1; max-width: 110px; }
+.workspace .voiceDock .soundboardPlaceholder { opacity: .45; cursor: not-allowed; }
+.workspace .voiceDock > .deviceControl { position: fixed; bottom: 18px; z-index: 19; }
+.workspace .voiceDock > .deviceControl:first-of-type { left: calc(var(--rail-width) + var(--sidebar-width) - 112px); width: 60px; height: 40px; }
+.workspace .voiceDock > .deviceControl:first-of-type .mediaToggle { width: 40px; min-width: 40px; }
+.workspace .voiceDock > .deviceControl:first-of-type .deviceMenuTrigger { width: 20px; min-width: 20px; }
+.workspace .voiceDock > .deviceControl:nth-of-type(2) { position: relative; bottom: auto; left: auto; }
+.workspace .voiceDock > .deviceControl .mediaToggle { min-width: 30px; }
+.workspace .voiceDock > .deviceControl .deviceMenuTrigger { padding-inline: 3px; }
+.workspace.channelsHidden .voiceDock > .deviceControl { position: static; }
+.workspace.voiceActive .appLegalLinks { min-height: 76px; flex-basis: 76px; }
+
+.profileConnectionDetails {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 4px 0 43px;
+  color: #64e6a5;
+  font-size: 11px;
+}
+
+.profileConnectionDetails .connectionIndicators { display: inline-flex; gap: 12px; }
+.profileConnectionDetails > span:first-child { flex: 1; min-width: 0; }
+.profileConnectionDetails { gap: 10px; }
+.profileBar .connectionDisconnect { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border-radius: 6px; color: #f2a9b5; }
+.profileBar .connectionDisconnect:hover { background: #4a2737; }
+.profileConnectionDetails .pingTooltip,
+.profileConnectionDetails .diagnosticsTooltip { left: 0; right: auto; max-width: min(420px, calc(100vw - 32px)); }
 
 .profileBar > span:nth-child(2) {
   flex: 1;
@@ -1003,6 +1132,10 @@ button {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.videoCard.screenShare video {
+  object-fit: contain;
 }
 
 .videoCard span {
@@ -1431,6 +1564,7 @@ button {
   flex: 0 0 var(--sidebar-footer-height);
   min-height: var(--sidebar-footer-height);
   align-items: center;
+  justify-content: center;
   gap: 10px;
   padding: 12px 14px;
   border-top: 1px solid var(--line);
@@ -1458,8 +1592,8 @@ button {
 
 .legalModal {
   display: grid;
-  width: min(850px, calc(100vw - 32px));
-  height: min(820px, calc(100vh - 32px));
+  width: min(1120px, calc(100vw - 32px));
+  height: calc(100dvh - 32px);
   grid-template-rows: 52px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--line);
@@ -1820,7 +1954,17 @@ button {
 .mediaSettings {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
+
+.voiceVideoModal { width: min(580px, 100%); max-height: calc(100dvh - 40px); overflow-y: auto; padding: clamp(20px, 4vw, 32px); }
+.voiceVideoModal > *, .mediaSettings > *, .mediaTests > *, .mediaSettings label { min-width: 0; max-width: 100%; }
+.mediaSettings select { width: 100%; }
+.mediaTests { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+.mediaTests input[type="range"], .mediaTests meter { display: block; width: 100%; padding: 0; }
+.mediaTests button { padding: 10px 14px; border: 1px solid #3c4560; border-radius: 7px; background: #272e40; color: var(--ink); }
+.mediaTests .listenTest { display: flex; align-items: center; gap: 8px; }
+.settingsCameraPreview { width: 100%; aspect-ratio: 16 / 9; max-height: 260px; object-fit: contain; border-radius: 8px; background: #080b12; }
 
 .mediaSettings p,
 .mediaSettings small {
@@ -2177,10 +2321,12 @@ button {
 @media (max-width: 650px) {
   .workspace {
     --rail-width: 0px;
-    --sidebar-width: min(155px, 40vw);
-    --voice-dock-height: 96px;
+    --sidebar-width: min(280px, 56vw);
+    --voice-dock-height: 0px;
   }
   .workspace > .workspaceRail { display: none; }
+  .workspace:not(.serverListToggled) .workspaceName { padding-left: 52px; }
+  .workspace.serverListToggled .workspaceName { padding-left: 16px; }
   .workspace.serverListToggled { --rail-width: 58px; }
   .workspace.serverListToggled > .workspaceRail { display: flex; }
 

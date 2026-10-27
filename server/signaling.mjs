@@ -21,6 +21,37 @@ export function createSignalingServer({
       );
       return;
     }
+    if (
+      request.method === "POST" &&
+      request.url === "/internal/server-updated"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret))
+        return response.writeHead(401).end("Unauthorized");
+      readJsonBody(request)
+        .then((body) => {
+          if (typeof body.serverId !== "string")
+            return response.writeHead(400).end("Invalid server");
+          for (const client of ws.clients) {
+            if (
+              client.readyState === WebSocket.OPEN &&
+              client.identity?.serverIds.includes(body.serverId)
+            )
+              client.send(
+                JSON.stringify({
+                  type: "server-updated",
+                  serverId: body.serverId,
+                }),
+              );
+          }
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     if (request.method === "POST" && request.url === "/internal/text-message") {
       const supplied = request.headers.authorization?.replace(
         /^Bearer\s+/i,

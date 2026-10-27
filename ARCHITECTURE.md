@@ -67,6 +67,15 @@ For direct calls, browsers negotiate with each other and send media peer to
 peer. For group calls, each browser publishes media to LiveKit and subscribes
 to tracks selected by LiveKit.
 
+Screen capture is requested only after a participant selects Share screen in a
+connected call. In direct calls it temporarily replaces that participant's
+outgoing camera track on the existing peer connection, then restores the camera
+when sharing ends; the authenticated signaling socket relays any required
+renegotiation and screen-presence state, but never the captured media. In group
+calls the browser uses LiveKit's native screen-share publication, so camera and
+screen can be published as distinct tracks and forwarded by the SFU. Closing
+the browser picker stops the share and clears presence in both call types.
+
 Voice membership is independent from navigation. The client keeps the active
 direct peer connection or LiveKit room mounted while the user visits another
 server or text channel, and disconnects only when the user leaves or joins a
@@ -80,6 +89,27 @@ The shared profile footer appears in both views and derives its connection label
 from active direct/group voice membership, rather than the currently viewed
 server or a generic signaling status. Long labels truncate with a full-text
 hover title.
+The sidebar footer grows only during an active call: screen sharing and
+actions sit above connection status/diagnostics and disconnect, with identity,
+microphone/camera controls and a separate settings menu along the bottom.
+Forced group-room disconnections clear the active voice selection and call UI.
+The microphone can be muted before joining, and that choice is retained across
+calls during the current app session. Direct capture disables the track before
+publishing; a muted group join keeps microphone capture off until unmuted.
+Microphone transmission also passes through a browser Web Audio gain gate before
+WebRTC encoding. The threshold is saved locally (default -50 dBFS), updates live,
+and uses a 6 dB hysteresis and 180 ms release to reduce syllable chopping. Direct
+calls publish its output track; group calls install the gate as a LiveKit audio
+processor before publication. Device changes rebuild the graph, and leaving stops
+the graph and capture. This is a level gate, not background-speaker separation:
+loud distant voices can pass and noise remains audible while the gate is open.
+Voice/video settings provide a local input meter, optional gated mic playback,
+and a muted camera preview. Tests stop their own captures when stopped, when the
+device changes, or when the dialog closes, without stopping an ongoing call.
+Group playback and microphone processing share the gesture-unlocked audio context.
+The optional `npm run test:webrtc-browser -- --microphone` check feeds generated
+audio through the actual gate in headless Edge and verifies quiet blocking,
+speech passage, live threshold changes and output-track cleanup.
 Server navigation fetches the destination channels and members before swapping
 the visible workspace, leaving the current screen usable instead of covering it
 with an intermediate loading overlay.
@@ -151,6 +181,8 @@ video. It provides:
   notifications, and friend-to-friend incoming-call prompts;
 - server-scoped online-presence subscriptions;
 - authenticated administrative disconnection when membership changes.
+- authenticated server-update events after a server or channel rename, so open
+  clients reload the authoritative server, channel, and member labels.
 
 The service keeps connections and rooms in memory. Clients reconnect and
 resubscribe after a dropped WebSocket connection.
@@ -242,6 +274,12 @@ This design prevents a database reader from directly using stored invitation
 values as login credentials.
 
 ### API authorization
+
+Server context menus expose deletion to the server owner and leaving to other
+members. The leave API derives the account from the session, rejects owners,
+and prevents demo users from leaving their final server in a user-locked
+transaction. Leaving removes membership and refreshes signaling permissions;
+group media membership is revoked through the existing disconnect flow.
 
 The server never accepts a client-supplied author identity. API routes derive
 the user from the authenticated session and verify the relevant server or

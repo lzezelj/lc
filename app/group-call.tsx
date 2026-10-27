@@ -5,6 +5,7 @@ import {
   RemoteParticipant,
   RemoteTrack,
   RemoteTrackPublication,
+  LocalAudioTrack,
   Room,
   RoomEvent,
   Track,
@@ -13,6 +14,7 @@ import {
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { playVoiceSound } from "./call-sounds";
 import { createAudioWindowStats } from "./audio-window-stats";
+import { createVoiceThresholdProcessor } from "./microphone-gate";
 import {
   microphoneProcessing,
   monitorVoiceActivity,
@@ -29,6 +31,7 @@ type RemoteMedia = {
   id: string;
   participantName: string;
   track: RemoteTrack;
+  isScreen: boolean;
 };
 
 type GroupCallDiagnostics = {
@@ -50,6 +53,7 @@ type GroupCallProps = {
   currentUserName: string;
   microphoneId: string;
   cameraId: string;
+  initialMuted?: boolean;
   microphones: MediaDeviceOption[];
   cameras: MediaDeviceOption[];
   autoJoin?: boolean;
@@ -111,7 +115,7 @@ function RemoteTrackView({
 
   return (
     <div
-      className={`videoCard remote ${hidden ? "videoHidden" : ""}`}
+      className={`videoCard remote ${media.isScreen ? "screenShare" : ""} ${hidden ? "videoHidden" : ""}`}
       onClick={onFocus}
     >
       <video
@@ -123,7 +127,10 @@ function RemoteTrackView({
         }
         onResize={(event) => setQuality(videoQuality(event.currentTarget))}
       />
-      <span>{media.participantName}</span>
+      <span>
+        {media.participantName}
+        {media.isScreen ? " — screen" : ""}
+      </span>
       {quality && <small className="qualityBadge">{quality}</small>}
       {networkStats && <small className="networkBadge">{networkStats}</small>}
     </div>
@@ -135,6 +142,7 @@ export function GroupCall({
   currentUserName,
   microphoneId,
   cameraId,
+  initialMuted = false,
   microphones,
   cameras,
   autoJoin = false,
@@ -150,8 +158,9 @@ export function GroupCall({
 }: GroupCallProps) {
   const [joined, setJoined] = useState(false);
   const [joining, setJoining] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [muted, setMuted] = useState(initialMuted);
   const [cameraOff, setCameraOff] = useState(true);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [participants, setParticipants] = useState<string[]>([]);
   const [remoteMedia, setRemoteMedia] = useState<RemoteMedia[]>([]);
   const [status, setStatus] = useState("Not connected");
@@ -162,7 +171,7 @@ export function GroupCall({
   const localVideo = useRef<HTMLVideoElement>(null);
   const joinButton = useRef<HTMLButtonElement>(null);
   const videoGrid = useRef<HTMLDivElement>(null);
-  const mutedRef = useRef(false);
+  const mutedRef = useRef(initialMuted);
   const cameraOffRef = useRef(true);
   const stopLocalStats = useRef<(() => void) | null>(null);
   const stopRoomPing = useRef<(() => void) | null>(null);
@@ -193,7 +202,11 @@ export function GroupCall({
           onMediaStateChange({
             muted: mutedRef.current,
             camera: !cameraOffRef.current,
-            screen: false,
+            screen: Boolean(
+              room.localParticipant.getTrackPublication(
+                Track.Source.ScreenShare,
+              )?.track,
+            ),
             speaking,
           });
         },
@@ -229,6 +242,7 @@ export function GroupCall({
     setJoining(false);
     setMuted(false);
     setCameraOff(true);
+    setScreenSharing(false);
     mutedRef.current = false;
     cameraOffRef.current = true;
     stopLocalStats.current?.();
@@ -246,17 +260,6 @@ export function GroupCall({
     }
     localSpeaking.current = false;
     setLocalVideoStats("");
-  }
-
-  async function leave() {
-    const room = roomRef.current;
-    roomRef.current = null;
-    if (room) await room.disconnect();
-    playVoiceSound("leave");
-    clearRoom();
-    onConnectionChange(false);
-    setStatus("Not connected");
-    onLeave();
   }
 
   useEffect(() => {
@@ -304,6 +307,7 @@ export function GroupCall({
     const room = new Room({
       adaptiveStream: true,
       dynacast: true,
+      webAudioMix: { audioContext: prepareVoiceActivity() },
       publishDefaults: { degradationPreference: "maintain-resolution" },
     });
     roomRef.current = room;
@@ -323,6 +327,7 @@ export function GroupCall({
               id: publication.trackSid,
               participantName: participant.name || "Guest",
               track,
+              isScreen: publication.source === Track.Source.ScreenShare,
             },
           ]);
         },
@@ -334,6 +339,16 @@ export function GroupCall({
         setFocusedVideo((current) =>
           current === publication.trackSid ? null : current,
         );
+      })
+      .on(RoomEvent.LocalTrackUnpublished, (publication) => {
+        if (publication.source !== Track.Source.ScreenShare) return;
+        setScreenSharing(false);
+        onMediaStateChange({
+          muted: mutedRef.current,
+          camera: !cameraOffRef.current,
+          screen: false,
+          speaking: localSpeaking.current,
+        });
       })
       .on(RoomEvent.ParticipantConnected, () => {
         updatePresence();
@@ -353,6 +368,7 @@ export function GroupCall({
         onConnectionChange(false);
         clearRoom();
         setStatus("Disconnected from group channel");
+        onLeave();
       });
 
     try {
@@ -377,17 +393,14 @@ export function GroupCall({
         onPingChange,
       );
       onMediaStateChange({
-        muted: false,
+        muted: mutedRef.current,
         camera: false,
         screen: false,
         speaking: false,
       });
 
       try {
-        await room.localParticipant.setMicrophoneEnabled(
-          true,
-          voiceCaptureOptions(microphoneId),
-        );
+        await setMicrophoneEnabled(room, !mutedRef.current);
         startSpeakingMonitor(room);
       } catch {
         setMuted(true);
@@ -415,17 +428,14 @@ export function GroupCall({
     const room = roomRef.current;
     if (!room) return;
     try {
-      await room.localParticipant.setMicrophoneEnabled(
-        muted,
-        voiceCaptureOptions(microphoneId),
-      );
+      await setMicrophoneEnabled(room, muted);
       setMuted((current) => !current);
       mutedRef.current = !muted;
       startSpeakingMonitor(room);
       onMediaStateChange({
         muted: !muted,
         camera: !cameraOff,
-        screen: false,
+        screen: screenSharing,
         speaking: false,
       });
     } catch {
@@ -471,11 +481,29 @@ export function GroupCall({
       onMediaStateChange({
         muted,
         camera: cameraOff,
-        screen: false,
+        screen: screenSharing,
         speaking: false,
       });
     } catch {
       onError("The camera could not be started. Check browser permission.");
+    }
+  }
+
+  async function toggleScreenShare() {
+    const room = roomRef.current;
+    if (!room) return;
+    try {
+      await room.localParticipant.setScreenShareEnabled(!screenSharing);
+      const next = !screenSharing;
+      setScreenSharing(next);
+      onMediaStateChange({
+        muted,
+        camera: !cameraOff,
+        screen: next,
+        speaking: localSpeaking.current,
+      });
+    } catch {
+      onError("The screen could not be shared. Check browser permission.");
     }
   }
 
@@ -491,6 +519,43 @@ export function GroupCall({
     }
   }
 
+  async function setMicrophoneEnabled(room: Room, enabled: boolean) {
+    const publication = room.localParticipant.getTrackPublication(
+      Track.Source.Microphone,
+    );
+    if (publication || !enabled) {
+      await room.localParticipant.setMicrophoneEnabled(
+        enabled,
+        voiceCaptureOptions(microphoneId),
+      );
+      return;
+    }
+    const capture = await navigator.mediaDevices.getUserMedia({
+      audio: voiceCaptureOptions(microphoneId),
+      video: false,
+    });
+    const track = new LocalAudioTrack(
+      capture.getAudioTracks()[0],
+      voiceCaptureOptions(microphoneId),
+      false,
+      prepareVoiceActivity(),
+    );
+    track.source = Track.Source.Microphone;
+    try {
+      await track.setProcessor(createVoiceThresholdProcessor());
+      if (roomRef.current !== room) {
+        track.stop();
+        return;
+      }
+      await room.localParticipant.publishTrack(track, {
+        source: Track.Source.Microphone,
+      });
+    } catch (error) {
+      track.stop();
+      throw error;
+    }
+  }
+
   async function restartMicrophone() {
     prepareVoiceActivity();
     const room = roomRef.current;
@@ -500,11 +565,7 @@ export function GroupCall({
         Track.Source.Microphone,
       )?.audioTrack;
       if (track) await track.restartTrack(voiceCaptureOptions(microphoneId));
-      else
-        await room.localParticipant.setMicrophoneEnabled(
-          true,
-          voiceCaptureOptions(microphoneId),
-        );
+      else await setMicrophoneEnabled(room, !mutedRef.current);
       startSpeakingMonitor(room);
     } catch {
       onError(
@@ -609,8 +670,15 @@ export function GroupCall({
               onAction={() => void toggleVideo()}
               onSelect={(deviceId) => void changeCamera(deviceId)}
             />
-            <button className="danger" onClick={() => void leave()}>
-              Leave
+            <button onClick={() => void toggleScreenShare()}>
+              {screenSharing ? "Stop sharing" : "Share screen"}
+            </button>
+            <button
+              className="soundboardPlaceholder"
+              disabled
+              title="Soundboard — coming soon"
+            >
+              Soundboard
             </button>
           </>
         )}

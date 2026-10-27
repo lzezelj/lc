@@ -4,6 +4,7 @@ import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { channels, serverMembers } from "../../../../../db/schema";
 import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
+import { notifyServer } from "../../../../../server/notify-server";
 
 async function membership(userId: string, serverId: string) {
   const [result] = await db
@@ -98,5 +99,6 @@ export async function PATCH(
     .returning();
   if (!channel)
     return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+  void notifyServer(serverId);
   return NextResponse.json(channel);
 }

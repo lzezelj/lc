@@ -5,13 +5,15 @@ import { auth } from "../../../auth";
 import { db } from "../../../db";
 import { channels, serverMembers, servers, users } from "../../../db/schema";
 import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
+import { notifyServer } from "../../../server/notify-server";
+import { disconnectUserEverywhere } from "../../../server/disconnect-user";
 
 export async function GET() {
   const session = await auth();
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const result = await db
-    .select({ id: servers.id, name: servers.name })
+    .select({ id: servers.id, name: servers.name, role: serverMembers.role })
     .from(serverMembers)
     .innerJoin(servers, eq(servers.id, serverMembers.serverId))
     .innerJoin(users, eq(users.id, serverMembers.userId))
@@ -83,7 +85,7 @@ export async function POST(request: Request) {
       { status: 403 },
     );
   return NextResponse.json(
-    { id: serverId, name, firstChannelId: textChannelId },
+    { id: serverId, name, role: "owner", firstChannelId: textChannelId },
     { status: 201 },
   );
 }
@@ -111,6 +113,7 @@ export async function PATCH(request: Request) {
     .returning({ id: servers.id, name: servers.name });
   if (!server)
     return NextResponse.json({ error: "Server not found" }, { status: 404 });
+  void notifyServer(server.id);
   return NextResponse.json(server);
 }
 
@@ -118,9 +121,54 @@ export async function DELETE(request: Request) {
   const session = await auth();
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const { serverId } = (await request.json()) as { serverId?: string };
+  const { serverId, action } = (await request.json()) as {
+    serverId?: string;
+    action?: string;
+  };
   if (!serverId)
     return NextResponse.json({ error: "Server is required" }, { status: 400 });
+  if (action === "leave") {
+    const result = await db.transaction(async (tx) => {
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, session.user.id))
+        .for("update");
+      const memberships = await tx
+        .select()
+        .from(serverMembers)
+        .where(eq(serverMembers.userId, session.user.id));
+      const member = memberships.find((row) => row.serverId === serverId);
+      if (!member || member.role === "owner")
+        return "Only non-owner members can leave a server.";
+      if (session.user.role === "demo" && memberships.length <= 1)
+        return "Demo accounts must retain at least one server.";
+      await tx
+        .delete(serverMembers)
+        .where(
+          and(
+            eq(serverMembers.serverId, serverId),
+            eq(serverMembers.userId, session.user.id),
+          ),
+        );
+      return null;
+    });
+    if (result) return NextResponse.json({ error: result }, { status: 403 });
+    const leftChannels = await db
+      .select({ id: channels.id, type: channels.type })
+      .from(channels)
+      .where(eq(channels.serverId, serverId));
+    await disconnectUserEverywhere(
+      session.user.id,
+      leftChannels
+        .filter((channel) => channel.type === "voice_group")
+        .map((channel) => channel.id),
+    );
+    return NextResponse.json({
+      id: serverId,
+      channelIds: leftChannels.map((channel) => channel.id),
+    });
+  }
   const [deleted] = await db
     .delete(servers)
     .where(

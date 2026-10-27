@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 const useTurn = process.argv.includes("--turn");
 const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
+const microphone = process.argv.includes("--microphone");
 let rtcConfiguration = {};
 if (useTurn) {
   const local = parse(await readFile(new URL("../.env", import.meta.url)));
@@ -167,6 +168,17 @@ try {
       module: ts.ModuleKind.ESNext,
     })
     .replace("export function", "function");
+  const gateCode = microphone
+    ? ts
+        .transpile(
+          await readFile(
+            new URL("../app/microphone-gate.ts", import.meta.url),
+            "utf8",
+          ),
+          { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+        )
+        .replace(/^export /gm, "")
+    : "";
   const result = await call(
     "Runtime.evaluate",
     {
@@ -174,9 +186,37 @@ try {
       userGesture: true,
       returnByValue: true,
       timeout: 20000,
-      expression: navigation
-        ? `${navigationCode}; window.runCallNavigationTest()`
-        : `(async () => {
+      expression: microphone
+        ? `(async () => {
+        let threshold = '-45';
+        const localStorage = { getItem: () => threshold };
+        ${gateCode}
+        const context = new AudioContext(); await context.resume();
+        const oscillator = context.createOscillator();
+        const volume = context.createGain(); volume.gain.value = 0.0001;
+        const capture = context.createMediaStreamDestination();
+        oscillator.connect(volume); volume.connect(capture); oscillator.start();
+        const gate = createMicrophoneGate(capture.stream.getAudioTracks()[0], context);
+        const source = context.createMediaStreamSource(new MediaStream([gate.track]));
+        const analyser = context.createAnalyser(); analyser.fftSize = 2048;
+        source.connect(analyser);
+        const values = new Float32Array(analyser.fftSize);
+        const readLevel = async () => { await new Promise(resolve => setTimeout(resolve, 450)); analyser.getFloatTimeDomainData(values); return Math.sqrt(values.reduce((sum, sample) => sum + sample * sample, 0) / values.length); };
+        const quiet = await readLevel();
+        volume.gain.value = 0.1;
+        const speech = await readLevel();
+        threshold = '0';
+        const blocked = await readLevel();
+        threshold = '-80'; volume.gain.value = 0.0001;
+        const disabled = await readLevel();
+        gate.stop(); oscillator.stop(); capture.stream.getTracks().forEach(track => track.stop());
+        const stopped = gate.track.readyState;
+        await context.close();
+        return { quiet, speech, blocked, disabled, stopped };
+      })()`
+        : navigation
+          ? `${navigationCode}; window.runCallNavigationTest()`
+          : `(async () => {
     ${queueCode}
     const context = new AudioContext();
     await context.resume();
@@ -233,7 +273,23 @@ try {
   if (result.exceptionDetails)
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
-  if (navigation) {
+  if (microphone) {
+    assert.ok(
+      data.quiet < 0.000001,
+      "Quiet input must be silent at the output",
+    );
+    assert.ok(data.speech > 0.02, "Speech-level input must pass");
+    assert.ok(
+      data.blocked < 0.000001,
+      "Raising threshold must silence an existing graph",
+    );
+    assert.ok(
+      data.disabled > 0.00001,
+      "Disabling the gate must pass quiet input",
+    );
+    assert.equal(data.stopped, "ended");
+    console.log("Real browser microphone gate passed:", JSON.stringify(data));
+  } else if (navigation) {
     assert.equal(data.elementStable, true);
     assert.equal(data.streamStable, true);
     assert.equal(data.playbackUninterrupted, true);

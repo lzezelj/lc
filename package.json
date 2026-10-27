@@ -10,7 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "format": "eslint . --fix",
-    "test": "node --test tests/signaling.test.mjs tests/auth-account.test.mjs tests/rate-limit.test.mjs tests/voice-activity.test.mjs tests/direct-negotiation.test.mjs tests/remote-track-view.test.mjs tests/demo-extension.test.mjs tests/user-handles.test.mjs tests/direct-message-deletion.test.mjs",
+    "test": "node --test tests/signaling.test.mjs tests/auth-account.test.mjs tests/rate-limit.test.mjs tests/voice-activity.test.mjs tests/direct-negotiation.test.mjs tests/remote-track-view.test.mjs tests/demo-extension.test.mjs tests/user-handles.test.mjs tests/direct-message-deletion.test.mjs tests/server-leave.test.mjs tests/microphone-gate.test.mjs tests/media-tests.test.mjs",
     "test:db": "node --test tests/database.test.mjs",
     "test:webrtc-browser": "node tests/direct-webrtc.browser.mjs",
     "test:all": "npm run test && npm run test:db",
