@@ -5,6 +5,7 @@ import vm from "node:vm";
 import * as crypto from "node:crypto";
 import ts from "typescript";
 import * as duration from "../server/demo-duration.ts";
+import * as handles from "../user-handle.ts";
 
 test("demo extension duration rejects invalid or unbounded input and adds time to the existing deadline", () => {
   for (const invalid of [
@@ -143,6 +144,7 @@ function createHandler({
     if (name.endsWith("/db")) return { db };
     if (name.endsWith("/db/schema")) return schema;
     if (name.endsWith("/demo-duration")) return duration;
+    if (name.endsWith("/user-handle")) return handles;
     if (name.endsWith("/rate-limit"))
       return { checkRateLimit: () => ({ allowed: true }), rateLimits: {} };
     if (name.endsWith("/disconnect-user"))

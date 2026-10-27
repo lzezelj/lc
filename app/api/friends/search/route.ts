@@ -3,13 +3,13 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../auth";
 import { db } from "../../../../db";
 import { users } from "../../../../db/schema";
+import { normalizeUserHandle } from "../../../../user-handle";
 
 export async function GET(request: Request) {
   const session = await auth();
-  const query = new URL(request.url).searchParams
-    .get("q")
-    ?.trim()
-    .toLowerCase();
+  const query = normalizeUserHandle(
+    new URL(request.url).searchParams.get("q") ?? "",
+  );
   if (!session || !query || query.length < 2) return NextResponse.json([]);
   const rows = await db
     .select({ id: users.id, name: users.name, handle: users.handle })

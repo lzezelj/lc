@@ -1,8 +1,9 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { and, eq, inArray, lte } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
+import { buildUserHandle } from "../../../user-handle";
 import {
   channels,
   demoInvites,
@@ -140,13 +141,26 @@ export async function POST(request: Request) {
   const tokenHash = createHash("sha256").update(token).digest("hex");
   const expiresAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
   await db.transaction(async (tx) => {
-    await tx.insert(users).values({
-      id: demoUserId,
-      role: "demo",
-      name,
-      createdBy: session.user.id,
-      expiresAt,
-    });
+    let created = false;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const [inserted] = await tx
+        .insert(users)
+        .values({
+          id: demoUserId,
+          role: "demo",
+          name,
+          handle: buildUserHandle(name, randomInt(10000)),
+          createdBy: session.user.id,
+          expiresAt,
+        })
+        .onConflictDoNothing({ target: users.handle })
+        .returning({ id: users.id });
+      if (inserted) {
+        created = true;
+        break;
+      }
+    }
+    if (!created) throw new Error("Could not allocate a demo handle");
     await tx.insert(serverMembers).values({ serverId, userId: demoUserId });
     await tx.insert(demoInvites).values({
       demoUserId,

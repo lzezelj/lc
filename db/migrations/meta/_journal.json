@@ -71,6 +71,13 @@
       "when": 1792845270003,
       "tag": "0009_direct_call_history",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793059200000,
+      "tag": "0010_direct_message_deletion",
+      "breakpoints": true
     }
   ]
 }

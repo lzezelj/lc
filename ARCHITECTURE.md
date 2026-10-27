@@ -72,6 +72,14 @@ direct peer connection or LiveKit room mounted while the user visits another
 server or text channel, and disconnects only when the user leaves or joins a
 different voice channel. Microphone capture requests mono 48 kHz audio with
 browser echo cancellation, noise suppression, and automatic gain control.
+Direct-call audio is mounted in `CallMediaProvider` above the Friends/server
+workspace branches. Switching those branches cannot replace the audio element;
+video previews restore their stored streams after navigation. Remote previews
+are muted because the persistent audio element alone plays received sound.
+The shared profile footer appears in both views and derives its connection label
+from active direct/group voice membership, rather than the currently viewed
+server or a generic signaling status. Long labels truncate with a full-text
+hover title.
 Server navigation fetches the destination channels and members before swapping
 the visible workspace, leaving the current screen usable instead of covering it
 with an intermediate loading overlay.
@@ -183,6 +191,16 @@ JWT callback revalidates that the user still exists and is neither disabled nor
 expired. Invalid sessions return no session and Auth.js clears their session
 cookie. The browser refreshes its session state at least once per minute and
 whenever the window regains focus.
+
+Google user handles are allocated after Auth.js has persisted the user, in the
+initial JWT callback. Existing users with missing handles are repaired on session
+validation. Demo creation assigns a handle within its creation transaction.
+Allocation uses the unique handle constraint and retries collisions without
+overwriting a handle assigned by a concurrent request. Stable stored handles
+retain the canonical `username.1234` form; the UI displays `username (1234)` and
+friend/server lookup accepts both forms, including partial bracket searches.
+The current user's handle is included in the session and displayed in both
+Friends and server profile footers.
 
 Login sessions use a renewable 24-hour lifetime. Successful session refreshes
 issue a fresh JWT/cookie for another 24 hours, including background session polls;
@@ -309,6 +327,23 @@ otherwise the browser increments its local unread and title counters.
 Friendship writes emit the same kind of refresh event so both users see request
 and acceptance changes without reloading.
 
+Direct-message deletion is sender-only and scoped to the recipient in the API.
+Migration `0010_direct_message_deletion` adds a nullable deletion timestamp.
+The default action erases content and keeps a `Deleted message` placeholder;
+an explicit permanent option removes the row. After the database write, a
+`direct-message-deleted` event goes to both users, including their other open
+tabs. Clients update the open history and refresh conversation previews without
+counting deletion events as new unread messages. Missed events recover through
+the existing history reload. Deletions are rate limited per authenticated user.
+
+Both workspaces have controls to toggle the server rail, channel/conversation
+sidebar, and user/profile sidebar. On narrow mobile screens the rail and user
+list start hidden while channels and chat remain visible; the channel sidebar
+can also be hidden to give chat the full width. The user list opens as a drawer
+on tablet/mobile widths. These controls change CSS visibility only and do not
+unmount the active media connection or change voice membership. Scrollbars use
+the shared dark theme throughout the app, including dialogs and legal pages.
+
 ## Direct WebRTC call flow
 
 ```mermaid
@@ -415,6 +450,9 @@ collectors cannot overwrite the diagnostics of a replacement connection.
 `npm run test:webrtc-browser` runs an optional headless Edge check with real
 ICE/DTLS/RTP and generated audio; it verifies packet delivery, not physical
 microphone or speaker quality.
+Adding `-- --navigation` exercises the actual React call-media provider while
+switching Friends/server child layouts, asserting stable audio element/stream
+identity and uninterrupted playback with a generated tone.
 
 ## Group-call flow
 

@@ -24,6 +24,7 @@ export async function GET(
       author: users.name,
       kind: directMessages.kind,
       callDurationSeconds: directMessages.callDurationSeconds,
+      deletedAt: directMessages.deletedAt,
     })
     .from(directMessages)
     .innerJoin(users, eq(users.id, directMessages.senderId))

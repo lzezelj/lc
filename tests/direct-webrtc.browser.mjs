@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -7,9 +7,12 @@ import WebSocket from "ws";
 import ts from "typescript";
 import { createHmac } from "node:crypto";
 import { parse } from "dotenv";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const useTurn = process.argv.includes("--turn");
 const directIp = process.argv.includes("--direct-ip");
+const navigation = process.argv.includes("--navigation");
 let rtcConfiguration = {};
 if (useTurn) {
   const local = parse(await readFile(new URL("../.env", import.meta.url)));
@@ -35,6 +38,51 @@ if (useTurn) {
 // Optional Windows integration check. Uses real browser ICE/DTLS/RTP and a
 // generated tone, without requiring microphone access or an external service.
 const directory = await mkdtemp(join(tmpdir(), "lc-webrtc-"));
+let navigationCode = "";
+if (navigation) {
+  const require = createRequire(import.meta.url);
+  const { webpack } = require("next/dist/compiled/webpack/webpack");
+  const component = await readFile(
+    new URL("../app/call-media.tsx", import.meta.url),
+    "utf8",
+  );
+  await writeFile(
+    join(directory, "call-media.js"),
+    ts.transpile(component, {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+      jsx: ts.JsxEmit.ReactJSX,
+    }),
+  );
+  await writeFile(
+    join(directory, "entry.mjs"),
+    await readFile(
+      new URL("./call-navigation.fixture.mjs", import.meta.url),
+      "utf8",
+    ),
+  );
+  await new Promise((resolve, reject) => {
+    const compiler = webpack({
+      mode: "development",
+      target: "web",
+      devtool: false,
+      entry: join(directory, "entry.mjs"),
+      output: { path: directory, filename: "navigation.js" },
+      resolve: {
+        modules: [fileURLToPath(new URL("../node_modules", import.meta.url))],
+      },
+    });
+    compiler.run((error, stats) =>
+      compiler.close(() => {
+        if (error) reject(error);
+        else if (stats.hasErrors())
+          reject(new Error(stats.toString({ all: false, errors: true })));
+        else resolve();
+      }),
+    );
+  });
+  navigationCode = await readFile(join(directory, "navigation.js"), "utf8");
+}
 const browser = spawn(
   process.env.LC_TEST_BROWSER ??
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -126,7 +174,9 @@ try {
       userGesture: true,
       returnByValue: true,
       timeout: 20000,
-      expression: `(async () => {
+      expression: navigation
+        ? `${navigationCode}; window.runCallNavigationTest()`
+        : `(async () => {
     ${queueCode}
     const context = new AudioContext();
     await context.resume();
@@ -183,24 +233,39 @@ try {
   if (result.exceptionDetails)
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
-  console.log(
-    "WebRTC connectivity result:",
-    JSON.stringify({
-      mode: useTurn
-        ? directIp
-          ? "TURN via configured server IP"
-          : "TURN via hostname"
-        : "direct",
-      ...data,
-    }),
-  );
-  assert.deepEqual(data.errors, []);
-  assert.deepEqual(data.states, ["connected", "connected"]);
-  assert.ok(
-    data.received.every((bytes) => bytes > 0),
-    "Both browsers must receive audio RTP bytes",
-  );
-  console.log("Real browser direct WebRTC audio passed:", JSON.stringify(data));
+  if (navigation) {
+    assert.equal(data.elementStable, true);
+    assert.equal(data.streamStable, true);
+    assert.equal(data.playbackUninterrupted, true);
+    assert.equal(data.audioElements, 1);
+    assert.equal(data.trackState, "live");
+    console.log(
+      "Friends/server navigation audio passed:",
+      JSON.stringify(data),
+    );
+  } else {
+    console.log(
+      "WebRTC connectivity result:",
+      JSON.stringify({
+        mode: useTurn
+          ? directIp
+            ? "TURN via configured server IP"
+            : "TURN via hostname"
+          : "direct",
+        ...data,
+      }),
+    );
+    assert.deepEqual(data.errors, []);
+    assert.deepEqual(data.states, ["connected", "connected"]);
+    assert.ok(
+      data.received.every((bytes) => bytes > 0),
+      "Both browsers must receive audio RTP bytes",
+    );
+    console.log(
+      "Real browser direct WebRTC audio passed:",
+      JSON.stringify(data),
+    );
+  }
 } finally {
   socket?.close();
   browser.kill();

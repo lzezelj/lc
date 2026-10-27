@@ -5,11 +5,20 @@
   --panel: #151925;
   --deep: #0d1018;
   --accent: #7c5cff;
+  color-scheme: dark;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: #505974 #101420;
 }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #101420; }
+::-webkit-scrollbar-thumb { background: #505974; border: 2px solid #101420; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+::-webkit-scrollbar-corner { background: #101420; }
 
 body {
   margin: 0;
@@ -28,13 +37,47 @@ button {
 }
 
 .workspace {
+  --rail-width: 72px;
+  --sidebar-width: 250px;
+  --channel-width: var(--sidebar-width);
+  --member-width: var(--sidebar-width);
+  --sidebar-footer-height: 92px;
+  --voice-dock-height: 56px;
   display: grid;
-  grid-template-columns: 72px 250px minmax(0, 1fr) 220px;
-  min-height: 100vh;
+  grid-template-columns: var(--rail-width) var(--channel-width) minmax(0, 1fr) var(--member-width);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   background: #1b2030;
 }
 
+.workspace > .workspaceRail { grid-column: 1; grid-row: 1; overflow-y: auto; }
+.workspace > .channelSidebar { grid-column: 2; grid-row: 1; }
+.workspace > .room { grid-column: 3; grid-row: 1; }
+.workspace > .memberSidebar { grid-column: 4; grid-row: 1; }
+.workspace.serverListToggled { --rail-width: 0px; }
+.workspace.serverListToggled > .workspaceRail { display: none; }
+.workspace.channelsHidden { --channel-width: 0px; }
+.workspace.channelsHidden > .channelSidebar { display: none; }
+.workspace.userListToggled { --member-width: 0px; }
+.workspace.userListToggled > .memberSidebar { display: none; }
+.panelControls { display: flex; gap: 4px; flex-shrink: 0; }
+.panelControls button, .closeUserList {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 0; border: 1px solid var(--line);
+  border-radius: 7px; background: #252b3b; color: var(--ink);
+}
+.panelControls button:hover, .panelControls button:focus-visible { background: #403769; }
+.roomHeader > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.closeUserList { display: none; margin-left: auto; }
+.directMessages .chatLog article { position: relative; padding-right: 65px; }
+.directMessageDelete { position: absolute; top: 8px; right: 8px; border: 0; border-radius: 5px; padding: 4px 6px; color: #f2a9b5; background: #332331; font-size: 11px; }
+.directMessageDelete:hover { background: #653344; }
+
 .workspaceRail {
+  min-height: 0;
   display: flex;
   align-items: center;
   flex-direction: column;
@@ -331,12 +374,16 @@ button {
 
 .channelSidebar,
 .memberSidebar {
-  min-height: 100vh;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
   background: var(--panel);
   color: var(--muted);
 }
 
 .channelSidebar {
+  display: flex;
+  flex-direction: column;
   position: relative;
   border-right: 1px solid var(--line);
 }
@@ -345,6 +392,7 @@ button {
 .roomHeader {
   display: flex;
   height: 58px;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
@@ -396,6 +444,36 @@ button {
 .channelRow .channel,
 .voiceChannel .channel {
   padding-right: 34px;
+}
+
+.voiceChannel > .channel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.channelIcon,
+.connectionIndicators {
+  flex-shrink: 0;
+}
+
+.channelName {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channelRow .channel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connectionIndicators .pingIndicator {
+  margin-left: 0;
 }
 
 .renameChannel {
@@ -650,6 +728,7 @@ button {
   bottom: 0;
   left: 0;
   display: flex;
+  height: var(--sidebar-footer-height);
   align-items: center;
   gap: 9px;
   padding: 12px;
@@ -789,6 +868,28 @@ button {
 
 .profileMenu .accountMenuTrigger > span:first-child {
   min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.profileMenu .accountMenuTrigger strong,
+.profileMenu .accountMenuTrigger small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profileMenu .accountMenuTrigger .userHandle {
+  font-size: 10px;
+}
+
+.channelSidebar nav {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: calc(var(--sidebar-footer-height) + var(--voice-dock-height) + 12px);
 }
 
 .profileMenu .accountMenuDropdown {
@@ -941,10 +1042,10 @@ button {
 .voiceDock {
   position: fixed;
   z-index: 18;
-  bottom: 59px;
-  left: 72px;
-  width: 250px;
-  min-height: 48px;
+  bottom: var(--sidebar-footer-height);
+  left: var(--rail-width);
+  width: var(--sidebar-width);
+  min-height: var(--voice-dock-height);
   align-items: center;
   padding: 8px;
   border-top: 1px solid var(--line);
@@ -1219,12 +1320,23 @@ button {
 }
 
 .memberSidebar {
+  display: flex;
+  flex-direction: column;
   border-left: 1px solid var(--line);
+}
+
+.memberScroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 12px;
 }
 
 .memberSidebarHeader {
   display: flex;
   height: 58px;
+  flex-shrink: 0;
   align-items: center;
   padding: 0 14px;
   border-bottom: 1px solid var(--line);
@@ -1234,6 +1346,7 @@ button {
 }
 
 .memberSearch {
+  flex-shrink: 0;
   width: calc(100% - 28px);
   margin: 14px 14px 0;
   padding: 9px 10px;
@@ -1315,8 +1428,13 @@ button {
 
 .appLegalLinks {
   display: flex;
+  flex: 0 0 var(--sidebar-footer-height);
+  min-height: var(--sidebar-footer-height);
+  align-items: center;
   gap: 10px;
-  padding: 16px 14px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  background: #121622;
   font-size: 11px;
 }
 
@@ -2040,22 +2158,54 @@ button {
 
 @media (max-width: 920px) {
   .workspace {
-    grid-template-columns: 64px 210px minmax(0, 1fr);
+    --rail-width: 64px;
+    --sidebar-width: 210px;
+    --member-width: 0px;
   }
 
   .memberSidebar {
     display: none;
   }
+  .workspace.userListToggled > .memberSidebar {
+    display: flex; position: fixed; right: 0; top: 0; bottom: 0;
+    width: min(280px, 85vw); z-index: 50; box-shadow: -12px 0 30px #0008;
+  }
+  .closeUserList { display: inline-flex; }
+  .memberSidebarHeader { display: flex; align-items: center; gap: 8px; }
 }
 
 @media (max-width: 650px) {
   .workspace {
-    grid-template-columns: 58px minmax(0, 1fr);
+    --rail-width: 0px;
+    --sidebar-width: min(155px, 40vw);
+    --voice-dock-height: 96px;
   }
+  .workspace > .workspaceRail { display: none; }
+  .workspace.serverListToggled { --rail-width: 58px; }
+  .workspace.serverListToggled > .workspaceRail { display: flex; }
 
-  .channelSidebar {
-    display: none;
+  .voiceDock {
+    left: var(--rail-width);
+    bottom: var(--sidebar-footer-height);
+    width: var(--sidebar-width);
+    min-height: var(--voice-dock-height);
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px;
   }
+  .workspace.channelsHidden .voiceDock { bottom: 64px; width: max-content; max-width: calc(100vw - var(--rail-width)); min-height: 48px; }
+  .roomHeader { padding: 8px; gap: 6px; flex-wrap: wrap; }
+  .roomHeader > strong { flex: 1; }
+  .roomHeader .accountMenu { flex-shrink: 0; }
+  .roomHeader .accountMenuTrigger { max-width: 32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat { padding: 8px; }
+  .chat form { gap: 4px; padding: 6px; margin: 0 0 6px; }
+  .chat form input { width: 0; min-width: 0; flex: 1; }
+  .directMessages { inset: 58px 8px 8px; }
+  .directMessages.callActive { inset: calc(43% + 66px) 8px 8px; }
+  .chatLog { padding: 6px; }
+  .channelSidebar nav { padding-left: 6px; padding-right: 6px; }
+  .profileBar { padding: 8px; gap: 6px; }
 
   .roomHeader > span {
     display: none;

@@ -9,6 +9,7 @@ import {
   users,
 } from "../../../../../db/schema";
 import { disconnectUserEverywhere } from "../../../../../server/disconnect-user";
+import { normalizeUserHandle } from "../../../../../user-handle";
 
 export async function GET(
   _request: Request,
@@ -148,7 +149,7 @@ export async function POST(
         await db
           .select({ id: users.id })
           .from(users)
-          .where(eq(users.handle, body.handle!.trim().toLowerCase()))
+          .where(eq(users.handle, normalizeUserHandle(body.handle!)))
       )[0]?.id
     : undefined;
   const userIds = [

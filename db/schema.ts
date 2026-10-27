@@ -225,6 +225,7 @@ export const directMessages = pgTable(
     content: text("content").notNull(),
     kind: text("kind").default("message").notNull(),
     callDurationSeconds: integer("call_duration_seconds"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

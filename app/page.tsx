@@ -5,6 +5,8 @@ import { signOut, useSession } from "next-auth/react";
 import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
 import { DeviceMenu, MediaDeviceOption, MediaIcon } from "./device-menu";
 import { GroupCall } from "./group-call";
+import { useCallAudio } from "./call-media";
+import { formatUserHandle } from "../user-handle";
 import { createSignalQueue } from "./direct-negotiation";
 import { createAudioWindowStats } from "./audio-window-stats";
 import {
@@ -103,6 +105,8 @@ type Signal = {
   fromUserId?: string;
   fromName?: string;
   targetUserId?: string;
+  messageId?: string;
+  permanent?: boolean;
   message?: Parameters<typeof toChatMessage>[0];
 };
 
@@ -150,6 +154,7 @@ function formatCallDuration(seconds: number | null) {
 }
 
 export default function Home() {
+  const remoteAudio = useCallAudio();
   const { data: session, status: authStatus } = useSession();
   const [servers, setServers] = useState<Server[]>([]);
   const [friendsView, setFriendsView] = useState(false);
@@ -187,6 +192,9 @@ export default function Home() {
   const [inviteUrl, setInviteUrl] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [demoMenuOpen, setDemoMenuOpen] = useState(false);
+  const [serverListToggled, setServerListToggled] = useState(false);
+  const [channelsHidden, setChannelsHidden] = useState(false);
+  const [userListToggled, setUserListToggled] = useState(false);
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
   const [addFriendsOpen, setAddFriendsOpen] = useState(false);
   const [deleteServerOpen, setDeleteServerOpen] = useState(false);
@@ -230,6 +238,7 @@ export default function Home() {
   const [deleteMessageCandidate, setDeleteMessageCandidate] = useState<{
     id: string;
     preview: string;
+    conversationUserId?: string;
   } | null>(null);
   const [permanentMessageDeletion, setPermanentMessageDeletion] =
     useState(false);
@@ -264,6 +273,7 @@ export default function Home() {
   const [voiceJoinKey, setVoiceJoinKey] = useState(0);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
+  const [connectedGroupChannelId, setConnectedGroupChannelId] = useState("");
   const [activeVoiceChannelSnapshot, setActiveVoiceChannelSnapshot] =
     useState<Channel | null>(null);
   const [callViewOpen, setCallViewOpen] = useState(false);
@@ -294,7 +304,7 @@ export default function Home() {
   const [channelPing, setChannelPing] = useState<Record<string, number>>({});
   const localVideo = useRef<HTMLVideoElement>(null);
   const remoteVideo = useRef<HTMLVideoElement>(null);
-  const remoteAudio = useRef<HTMLAudioElement | null>(null);
+  const remoteVisualStream = useRef<MediaStream | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const presenceSocket = useRef<WebSocket | null>(null);
   const textSocket = useRef<WebSocket | null>(null);
@@ -334,6 +344,19 @@ export default function Home() {
   const stopSpeechMonitor = useRef<(() => void) | null>(null);
   const stopRemoteSpeechMonitor = useRef<(() => void) | null>(null);
   const stopDirectStats = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (localVideo.current) localVideo.current.srcObject = stream.current;
+    if (remoteVideo.current)
+      remoteVideo.current.srcObject = remoteVisualStream.current;
+    const audio = remoteAudio.current;
+    if (audio?.srcObject && audio.paused) {
+      void audio
+        .play()
+        .then(() => setAudioPlaybackBlocked(false))
+        .catch(() => setAudioPlaybackBlocked(true));
+    }
+  }, [friendsView, activeVoiceChannelId, serversLoaded, remoteAudio]);
 
   useEffect(() => {
     if (authStatus === "unauthenticated") location.href = "/login";
@@ -921,10 +944,10 @@ export default function Home() {
       textSocket.current?.close();
       connection.current?.close();
       remoteAudio.current?.pause();
-      remoteAudio.current?.remove();
+      if (remoteAudio.current) remoteAudio.current.srcObject = null;
       stream.current?.getTracks().forEach((track) => track.stop());
     },
-    [],
+    [remoteAudio],
   );
 
   useEffect(() => {
@@ -996,6 +1019,27 @@ export default function Home() {
           void loadFriends();
           invalidateSignalingToken();
           setSignalingRefreshKey((current) => current + 1);
+        }
+        if (
+          message.type === "direct-message-deleted" &&
+          message.fromUserId &&
+          message.messageId
+        ) {
+          if (selectedFriendId.current === message.fromUserId) {
+            setDirectMessages((current) =>
+              current
+                .filter(
+                  (entry) =>
+                    !message.permanent || entry.id !== message.messageId,
+                )
+                .map((entry) =>
+                  entry.id === message.messageId
+                    ? { ...entry, text: "Deleted message", deleted: true }
+                    : entry,
+                ),
+            );
+          }
+          void loadFriends();
         }
         if (
           message.type === "direct-message" &&
@@ -1095,13 +1139,8 @@ export default function Home() {
   }
 
   function prepareRemoteAudio() {
-    if (!remoteAudio.current) {
-      const audio = document.createElement("audio");
-      audio.autoplay = true;
-      audio.setAttribute("playsinline", "");
-      document.body.appendChild(audio);
-      remoteAudio.current = audio;
-    }
+    if (!remoteAudio.current) throw new Error("Call audio is not mounted");
+    remoteAudio.current.setAttribute("playsinline", "");
     return remoteAudio.current;
   }
 
@@ -1210,9 +1249,9 @@ export default function Home() {
         void playRemoteAudio();
       }
       if (event.track.kind === "video") {
+        remoteVisualStream.current = new MediaStream([event.track]);
         if (remoteVideo.current)
-          remoteVideo.current.srcObject =
-            event.streams[0] ?? new MediaStream([event.track]);
+          remoteVideo.current.srcObject = remoteVisualStream.current;
         setRemoteHasVideo(true);
         event.track.addEventListener("ended", () => setRemoteHasVideo(false), {
           once: true,
@@ -1364,6 +1403,7 @@ export default function Home() {
         stopDirectStats.current?.();
         stopDirectStats.current = null;
         if (remoteVideo.current) remoteVideo.current.srcObject = null;
+        remoteVisualStream.current = null;
         if (remoteAudio.current) remoteAudio.current.srcObject = null;
         setRemoteHasVideo(false);
         setRemoteVideoQuality("");
@@ -1536,7 +1576,11 @@ export default function Home() {
   }
 
   function handleGroupConnection(channelId: string, present: boolean) {
-    activeGroupChannelId.current = present ? channelId : "";
+    if (present || activeGroupChannelId.current === channelId)
+      activeGroupChannelId.current = present ? channelId : "";
+    setConnectedGroupChannelId((current) =>
+      present ? channelId : current === channelId ? "" : current,
+    );
     sendGroupPresence(channelId, present);
   }
 
@@ -1692,6 +1736,7 @@ export default function Home() {
     pendingCandidates.current = [];
     stopMedia();
     if (remoteVideo.current) remoteVideo.current.srcObject = null;
+    remoteVisualStream.current = null;
     if (remoteAudio.current) remoteAudio.current.srcObject = null;
     setJoined(false);
     setJoining(false);
@@ -2188,21 +2233,51 @@ export default function Home() {
     setDeleteMessagesPending(false);
   }
 
-  function requestMessageDeletion(messageId: string, preview: string) {
+  function requestMessageDeletion(
+    messageId: string,
+    preview: string,
+    conversationUserId?: string,
+  ) {
     setMessageMenu(null);
+    setErrorMessage("");
     setPermanentMessageDeletion(false);
-    setDeleteMessageCandidate({ id: messageId, preview });
+    setDeleteMessageCandidate({ id: messageId, preview, conversationUserId });
   }
 
   async function deleteMessage() {
     if (!deleteMessageCandidate) return;
-    const response = await fetch(`/api/messages/${deleteMessageCandidate.id}`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ permanent: permanentMessageDeletion }),
-    });
+    const candidate = deleteMessageCandidate;
+    const response = await fetch(
+      candidate.conversationUserId
+        ? `/api/direct-messages/${candidate.conversationUserId}/${candidate.id}`
+        : `/api/messages/${candidate.id}`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permanent: permanentMessageDeletion }),
+      },
+    );
     if (!response.ok) {
       setErrorMessage("The message could not be deleted.");
+      return;
+    }
+    if (candidate.conversationUserId) {
+      if (selectedFriendId.current === candidate.conversationUserId) {
+        setDirectMessages((current) =>
+          current
+            .filter(
+              (entry) => !permanentMessageDeletion || entry.id !== candidate.id,
+            )
+            .map((entry) =>
+              entry.id === candidate.id
+                ? { ...entry, text: "Deleted message", deleted: true }
+                : entry,
+            ),
+        );
+      }
+      void loadFriends();
+      setDeleteMessageCandidate(null);
+      setPermanentMessageDeletion(false);
       return;
     }
     setMessages((current) =>
@@ -2371,7 +2446,7 @@ export default function Home() {
     (friend) =>
       friend.status === "accepted" &&
       !members.some((member) => member.id === friend.id) &&
-      `${friend.name} ${friend.handle}`
+      `${friend.name} ${friend.handle} ${formatUserHandle(friend.handle)}`
         .toLowerCase()
         .includes(serverFriendSearch.trim().toLowerCase()),
   );
@@ -2387,6 +2462,247 @@ export default function Home() {
       <button type="button" className="primary" onClick={answerIncomingCall}>
         Answer
       </button>
+    </div>
+  );
+
+  const connectionLabel =
+    activeVoiceChannel &&
+    (joined || connectedGroupChannelId === activeVoiceChannel.id)
+      ? `Connected to "${activeVoiceChannel.name}"`
+      : activeVoiceChannel && joining
+        ? `Connecting to "${activeVoiceChannel.name}"…`
+        : "Not connected";
+  const profilePanel = session && (
+    <footer className="profileBar">
+      <span className="avatar">
+        {session.user.name?.[0]?.toUpperCase() ?? "Y"}
+      </span>
+      <div
+        className={`accountMenu profileMenu ${accountMenuOpen ? "open" : ""}`}
+        ref={accountMenu}
+      >
+        <button
+          className={`accountMenuTrigger ${directLocalSpeaking ? "speaking" : ""}`}
+          onClick={() => setAccountMenuOpen((current) => !current)}
+        >
+          <span>
+            <strong title={session.user.name ?? "You"}>
+              {session.user.name ?? "You"}
+            </strong>
+            {session.user.handle && (
+              <small
+                className="userHandle"
+                title={formatUserHandle(session.user.handle)}
+              >
+                {formatUserHandle(session.user.handle)}
+              </small>
+            )}
+            <small className="voiceConnectionStatus" title={connectionLabel}>
+              {connectionLabel}
+            </small>
+          </span>
+          <span aria-hidden="true">⌃</span>
+        </button>
+        {accountMenuOpen && (
+          <div className="accountMenuDropdown">
+            <button
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setFriendsView(false);
+                setForm("media");
+                void loadMediaDevices();
+              }}
+            >
+              Voice &amp; video settings
+            </button>
+            <button
+              onClick={() => {
+                setFriendsView(false);
+                void openAccountMessages(
+                  session.user.id,
+                  session.user.name ?? "My account",
+                );
+              }}
+            >
+              My messages
+            </button>
+            <button
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setFriendsView(false);
+                setRenameTarget({
+                  kind: "user",
+                  id: session.user.id,
+                  name: session.user.name ?? "",
+                });
+              }}
+            >
+              Change username
+            </button>
+            <button onClick={() => void signOut({ callbackUrl: "/login" })}>
+              Log out
+            </button>
+          </div>
+        )}
+      </div>
+    </footer>
+  );
+
+  const legalLinks = (
+    <footer className="appLegalLinks">
+      <button type="button" onClick={() => setLegalDocument("impressum")}>
+        Impressum
+      </button>
+      <button type="button" onClick={() => setLegalDocument("privacy")}>
+        Privacy
+      </button>
+    </footer>
+  );
+  const legalOverlay = legalDocument && (
+    <div
+      className="modalBackdrop legalModalBackdrop"
+      onMouseDown={() => setLegalDocument(null)}
+    >
+      <section
+        className="legalModal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={
+          legalDocument === "impressum" ? "Impressum" : "Privacy notice"
+        }
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <strong>
+            {legalDocument === "impressum" ? "Impressum" : "Privacy notice"}
+          </strong>
+          <button
+            type="button"
+            aria-label="Close legal document"
+            onClick={() => setLegalDocument(null)}
+          >
+            ×
+          </button>
+        </header>
+        <iframe
+          title={legalDocument === "impressum" ? "Impressum" : "Privacy notice"}
+          src={`/${legalDocument}`}
+        />
+      </section>
+    </div>
+  );
+
+  const panelClasses = `${serverListToggled ? "serverListToggled" : ""} ${channelsHidden ? "channelsHidden" : ""} ${userListToggled ? "userListToggled" : ""}`;
+  const panelControls = (
+    <nav className="panelControls" aria-label="Workspace panels">
+      <button
+        type="button"
+        title="Show or hide servers"
+        aria-label="Show or hide servers"
+        onClick={() => setServerListToggled((value) => !value)}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="18"
+          height="18"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          aria-hidden="true"
+        >
+          <rect x="3" y="3" width="7" height="7" rx="2" />
+          <rect x="3" y="14" width="7" height="7" rx="2" />
+          <path d="M14 6h7M14 17h7" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        title="Show or hide channels and conversations"
+        aria-label="Show or hide channels and conversations"
+        aria-expanded={!channelsHidden}
+        onClick={() => setChannelsHidden((value) => !value)}
+      >
+        #
+      </button>
+      <button
+        type="button"
+        title="Show or hide users"
+        aria-label="Show or hide users"
+        onClick={() => setUserListToggled((value) => !value)}
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="18"
+          height="18"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          aria-hidden="true"
+        >
+          <circle cx="9" cy="8" r="3" />
+          <path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5" />
+        </svg>
+      </button>
+    </nav>
+  );
+  const closeUserList = (
+    <button
+      type="button"
+      className="closeUserList"
+      aria-label="Close user list"
+      onClick={() => setUserListToggled(false)}
+    >
+      ×
+    </button>
+  );
+  const directDeletionDialog = deleteMessageCandidate?.conversationUserId && (
+    <div
+      className="modalBackdrop deletionConfirmationBackdrop"
+      onMouseDown={() => setDeleteMessageCandidate(null)}
+    >
+      <section
+        className="modalCard deletionConfirmation"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="direct-delete-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h2 id="direct-delete-title">Delete message?</h2>
+        <p>
+          The content will be erased for both people and replaced with{" "}
+          <em>Deleted message</em>.
+        </p>
+        <blockquote>{deleteMessageCandidate.preview}</blockquote>
+        <label className="permanentDeleteOption">
+          <input
+            type="checkbox"
+            checked={permanentMessageDeletion}
+            onChange={(event) =>
+              setPermanentMessageDeletion(event.target.checked)
+            }
+          />
+          <span>
+            Delete completely
+            <small>
+              Permanently removes the message from both histories. This cannot
+              be undone.
+            </small>
+          </span>
+        </label>
+        {errorMessage && <p role="alert">{errorMessage}</p>}
+        <div className="modalActions">
+          <button type="button" onClick={() => setDeleteMessageCandidate(null)}>
+            Cancel
+          </button>
+          <button
+            className="danger"
+            type="button"
+            onClick={() => void deleteMessage()}
+          >
+            {permanentMessageDeletion ? "Delete permanently" : "Delete message"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 
@@ -2419,7 +2735,7 @@ export default function Home() {
         : !onlineUserIds.includes(friend.id),
     );
     return (
-      <main className="workspace friendsScreen">
+      <main className={`workspace friendsScreen ${panelClasses}`}>
         <aside className="workspaceRail">
           <button
             className="workspaceLogo"
@@ -2512,10 +2828,12 @@ export default function Home() {
               </button>
             ))}
           </nav>
+          {profilePanel}
         </aside>
         <section className="room friendsRoom">
           <header className="roomHeader">
             <strong>{selectedFriend?.name ?? "Friends"}</strong>
+            {panelControls}
           </header>
           {!selectedFriend && (
             <div className="friendsContent">
@@ -2531,7 +2849,11 @@ export default function Home() {
                   onChange={(event) => {
                     const value = event.target.value;
                     setFriendSearch(value);
-                    if (value.trim().length >= 3 || value.includes(".")) {
+                    if (
+                      value.trim().length >= 3 ||
+                      value.includes(".") ||
+                      value.includes("(")
+                    ) {
                       void searchFriends(value);
                     } else {
                       setFriendResults([]);
@@ -2550,7 +2872,7 @@ export default function Home() {
                   <div className="friendRow" key={friend.id}>
                     <span>
                       <b>{friend.name}</b>
-                      <small>{friend.handle}</small>
+                      <small>{formatUserHandle(friend.handle)}</small>
                     </span>
                     <button
                       onClick={() => void friendAction("request", friend)}
@@ -2591,7 +2913,7 @@ export default function Home() {
                     <div className="friendRow" key={friend.id}>
                       <span>
                         <b>{friend.name}</b>
-                        <small>{friend.handle}</small>
+                        <small>{formatUserHandle(friend.handle)}</small>
                       </span>
                       {friend.incoming ? (
                         <>
@@ -2623,7 +2945,7 @@ export default function Home() {
                     >
                       <span>
                         <b>{friend.name}</b>
-                        <small>{friend.handle}</small>
+                        <small>{formatUserHandle(friend.handle)}</small>
                       </span>
                     </button>
                   ))}
@@ -2638,10 +2960,10 @@ export default function Home() {
               <div className="chatLog">
                 {directMessages.map((message) => (
                   <article
-                    className={message.kind === "call" ? "callHistory" : ""}
+                    className={`${message.kind === "call" ? "callHistory" : ""} ${message.deleted ? "deletedMessage" : ""}`}
                     key={message.id}
                   >
-                    {message.kind === "call" ? (
+                    {message.kind === "call" && !message.deleted ? (
                       <p>
                         {message.text}
                         {message.text === "Call ended" &&
@@ -2655,6 +2977,24 @@ export default function Home() {
                         <p>{message.text}</p>
                       </>
                     )}
+                    {message.authorId === session.user.id &&
+                      !message.deleted && (
+                        <button
+                          type="button"
+                          className="directMessageDelete"
+                          aria-label="Delete message"
+                          title="Delete message"
+                          onClick={() =>
+                            requestMessageDeletion(
+                              message.id,
+                              message.text,
+                              selectedFriend.id,
+                            )
+                          }
+                        >
+                          Delete
+                        </button>
+                      )}
                   </article>
                 ))}
               </div>
@@ -2688,7 +3028,7 @@ export default function Home() {
                 />
               </div>
               <div className="friendsCallVideo">
-                <video ref={remoteVideo} autoPlay playsInline />
+                <video ref={remoteVideo} autoPlay muted playsInline />
                 {!remoteHasVideo && (
                   <span>{activeVoiceChannel.name[0]?.toUpperCase()}</span>
                 )}
@@ -2735,20 +3075,27 @@ export default function Home() {
           )}
         </section>
         <aside className="memberSidebar friendsInfoSidebar">
-          <header className="memberSidebarHeader">Profile</header>
-          {selectedFriend ? (
-            <div className="friendProfileCard">
-              <span className="avatar">
-                {selectedFriend.name[0]?.toUpperCase()}
-              </span>
-              <strong>{selectedFriend.name}</strong>
-              <small>{selectedFriend.handle}</small>
-            </div>
-          ) : (
-            <p className="empty">Select a friend to view their profile.</p>
-          )}
+          <header className="memberSidebarHeader">
+            Profile{closeUserList}
+          </header>
+          <div className="memberScroll">
+            {selectedFriend ? (
+              <div className="friendProfileCard">
+                <span className="avatar">
+                  {selectedFriend.name[0]?.toUpperCase()}
+                </span>
+                <strong>{selectedFriend.name}</strong>
+                <small>{formatUserHandle(selectedFriend.handle)}</small>
+              </div>
+            ) : (
+              <p className="empty">Select a friend to view their profile.</p>
+            )}
+          </div>
+          {legalLinks}
         </aside>
         {incomingCallOverlay}
+        {legalOverlay}
+        {directDeletionDialog}
       </main>
     );
   }
@@ -2801,7 +3148,7 @@ export default function Home() {
   }
 
   return (
-    <main className="workspace">
+    <main className={`workspace ${panelClasses}`}>
       <aside className="workspaceRail" aria-label="Workspaces">
         <button
           className="workspaceLogo"
@@ -2914,6 +3261,7 @@ export default function Home() {
               <div className="channelRow" key={channel.id}>
                 <button
                   className={`channel ${channel.id === selectedChannelId ? "active" : ""}`}
+                  title={channel.name}
                   onClick={() => {
                     lastTextChannelId.current = channel.id;
                     setCallViewOpen(false);
@@ -2947,8 +3295,12 @@ export default function Home() {
                   className={`channel ${channel.id === activeVoiceChannelId ? "active" : ""}`}
                   onClick={() => selectVoiceChannel(channel)}
                 >
-                  {channel.type === "voice_group" ? "◉" : "\u{1F50A}"}{" "}
-                  {channel.name}
+                  <span className="channelIcon" aria-hidden="true">
+                    {channel.type === "voice_group" ? "◉" : "\u{1F50A}"}
+                  </span>
+                  <span className="channelName" title={channel.name}>
+                    {channel.name}
+                  </span>
                   {channel.id === activeVoiceChannelId && (
                     <ConnectionDiagnostics
                       ping={directPing ?? channelPing[channel.id]}
@@ -3038,67 +3390,13 @@ export default function Home() {
               </div>
             ))}
         </nav>
-        <footer className="profileBar">
-          <span className="avatar">Y</span>
-          <div
-            className={`accountMenu profileMenu ${accountMenuOpen ? "open" : ""}`}
-            ref={accountMenu}
-          >
-            <button
-              className={`accountMenuTrigger ${directLocalSpeaking ? "speaking" : ""}`}
-              onClick={() => setAccountMenuOpen((current) => !current)}
-            >
-              <span>
-                <strong>{session.user.name ?? "You"}</strong>
-                <small>{status}</small>
-              </span>
-              <span aria-hidden="true">⌃</span>
-            </button>
-            {accountMenuOpen && (
-              <div className="accountMenuDropdown">
-                <button
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setForm("media");
-                    void loadMediaDevices();
-                  }}
-                >
-                  Voice &amp; video settings
-                </button>
-                <button
-                  onClick={() =>
-                    void openAccountMessages(
-                      session.user.id,
-                      session.user.name ?? "My account",
-                    )
-                  }
-                >
-                  My messages
-                </button>
-                <button
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setRenameTarget({
-                      kind: "user",
-                      id: session.user.id,
-                      name: session.user.name ?? "",
-                    });
-                  }}
-                >
-                  Change username
-                </button>
-                <button onClick={() => void signOut({ callbackUrl: "/login" })}>
-                  Log out
-                </button>
-              </div>
-            )}
-          </div>
-        </footer>
+        {profilePanel}
       </aside>
       <section
         className={`room ${selectedChannel?.type === "text" ? "textOnly" : ""}`}
       >
         <header className="roomHeader">
+          {panelControls}
           <strong>
             {displayedChannel
               ? `${displayedChannel.type === "text" ? "" : displayedChannel.type === "voice_group" ? "◉ " : "\u{1F50A} "}${displayedChannel.name}`
@@ -3183,6 +3481,7 @@ export default function Home() {
                 <video
                   ref={remoteVideo}
                   autoPlay
+                  muted
                   playsInline
                   onLoadedMetadata={(event) =>
                     setRemoteVideoQuality(videoQuality(event.currentTarget))
@@ -3381,6 +3680,7 @@ export default function Home() {
       </section>
       <aside className="memberSidebar">
         <header className="memberSidebarHeader">
+          {closeUserList}
           <strong>ALL USERS — {members.length}</strong>
         </header>
         <input
@@ -3391,98 +3691,59 @@ export default function Home() {
           placeholder="Search users"
           aria-label="Search users"
         />
-        <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
-        {onlineMembers.map((member) => (
-          <div
-            className="member online"
-            key={member.id}
-            onContextMenu={(event) => {
-              if (!isSelectedServerOwner || member.role === "owner") return;
-              event.preventDefault();
-              setMemberMenu({
-                member,
-                x: Math.min(event.clientX, window.innerWidth - 190),
-                y: Math.min(event.clientY, window.innerHeight - 70),
-              });
-            }}
-          >
-            <span className={`avatar role-${member.role}`}>
-              {member.name[0]?.toUpperCase()}
-            </span>
-            <span className="memberIdentity">
-              <strong title={member.name}>{member.name}</strong>
-              <small>{member.role}</small>
-            </span>
-          </div>
-        ))}
-        <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
-        {offlineMembers.map((member) => (
-          <div
-            className="member offline"
-            key={member.id}
-            onContextMenu={(event) => {
-              if (!isSelectedServerOwner || member.role === "owner") return;
-              event.preventDefault();
-              setMemberMenu({
-                member,
-                x: Math.min(event.clientX, window.innerWidth - 190),
-                y: Math.min(event.clientY, window.innerHeight - 70),
-              });
-            }}
-          >
-            <span className={`avatar role-${member.role}`}>
-              {member.name[0]?.toUpperCase()}
-            </span>
-            <span className="memberIdentity">
-              <strong title={member.name}>{member.name}</strong>
-              <small>{member.role}</small>
-            </span>
-          </div>
-        ))}
-        <div className="appLegalLinks">
-          <button type="button" onClick={() => setLegalDocument("impressum")}>
-            Impressum
-          </button>
-          <button type="button" onClick={() => setLegalDocument("privacy")}>
-            Privacy
-          </button>
+        <div className="memberScroll">
+          <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
+          {onlineMembers.map((member) => (
+            <div
+              className="member online"
+              key={member.id}
+              onContextMenu={(event) => {
+                if (!isSelectedServerOwner || member.role === "owner") return;
+                event.preventDefault();
+                setMemberMenu({
+                  member,
+                  x: Math.min(event.clientX, window.innerWidth - 190),
+                  y: Math.min(event.clientY, window.innerHeight - 70),
+                });
+              }}
+            >
+              <span className={`avatar role-${member.role}`}>
+                {member.name[0]?.toUpperCase()}
+              </span>
+              <span className="memberIdentity">
+                <strong title={member.name}>{member.name}</strong>
+                <small>{member.role}</small>
+              </span>
+            </div>
+          ))}
+          <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
+          {offlineMembers.map((member) => (
+            <div
+              className="member offline"
+              key={member.id}
+              onContextMenu={(event) => {
+                if (!isSelectedServerOwner || member.role === "owner") return;
+                event.preventDefault();
+                setMemberMenu({
+                  member,
+                  x: Math.min(event.clientX, window.innerWidth - 190),
+                  y: Math.min(event.clientY, window.innerHeight - 70),
+                });
+              }}
+            >
+              <span className={`avatar role-${member.role}`}>
+                {member.name[0]?.toUpperCase()}
+              </span>
+              <span className="memberIdentity">
+                <strong title={member.name}>{member.name}</strong>
+                <small>{member.role}</small>
+              </span>
+            </div>
+          ))}
         </div>
+        {legalLinks}
       </aside>
-      {legalDocument && (
-        <div
-          className="modalBackdrop legalModalBackdrop"
-          onMouseDown={() => setLegalDocument(null)}
-        >
-          <section
-            className="legalModal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={
-              legalDocument === "impressum" ? "Impressum" : "Privacy notice"
-            }
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <header>
-              <strong>
-                {legalDocument === "impressum" ? "Impressum" : "Privacy notice"}
-              </strong>
-              <button
-                type="button"
-                aria-label="Close legal document"
-                onClick={() => setLegalDocument(null)}
-              >
-                ×
-              </button>
-            </header>
-            <iframe
-              title={
-                legalDocument === "impressum" ? "Impressum" : "Privacy notice"
-              }
-              src={`/${legalDocument}`}
-            />
-          </section>
-        </div>
-      )}
+      {legalOverlay}
       {memberMenu && (
         <div
           className="messageContextMenu"
@@ -3577,7 +3838,7 @@ export default function Home() {
                   />
                   <span>
                     <b>{friend.name}</b>
-                    <small>{friend.handle}</small>
+                    <small>{formatUserHandle(friend.handle)}</small>
                   </span>
                 </label>
               ))}
@@ -4188,7 +4449,8 @@ export default function Home() {
           </form>
         </div>
       )}
-      {deleteMessageCandidate && (
+      {directDeletionDialog}
+      {deleteMessageCandidate && !deleteMessageCandidate.conversationUserId && (
         <div
           className="modalBackdrop deletionConfirmationBackdrop"
           onMouseDown={() => {
@@ -4362,6 +4624,7 @@ function toChatMessage(message: {
   text: string;
   createdAt?: string | Date;
   deleted?: boolean;
+  deletedAt?: string | Date | null;
   replyTo?: { id: string; text: string; author: string } | null;
   kind?: "message" | "call";
   callDurationSeconds?: number | null;
@@ -4370,8 +4633,9 @@ function toChatMessage(message: {
     id: message.id,
     authorId: message.authorId,
     author: message.author,
-    text: message.text,
-    deleted: Boolean(message.deleted),
+    text:
+      message.deleted || message.deletedAt ? "Deleted message" : message.text,
+    deleted: Boolean(message.deleted || message.deletedAt),
     replyTo: message.replyTo ?? null,
     kind: message.kind ?? "message",
     callDurationSeconds: message.callDurationSeconds ?? null,

@@ -4,6 +4,7 @@ import { auth } from "../../../auth";
 import { db } from "../../../db";
 import { directMessages, friendships, users } from "../../../db/schema";
 import { notifyUser } from "../../../server/notify-user";
+import { normalizeUserHandle } from "../../../user-handle";
 
 export async function GET() {
   const session = await auth();
@@ -40,6 +41,7 @@ export async function GET() {
           recipientId: directMessages.recipientId,
           text: directMessages.content,
           kind: directMessages.kind,
+          deletedAt: directMessages.deletedAt,
           createdAt: directMessages.createdAt,
         })
         .from(directMessages)
@@ -60,7 +62,11 @@ export async function GET() {
       message.senderId === session.user.id
         ? message.recipientId
         : message.senderId;
-    if (!latestByFriend.has(friendId)) latestByFriend.set(friendId, message);
+    if (!latestByFriend.has(friendId))
+      latestByFriend.set(friendId, {
+        ...message,
+        text: message.deletedAt ? "Deleted message" : message.text,
+      });
   }
   return NextResponse.json(
     rows.map((row) => ({
@@ -93,7 +99,7 @@ export async function POST(request: Request) {
     const [target] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.handle, body.handle.trim().toLowerCase()));
+      .where(eq(users.handle, normalizeUserHandle(body.handle)));
     if (!target || target.id === session.user.id)
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     const [existing] = await db
