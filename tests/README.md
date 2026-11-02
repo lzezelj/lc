@@ -61,6 +61,28 @@ Point it at a dedicated migrated test database. Test inserts and deletes run
 inside rolled-back transactions. `npm.cmd run test:all` runs the default suite
 and these database checks; it does not include browser modes.
 
+## GitHub Actions
+
+`.github/workflows/ci.yml` runs three independent jobs on pushes, pull requests
+and manual runs:
+
+- `core`: Node 24, `npm ci`, lint, the default test suite, and the production build.
+- `Docker build`: the full production Dockerfile, tagged locally as `lc:ci`;
+  no image is pushed to a registry.
+- `Database checks`: disposable PostgreSQL 17, `node db/migrate.mjs` twice,
+  then `npm run test:db`. The credentials in the workflow belong only to that
+  temporary test database. No production database or GitHub secrets are needed.
+
+After pushing the workflow and confirming all jobs pass, configure a branch
+rule for `main` in GitHub repository settings. Require pull requests and the
+status checks `core`, `Docker build`, and `Database checks` before merging.
+Select the check names shown by the completed run. This repository setting
+must be enabled separately; editing workflow YAML does not enable it.
+
+The workflow does not include the optional browser modes, a real LiveKit call,
+or deployment checks. A successful image build does not establish runtime
+connectivity to production services.
+
 ## Interpreting results
 
 Keep overlap when the failure paths differ: pure media logic, component

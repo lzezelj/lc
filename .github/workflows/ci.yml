@@ -32,3 +32,57 @@ jobs:
 
       - name: Build application
         run: npm run build
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build production image
+        run: docker build --tag lc:ci .
+
+  database:
+    name: Database checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: lc_test
+          POSTGRES_PASSWORD: lc_test
+          POSTGRES_DB: lc_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lc_test -d lc_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://lc_test:lc_test@127.0.0.1:5432/lc_test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply production migrations
+        run: node db/migrate.mjs
+
+      - name: Verify migrations can run again
+        run: node db/migrate.mjs
+
+      - name: Run database tests
+        run: npm run test:db

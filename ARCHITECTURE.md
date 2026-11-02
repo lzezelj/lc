@@ -688,6 +688,17 @@ enforcement layer for LiveKit and SSH ports.
 
 ## Deployment lifecycle
 
+GitHub Actions runs `.github/workflows/ci.yml` on pushes, pull requests and
+manual dispatch. The `core` job installs locked dependencies with Node 24,
+lints, runs the default regression suite and builds Next.js using a dummy
+database URL. `Docker build` builds the full production Dockerfile without
+publishing an image. `Database checks` starts disposable PostgreSQL 17, applies
+the production migration runner twice to verify repeatability, then runs the
+database integration tests. These independent jobs need no production secrets,
+do not deploy and do not alter production data. Their first hosted result is
+available after the updated workflow is pushed. Requiring checks before merging
+is a separate GitHub repository rule; the workflow alone does not enforce it.
+
 Production currently uses a manual Git-based deployment:
 
 1. Changes are tested locally, committed, and pushed to the public GitHub
@@ -766,7 +777,8 @@ application-level owner dashboard yet.
 ## Current limitations and trade-offs
 
 - The CAX11 and all services on it are a single point of failure.
-- Deployment is manual; there is no CI/CD approval or rollback pipeline.
+- CI validates tests, database migrations and the production image build;
+  deployment remains manual with no automated approval or rollback pipeline.
 - PostgreSQL is a single instance with no replica or independent logical backup
   workflow.
 - The signaling service stores rooms in process memory and cannot be scaled
@@ -804,7 +816,8 @@ be:
 5. Run multiple stateless Next.js and signaling instances behind a load
    balancer.
 6. Run multiple LiveKit nodes selected by region and room placement.
-7. Move builds to CI and deploy immutable, versioned images with rollback.
+7. Extend the CI image build to publish immutable, versioned images and add
+   an approved deployment workflow with rollback.
 
 The main scaling distinction is between the control plane and media plane.
 Next.js, PostgreSQL, authentication, and signaling coordinate identity and
