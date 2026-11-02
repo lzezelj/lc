@@ -14,6 +14,7 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 - Do not create `.env` or `.env.example` files unless explicitly requested.
 - Never display, copy, or commit secrets.
 - Do not deploy or change production infrastructure unless explicitly requested.
+- All buttons must inherit the shared hover animation in `app/globals.css`, including future buttons. Avoid separate hover movement/scaling rules; retain disabled states and reduced-motion support.
 
 ## Product rules
 

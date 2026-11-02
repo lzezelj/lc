@@ -3,13 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import { createMicrophoneGate, readVoiceThreshold } from "./microphone-gate";
 import { microphoneProcessing, prepareVoiceActivity } from "./voice-activity";
+import { applyCallOutput } from "./audio-output";
 
 export function MediaTests({
   microphoneId,
   cameraId,
+  outputVolume = 100,
+  outputId = "",
+  deafened = false,
 }: {
   microphoneId: string;
   cameraId: string;
+  outputVolume?: number;
+  outputId?: string;
+  deafened?: boolean;
 }) {
   const [threshold, setThreshold] = useState(readVoiceThreshold);
   const [micTesting, setMicTesting] = useState(false);
@@ -20,6 +27,16 @@ export function MediaTests({
   const [error, setError] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    if (audio.current)
+      void applyCallOutput(
+        audio.current,
+        outputVolume,
+        deafened || !listen || !micTesting,
+        outputId,
+      ).catch(() => setError("Could not use the selected playback device."));
+  }, [outputVolume, outputId, deafened, listen, micTesting]);
 
   useEffect(() => {
     if (!micTesting) return;
@@ -168,7 +185,7 @@ export function MediaTests({
           </label>
         </>
       )}
-      <audio ref={audio} autoPlay muted={!listen || !micTesting} />
+      <audio ref={audio} autoPlay muted={deafened || !listen || !micTesting} />
       <button
         type="button"
         onClick={() => {

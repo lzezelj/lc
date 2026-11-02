@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { DeviceSelection } from "./device-selection";
 
 export type MediaDeviceOption = { deviceId: string; label: string };
 
 type DeviceMenuProps = {
-  kind: "microphone" | "camera";
+  kind: "microphone" | "camera" | "headphones";
   disabled: boolean;
+  unavailable?: boolean;
+  actionUnavailable?: boolean;
+  extraOptions?: ReactNode;
   devices: MediaDeviceOption[];
   selectedId: string;
   onAction: () => void;
@@ -17,6 +21,9 @@ type DeviceMenuProps = {
 export function DeviceMenu({
   kind,
   disabled,
+  unavailable = false,
+  actionUnavailable = false,
+  extraOptions,
   devices,
   selectedId,
   onAction,
@@ -43,23 +50,33 @@ export function DeviceMenu({
     >
       <button
         className="mediaToggle"
+        disabled={unavailable || actionUnavailable}
+        aria-pressed={disabled}
         aria-label={
           kind === "microphone"
             ? disabled
               ? "Unmute microphone"
               : "Mute microphone"
-            : disabled
-              ? "Turn camera on"
-              : "Turn camera off"
+            : kind === "headphones"
+              ? disabled
+                ? "Undeafen"
+                : "Deafen (mute microphone and headphones)"
+              : disabled
+                ? "Turn camera on"
+                : "Turn camera off"
         }
         title={
           kind === "microphone"
             ? disabled
               ? "Unmute"
               : "Mute"
-            : disabled
-              ? "Turn camera on"
-              : "Turn camera off"
+            : kind === "headphones"
+              ? disabled
+                ? "Undeafen"
+                : "Deafen (mute microphone and headphones)"
+              : disabled
+                ? "Turn camera on"
+                : "Turn camera off"
         }
         onClick={onAction}
       >
@@ -67,7 +84,8 @@ export function DeviceMenu({
       </button>
       <button
         className="deviceMenuTrigger"
-        aria-label={`Choose ${kind}`}
+        disabled={unavailable}
+        aria-label={kind === "headphones" ? "Output options" : `Choose ${kind}`}
         aria-expanded={open}
         onClick={() => {
           setProcessing(
@@ -78,11 +96,12 @@ export function DeviceMenu({
       >
         ▴
       </button>
-      {open && (
+      {open && !unavailable && (
         <div className="deviceDropdown">
           {onRestart && (
             <>
               <button
+                title="Reopens the selected microphone and reconnects its audio track."
                 onClick={() => {
                   onRestart();
                   setOpen(false);
@@ -91,6 +110,7 @@ export function DeviceMenu({
                 Restart microphone
               </button>
               <button
+                title="Toggles browser echo cancellation, noise suppression and automatic gain control, then restarts capture. Volume and voice threshold remain active."
                 onClick={() => {
                   const next =
                     localStorage.getItem("lc.microphoneProcessing") === "off";
@@ -107,27 +127,16 @@ export function DeviceMenu({
               </button>
             </>
           )}
-          <button
-            className={!selectedId ? "selected" : ""}
-            onClick={() => {
-              onSelect("");
-              setOpen(false);
-            }}
-          >
-            System default
-          </button>
-          {devices.map((device) => (
-            <button
-              className={device.deviceId === selectedId ? "selected" : ""}
-              key={device.deviceId}
-              onClick={() => {
-                onSelect(device.deviceId);
-                setOpen(false);
-              }}
-            >
-              {device.label}
-            </button>
-          ))}
+          {kind !== "headphones" && (
+            <DeviceSelection
+              title={kind === "microphone" ? "Input devices" : "Camera devices"}
+              label={kind === "microphone" ? "Microphone" : "Camera"}
+              devices={devices}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          )}
+          {extraOptions}
         </div>
       )}
     </div>
@@ -138,7 +147,7 @@ export function MediaIcon({
   kind,
   crossedOut,
 }: {
-  kind: "microphone" | "camera" | "screen";
+  kind: "microphone" | "camera" | "screen" | "headphones";
   crossedOut: boolean;
 }) {
   return (
@@ -158,6 +167,8 @@ export function MediaIcon({
           <rect x="9" y="2" width="6" height="12" rx="3" />
           <path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8" />
         </>
+      ) : kind === "headphones" ? (
+        <path d="M3 14v-3a9 9 0 0 1 18 0v3M3 13h4v8H3zM17 13h4v8h-4z" />
       ) : kind === "camera" ? (
         <>
           <rect x="2" y="6" width="14" height="12" rx="2" />

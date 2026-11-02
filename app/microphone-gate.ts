@@ -5,6 +5,18 @@ import type {
 } from "livekit-client";
 
 export const defaultVoiceThreshold = -50;
+let microphoneDeafened = false;
+
+export function setMicrophoneDeafened(value: boolean) {
+  microphoneDeafened = value;
+}
+
+export function readMicrophoneVolume() {
+  if (typeof localStorage === "undefined") return 100;
+  const stored = localStorage.getItem("lc.microphoneVolume");
+  const value = stored === null ? 100 : Number(stored);
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 100;
+}
 
 export function readVoiceThreshold() {
   if (typeof localStorage === "undefined") return defaultVoiceThreshold;
@@ -60,9 +72,11 @@ export function createMicrophoneGate(
       track.enabled &&
       context.state === "running";
     const transmitting =
-      available && gate.update(db, readVoiceThreshold(), performance.now());
+      available &&
+      !microphoneDeafened &&
+      gate.update(db, readVoiceThreshold(), performance.now());
     gain.gain.setTargetAtTime(
-      transmitting ? 1 : 0,
+      transmitting ? readMicrophoneVolume() / 100 : 0,
       context.currentTime,
       transmitting ? 0.003 : 0.008,
     );

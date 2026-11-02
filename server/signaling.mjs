@@ -213,6 +213,8 @@ export function createSignalingServer({
   });
   const ws = new WebSocketServer({ noServer: true });
   const rooms = new Map();
+  const userStatuses = new Map();
+  const validStatuses = new Set(["online", "away", "dnd", "invisible"]);
 
   server.on("upgrade", (request, socket, head) => {
     const token = new URL(
@@ -306,7 +308,8 @@ export function createSignalingServer({
           .filter(
             (client) =>
               client.readyState === WebSocket.OPEN &&
-              client.identity?.serverIds?.includes(serverId),
+              client.identity?.serverIds?.includes(serverId) &&
+              userStatuses.get(client.identity.sub) !== "invisible",
           )
           .map((client) => client.identity.sub),
       ),
@@ -315,6 +318,9 @@ export function createSignalingServer({
       type: "online-presence",
       serverId,
       userIds,
+      statuses: Object.fromEntries(
+        userIds.map((id) => [id, userStatuses.get(id) ?? "online"]),
+      ),
     });
     for (const client of ws.clients) {
       if (
@@ -326,14 +332,58 @@ export function createSignalingServer({
     }
   };
 
+  const broadcastUserPresence = () => {
+    const connected = [...ws.clients].filter(
+      (client) => client.readyState === WebSocket.OPEN && client.identity,
+    );
+    for (const viewer of connected) {
+      if (!viewer.subscribedUserPresence) continue;
+      const userIds = [
+        ...new Set(
+          connected
+            .filter(
+              (subject) =>
+                userStatuses.get(subject.identity.sub) !== "invisible" &&
+                (viewer.identity.sub === subject.identity.sub ||
+                  viewer.identity.friendIds.includes(subject.identity.sub) ||
+                  viewer.identity.serverIds.some((id) =>
+                    subject.identity.serverIds.includes(id),
+                  )),
+            )
+            .map((subject) => subject.identity.sub),
+        ),
+      ];
+      viewer.send(
+        JSON.stringify({
+          type: "user-presence",
+          userIds,
+          statuses: Object.fromEntries(
+            userIds.map((id) => [id, userStatuses.get(id) ?? "online"]),
+          ),
+        }),
+      );
+    }
+  };
+
   ws.on("connection", (socket, request) => {
     socket.identity = request.signalingIdentity;
     socket.allowedChannelIds = new Set(socket.identity.channelIds);
+    if (!userStatuses.has(socket.identity.sub)) {
+      const requested = new URL(
+        request.url ?? "/",
+        "ws://signaling.local",
+      ).searchParams.get("status");
+      userStatuses.set(
+        socket.identity.sub,
+        validStatuses.has(requested) ? requested : "online",
+      );
+    }
     let joinedRoomId;
 
     // A website-level socket makes the user online in every server they can
     // access, regardless of which application screen they are viewing.
     socket.identity.serverIds.forEach(broadcastOnlinePresence);
+    broadcastUserPresence();
 
     const isAllowed = (channelId) => {
       if (socket.allowedChannelIds.has(channelId)) return true;
@@ -357,6 +407,39 @@ export function createSignalingServer({
         return;
       }
 
+      if (message.type === "subscribe-user-presence") {
+        socket.subscribedUserPresence = true;
+        broadcastUserPresence();
+        return;
+      }
+      if (message.type === "get-user-status") {
+        socket.send(
+          JSON.stringify({
+            type: "user-status",
+            status: userStatuses.get(socket.identity.sub) ?? "online",
+          }),
+        );
+        return;
+      }
+      if (message.type === "set-user-status") {
+        if (!validStatuses.has(message.status)) return;
+        userStatuses.set(socket.identity.sub, message.status);
+        const serverIds = new Set();
+        for (const client of ws.clients) {
+          if (
+            client.identity?.sub !== socket.identity.sub ||
+            client.readyState !== WebSocket.OPEN
+          )
+            continue;
+          client.send(
+            JSON.stringify({ type: "user-status", status: message.status }),
+          );
+          client.identity.serverIds.forEach((id) => serverIds.add(id));
+        }
+        serverIds.forEach(broadcastOnlinePresence);
+        broadcastUserPresence();
+        return;
+      }
       if (message.type === "subscribe-presence") {
         const requestedRoomIds = Array.isArray(message.roomIds)
           ? message.roomIds
@@ -511,9 +594,19 @@ export function createSignalingServer({
     });
 
     socket.on("close", () => {
+      if (
+        ![...ws.clients].some(
+          (client) =>
+            client !== socket &&
+            client.identity?.sub === socket.identity.sub &&
+            client.readyState === WebSocket.OPEN,
+        )
+      )
+        userStatuses.delete(socket.identity.sub);
       for (const serverId of socket.identity.serverIds) {
         broadcastOnlinePresence(serverId);
       }
+      broadcastUserPresence();
       for (const roomId of socket.groupPresence?.keys() ?? []) {
         socket.groupPresence.delete(roomId);
         broadcastPresence(roomId);

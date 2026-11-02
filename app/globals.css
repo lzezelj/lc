@@ -5,6 +5,7 @@
   --panel: #151925;
   --deep: #0d1018;
   --accent: #7c5cff;
+  --button-hover-duration: 140ms;
   color-scheme: dark;
 }
 
@@ -38,10 +39,14 @@ button {
 
 .workspace {
   --rail-width: 72px;
-  --sidebar-width: 340px;
+  --sidebar-width: var(--preferred-sidebar-width, 340px);
   --channel-width: var(--sidebar-width);
-  --member-width: var(--sidebar-width);
-  --sidebar-footer-height: 76px;
+  --member-width: 340px;
+  --profile-row-height: 76px;
+  --connection-row-height: 60px;
+  --footer-inset: 8px;
+  --audio-controls-bottom: calc(var(--footer-inset) + (var(--profile-row-height) - 40px) / 2);
+  --sidebar-footer-height: calc(var(--profile-row-height) + var(--footer-inset));
   --voice-dock-height: 0px;
   display: grid;
   grid-template-columns: var(--rail-width) var(--channel-width) minmax(0, 1fr) var(--member-width);
@@ -115,6 +120,8 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 14px;
+  padding-block: 4px;
+  margin-block: -4px;
   width: 100%;
   min-height: 0;
   flex: 0 1 auto;
@@ -151,13 +158,6 @@ button {
 .workspaceButton.active {
   background: #213e38;
   color: #77e2bb;
-}
-
-.workspaceButton:hover,
-.workspaceLogo:hover {
-  border-radius: 12px;
-  transform: translateY(-2px) scale(1.06);
-  transition: transform 160ms ease, border-radius 160ms ease;
 }
 
 .workspaceLogo {
@@ -657,9 +657,6 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   color: #fff;
 }
 
-.diagnosticsIndicator:hover .diagnosticsTooltip,
-.diagnosticsIndicator:focus .diagnosticsTooltip,
-.diagnosticsIndicator:focus-visible .diagnosticsTooltip,
 .diagnosticsTooltip.open {
   display: grid;
 }
@@ -820,30 +817,71 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   align-content: center;
 }
 
-.workspace.voiceActive { --sidebar-footer-height: 140px; --voice-dock-height: 48px; }
-.workspace .profileBar { height: 76px; flex-wrap: nowrap; align-content: normal; padding: 12px; }
+.workspace.voiceActive { --sidebar-footer-height: calc(var(--profile-row-height) + var(--footer-inset) + var(--connection-row-height)); --voice-dock-height: 56px; }
+.workspace .profileBar { left: var(--footer-inset); right: var(--footer-inset); bottom: var(--footer-inset); height: var(--profile-row-height); flex-wrap: nowrap; align-content: normal; padding: 12px; border: 1px solid #30384b; border-radius: 12px; background: #151b2a; }
+.workspace.voiceActive .profileBar { border-radius: 0 0 12px 12px; }
 .profileIdentity { display: block; min-width: 0; padding-right: 30px; }
 .profileIdentity strong, .profileIdentity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace.voiceActive .profileIdentity { padding-right: 90px; }
-.profileBar .profileSettings { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: grid; place-items: center; padding: 0; width: 32px; height: 40px; line-height: 1; border-radius: 6px; }
+.profileStatusMenu { width: 100%; min-width: 0; }
+.workspace .profileBar .profileMenu .profileStatusTrigger { display: flex; align-items: center; gap: 9px; width: max(0px, calc(100% - 166px)); padding: 4px 0; border-radius: 6px; background: transparent; text-align: left; }
+.profileStatusTrigger .avatar { flex-shrink: 0; }
+.profileStatusName { min-width: 0; }
+.profileStatusTrigger.speaking strong { color: #64e6a5; }
+.profileStatusTrigger strong { color: var(--ink); }
+.profileStatusTrigger:hover { background: #252d40; }
+.profileStatusTrigger .statusText { display: flex; align-items: center; gap: 5px; margin-top: 2px; font-size: 11px; }
+.statusText > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.statusDot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: #43b581; }
+.status-away { background: #edb74b; }
+.status-dnd { background: #ed5965; }
+.status-invisible { background: #8c96a8; }
+.status-offline { background: #8c96a8; }
+.friendListAvatar { position: relative; }
+.friendStatusDot { position: absolute; right: -1px; bottom: -1px; border: 2px solid var(--panel); box-sizing: content-box; }
+.userStatusDropdown { position: fixed; z-index: 130; width: min(256px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 6px; border: 1px solid #3b455e; border-radius: 10px; background: #171d2c; box-shadow: 0 12px 32px #0008; }
+.profileBar .userStatusDropdown > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 6px; text-align: left; background: transparent; color: var(--ink); }
+.userStatusDropdown button > span { min-width: 0; }
+.userStatusDropdown strong { display: block; font-size: 13px; }
+.userStatusDropdown small { display: block; margin-top: 3px; white-space: normal; color: var(--muted); font-size: 11px; }
+.profileBar .userStatusDropdown > button:hover, .profileBar .userStatusDropdown > button[aria-checked="true"] { background: #303950; }
+.profileStatusTrigger:focus-visible, .userStatusDropdown button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.workspace.voiceActive .profileIdentity { padding-right: 150px; }
+.profileBar .profileSettings { position: fixed; left: calc(var(--rail-width) + var(--sidebar-width) - 52px); bottom: var(--audio-controls-bottom); display: grid; place-items: center; padding: 0; width: 32px; height: 40px; line-height: 1; border-radius: 6px; }
 .profileBar .profileSettings:hover { background: #30384c; color: white; }
-.profileBar .profileIdleMute { position: absolute; right: 40px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; padding: 0; line-height: 1; height: 40px; width: 32px; }
-.profileBar .profileIdleMute[aria-pressed="true"] { color: #f4a6b8; background: #4a2737; border-radius: 6px; }
-.workspace:not(.voiceActive) .profileIdentity { padding-right: 74px; }
+.profileBar .profileMicrophone { position: fixed; left: calc(var(--rail-width) + var(--sidebar-width) - 180px); bottom: var(--audio-controls-bottom); gap: 0; padding: 0; }
+.profileMicrophone .deviceControl { width: 60px; height: 40px; }
+.profileMicrophone .mediaToggle { width: 40px; min-width: 40px; }
+.profileMicrophone .deviceMenuTrigger { width: 20px; min-width: 20px; padding-inline: 3px; }
+.profileMicrophone button { padding: 7px 6px; font-size: 11px; }
+.workspace:not(.voiceActive) .profileIdentity { padding-right: 150px; }
+.profileBar .profileDeafen { position: fixed; z-index: 20; left: calc(var(--rail-width) + var(--sidebar-width) - 112px); bottom: var(--audio-controls-bottom); padding: 0; }
+.profileDeafen .deviceControl { width: 52px; height: 40px; }
+.workspace .profileDeafen .mediaToggle { width: 32px; min-width: 32px; padding: 0; display: grid; place-items: center; }
+.workspace .profileDeafen .deviceMenuTrigger { width: 20px; min-width: 20px; display: grid; place-items: center; padding: 0; line-height: 1; }
+.profileDeafen button { padding: 7px 6px; font-size: 11px; }
+.profileDeafen button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.profileDeafen .deviceDropdown { position: fixed; bottom: calc(var(--audio-controls-bottom) + 48px); left: clamp(16px, calc(var(--rail-width) + var(--sidebar-width) - 300px), calc(100vw - 316px)); }
 .workspace .profileBar .profileMenu.open { z-index: 100; }
 .workspace .profileMenu .accountMenuDropdown { z-index: 101; bottom: 64px; left: -46px; width: 276px; }
-.workspace .profileConnectionDetails { position: absolute; bottom: 76px; left: 0; height: 64px; padding: 10px 14px; border-top: 1px solid var(--line); background: #121622; }
+.workspace .profileConnectionDetails { position: absolute; bottom: calc(var(--profile-row-height) - 1px); left: -1px; width: calc(100% + 2px); height: var(--connection-row-height); padding: 10px 12px; gap: 8px; border: 1px solid #30384b; border-bottom: 0; background: #151b2a; }
+.profileConnectionDetails > span:first-child { min-width: 0; flex: 1; }
 .profileConnectionDetails strong { display: block; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.workspace .voiceDock { bottom: var(--sidebar-footer-height); min-height: 48px; gap: 8px; justify-content: space-between; }
-.workspace .voiceDock > button:has(+ .soundboardPlaceholder) { flex: 1; max-width: 110px; }
+.workspace .voiceDock { left: calc(var(--rail-width) + var(--footer-inset)); width: calc(var(--sidebar-width) - 2 * var(--footer-inset) - 1px); bottom: var(--sidebar-footer-height); min-height: 56px; display: grid; grid-template-columns: 56px minmax(0, 1fr) minmax(0, 1fr); gap: 8px; padding: 10px; border: 1px solid #30384b; border-bottom: 0; border-radius: 12px 12px 0 0; background: #151b2a; }
+.workspace .voiceDock > button:has(+ .soundboardPlaceholder) { width: 100%; max-width: none; }
+.workspace .voiceDock > .primary { grid-column: 1 / -1; }
+.workspace .voiceDock > button { min-width: 0; }
 .workspace .voiceDock .soundboardPlaceholder { opacity: .45; cursor: not-allowed; }
-.workspace .voiceDock > .deviceControl { position: fixed; bottom: 18px; z-index: 19; }
-.workspace .voiceDock > .deviceControl:first-of-type { left: calc(var(--rail-width) + var(--sidebar-width) - 112px); width: 60px; height: 40px; }
+.workspace .voiceDock > .deviceControl { position: fixed; bottom: var(--audio-controls-bottom); z-index: 19; }
+.workspace .voiceDock > .deviceControl:first-of-type { left: calc(var(--rail-width) + var(--sidebar-width) - 180px); width: 60px; height: 40px; }
 .workspace .voiceDock > .deviceControl:first-of-type .mediaToggle { width: 40px; min-width: 40px; }
 .workspace .voiceDock > .deviceControl:first-of-type .deviceMenuTrigger { width: 20px; min-width: 20px; }
 .workspace .voiceDock > .deviceControl:nth-of-type(2) { position: relative; bottom: auto; left: auto; }
 .workspace .voiceDock > .deviceControl .mediaToggle { min-width: 30px; }
 .workspace .voiceDock > .deviceControl .deviceMenuTrigger { padding-inline: 3px; }
+.workspace .profileMicrophone .mediaToggle,
+.workspace .voiceDock > .deviceControl:first-of-type .mediaToggle { padding: 0; }
+.workspace .profileMicrophone .deviceMenuTrigger,
+.workspace .voiceDock > .deviceControl:first-of-type .deviceMenuTrigger { display: grid; place-items: center; padding: 0; line-height: 1; }
 .workspace.channelsHidden .voiceDock > .deviceControl { position: static; }
 .workspace.voiceActive .appLegalLinks { min-height: 76px; flex-basis: 76px; }
 
@@ -862,8 +900,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .profileConnectionDetails { gap: 10px; }
 .profileBar .connectionDisconnect { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border-radius: 6px; color: #f2a9b5; }
 .profileBar .connectionDisconnect:hover { background: #4a2737; }
-.profileConnectionDetails .pingTooltip,
-.profileConnectionDetails .diagnosticsTooltip { left: 0; right: auto; max-width: min(420px, calc(100vw - 32px)); }
+.profileConnectionDetails .pingTooltip { left: 0; right: auto; max-width: min(420px, calc(100vw - 32px)); }
 
 .profileBar > span:nth-child(2) {
   flex: 1;
@@ -1138,6 +1175,24 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   object-fit: contain;
 }
 
+.videoCard .tileHide { position: absolute; z-index: 3; top: 10px; right: 10px; padding: 5px 8px; border: 1px solid #59627a; border-radius: 6px; background: #121622e6; color: var(--ink); font-size: 12px; }
+.videoCard .tileHide:hover { background: #342d4d; }
+.hiddenTilesMenu { position: absolute; z-index: 5; bottom: 10px; right: 10px; max-width: calc(100% - 20px); padding: 8px 10px; border: 1px solid #59627a; border-radius: 8px; background: #121622f5; color: var(--ink); font-size: 12px; }
+.hiddenTilesMenu summary { cursor: pointer; }
+.hiddenTilesMenu > div { display: grid; gap: 6px; max-height: 180px; overflow: auto; margin-top: 8px; }
+.hiddenTilesMenu button { border: 0; border-radius: 5px; padding: 7px 9px; background: #252b3b; color: var(--ink); text-align: left; overflow-wrap: anywhere; }
+.hiddenTilesMenu button:hover { background: #342d4d; }
+.selfViewToggle { position: absolute; z-index: 5; bottom: 10px; left: 10px; padding: 8px 10px; border: 1px solid #59627a; border-radius: 8px; background: #121622f5; color: var(--ink); font-size: 12px; }
+.selfViewToggle:hover { background: #342d4d; }
+.callVisibilityControls { position: absolute; z-index: 5; bottom: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px; pointer-events: none; }
+.callVisibilityControls > .selfViewToggle, .callVisibilityControls > .hiddenTilesMenu { position: static; max-width: 100%; pointer-events: auto; }
+
+.videoCard.nameOnly video { visibility: hidden; }
+.videoCard.nameOnly span { inset: auto; max-width: calc(100% - 24px); background: transparent; font-size: 16px; text-align: center; overflow-wrap: anywhere; }
+.friendsParticipantGrid .videoCard { flex-basis: calc((100% - 12px) / 2); height: 100%; }
+.controls button.stopSharing { background: #9f354b; color: #fff; }
+.controls button.stopSharing:hover { background: #bc4059; }
+
 .videoCard span {
   position: absolute;
   bottom: 10px;
@@ -1195,6 +1250,26 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   display: flex;
 }
 
+.voiceDock button:focus-visible, .profileMicrophone button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sidebarResizer { position: absolute; top: 58px; right: -4px; bottom: 0; width: 8px; z-index: 47; cursor: col-resize; touch-action: none; user-select: none; }
+.sidebarResizer:focus-visible { outline: 1px dashed var(--muted); outline-offset: -2px; }
+
+.settingsModal { position: fixed; inset: 0; margin: auto; width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid #3b3d56; border-radius: 16px; background: var(--panel); color: var(--ink); box-shadow: 0 24px 80px #0009; }
+.settingsModal::backdrop { background: #05070cc7; backdrop-filter: blur(3px); }
+.settingsModal > header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
+.settingsModal h2 { margin: 0; font-size: 22px; }
+.settingsModal .settingsClose { display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: #252b3b; color: var(--ink); font-size: 24px; }
+.settingsActions { display: grid; gap: 10px; }
+.settingsDescription { margin: 0 0 10px; color: var(--muted); overflow-wrap: anywhere; }
+.settingsActions > button { padding: 14px 16px; border: 1px solid #353c50; border-radius: 8px; background: #202638; color: var(--ink); text-align: left; }
+.settingsActions > button:hover, .settingsClose:hover { background: #342d4d; border-color: #776298; }
+.settingsActions > button.danger { color: #f2a9b5; }
+.settingsModal button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.diagnosticsAnchor { display: inline-flex; align-items: center; }
+.diagnosticsAnchor .diagnosticsIndicator { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid #8f9bb3; border-radius: 50%; background: transparent; color: #b8c3d9; cursor: pointer; }
+.diagnosticsAnchor .diagnosticsIndicator:hover, .diagnosticsAnchor .diagnosticsIndicator:focus-visible { background: #342d4d; color: white; }
+.diagnosticsTooltip { width: min(360px, calc(100vw - 32px)); overflow-y: auto; }
+
 .deviceControl > button:first-child {
   border-radius: 7px 0 0 7px;
 }
@@ -1223,6 +1298,28 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .deviceControl.open .deviceMenuTrigger {
   background: #46506a;
 }
+
+.audioDeviceOptions, .settingsDeviceChoices, .deviceChoices { display: grid; gap: 10px; }
+.audioDeviceOptions label { display: grid; gap: 6px; font-size: 12px; }
+.audioDeviceOptions input, .audioDeviceOptions select { width: 100%; min-width: 0; accent-color: var(--accent); }
+.audioDeviceOptions select { padding: 7px; background: #171d2b; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; }
+.audioDeviceOptions small { color: var(--muted); }
+.audioDeviceOptions { padding: 8px; }
+.audioDeviceOptions summary, .deviceChoices summary, .settingsDeviceChoices summary { cursor: pointer; padding: 8px 4px; }
+.deviceChoices > button { display: block; width: 100%; }
+.deviceChoices, .audioDeviceOptions > details, .settingsDeviceChoices { border: 1px solid #3b455e; border-radius: 8px; background: #121827; overflow: hidden; }
+.deviceChoices > summary, .audioDeviceOptions > details > summary, .settingsDeviceChoices > summary { padding: 10px 12px; color: #dce3f2; font-size: 12px; font-weight: 600; background: #20283b; }
+.deviceChoices[open] > summary, .audioDeviceOptions > details[open] > summary, .settingsDeviceChoices[open] > summary { border-bottom: 1px solid #3b455e; }
+.deviceChoices > button { margin: 3px 6px; width: calc(100% - 12px); }
+.controls .deviceChoices > button.selected { background: #3d3759; color: #eee8ff; box-shadow: inset 2px 0 var(--accent); }
+.audioDeviceOptions > details > label, .audioDeviceOptions > details > small { margin: 10px; }
+.settingsDeviceChoices > label { margin: 10px; }
+.deviceChoices > label { display: grid; gap: 6px; margin: 10px; font-size: 12px; }
+.deviceChoices select { width: 100%; min-width: 0; padding: 7px; background: #171d2b; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; }
+.deviceChoices .deviceSelectionNote { display: block; margin: 10px; color: var(--muted); font-size: 11px; }
+.deviceDropdown > .deviceChoices { margin-inline: 8px; }
+.friendConversationTitle { gap: 6px; }
+.friendConversationTitle > b { flex: 1; min-width: 0; }
 
 .deviceDropdown {
   position: absolute;
@@ -1554,6 +1651,8 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   background: #43b581;
   content: "";
 }
+.member[data-status="away"] .avatar::after { background: #edb74b; }
+.member[data-status="dnd"] .avatar::after { background: #ed5965; }
 
 .member .avatar {
   position: relative;
@@ -2303,7 +2402,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 @media (max-width: 920px) {
   .workspace {
     --rail-width: 64px;
-    --sidebar-width: 210px;
+    --sidebar-width: var(--preferred-sidebar-width, 240px);
     --member-width: 0px;
   }
 
@@ -2319,12 +2418,19 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 }
 
 @media (max-width: 650px) {
+  .workspace { --profile-row-height: 112px; --audio-controls-bottom: 20px; }
+  .workspace .profileBar { align-items: flex-start; }
+  .workspace .profileBar .profileIdentity { padding-right: 0; }
+  .workspace .profileBar .profileMenu .profileStatusTrigger { width: 100%; }
+  .profileStatusTrigger .avatar { width: 28px; height: 28px; flex: 0 0 28px; }
+  .workspace .profileBar > .avatar { width: 28px; height: 28px; flex: 0 0 28px; }
   .workspace {
     --rail-width: 0px;
-    --sidebar-width: min(280px, 56vw);
+    --sidebar-width: min(var(--preferred-sidebar-width, 280px), 56vw);
     --voice-dock-height: 0px;
   }
   .workspace > .workspaceRail { display: none; }
+  .sidebarResizer { display: none; }
   .workspace:not(.serverListToggled) .workspaceName { padding-left: 52px; }
   .workspace.serverListToggled .workspaceName { padding-left: 16px; }
   .workspace.serverListToggled { --rail-width: 58px; }
@@ -2356,4 +2462,23 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   .roomHeader > span {
     display: none;
   }
+}
+
+/* Shared by existing and future buttons; individual controls keep their colors. */
+:root button {
+  transition: translate var(--button-hover-duration) ease,
+    filter var(--button-hover-duration) ease,
+    background-color var(--button-hover-duration) ease,
+    border-color var(--button-hover-duration) ease,
+    color var(--button-hover-duration) ease;
+}
+:root button:not(:disabled):is(:hover, :focus-visible),
+:root button.soundboardPlaceholder:is(:hover, :focus-visible) {
+  translate: 0 -2px;
+  filter: brightness(1.12);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --button-hover-duration: 0ms; }
+  :root button:not(:disabled):is(:hover, :focus-visible),
+  :root button.soundboardPlaceholder:is(:hover, :focus-visible) { translate: none; }
 }

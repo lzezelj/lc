@@ -42,12 +42,13 @@ async function connect(
   channelIds = permittedChannelIds,
   serverIds = ["server-1"],
   friendIds = [],
+  initialStatus = "online",
 ) {
   const token = createSignalingToken(
     { id: `test-${name}`, name, channelIds, serverIds, friendIds },
     authSecret,
   );
-  const socket = new WebSocket(`${url}?token=${token}`);
+  const socket = new WebSocket(`${url}?token=${token}&status=${initialStatus}`);
   resources.unshift(socket);
   await once(socket, "open");
   return socket;
@@ -123,6 +124,7 @@ test("online presence is scoped to an authorized server", async () => {
     type: "online-presence",
     serverId: "server-1",
     userIds: ["test-Ada", "test-Grace"],
+    statuses: { "test-Ada": "online", "test-Grace": "online" },
   });
   const forbidden = nextMessage(second);
   second.send(
@@ -149,7 +151,135 @@ test("opening the website broadcasts online presence to every server", async () 
     type: "online-presence",
     serverId: "server-1",
     userIds: ["test-Ada", "test-Grace"],
+    statuses: { "test-Ada": "online", "test-Grace": "online" },
   });
+});
+
+test("status changes are self-only, synchronize sockets, and invisible stays offline with multiple connections", async () => {
+  const url = await startServer();
+  const observer = await connect(url, "Ada");
+  const grace = await connect(url, "Grace");
+  const duplicate = await connect(url, "Grace");
+  let update = nextMessage(observer);
+  observer.send(
+    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+  );
+  await update;
+  update = nextMessage(observer);
+  const acknowledgements = [nextMessage(grace), nextMessage(duplicate)];
+  grace.send(
+    JSON.stringify({
+      type: "set-user-status",
+      status: "invisible",
+      userId: "test-Ada",
+    }),
+  );
+  const hidden = await update;
+  assert.deepEqual(
+    hidden.userIds,
+    ["test-Ada"],
+    "a forged userId must not change another user's status",
+  );
+  assert.deepEqual(hidden.statuses, { "test-Ada": "online" });
+  for (const ack of await Promise.all(acknowledgements))
+    assert.deepEqual(ack, { type: "user-status", status: "invisible" });
+  update = nextMessage(observer);
+  await connect(url, "Grace");
+  assert.deepEqual(
+    (await update).userIds,
+    ["test-Ada"],
+    "another socket must not reveal an invisible account",
+  );
+  for (const status of ["away", "dnd", "online"]) {
+    update = nextMessage(observer);
+    grace.send(JSON.stringify({ type: "set-user-status", status }));
+    const visible = await update;
+    assert.ok(visible.userIds.includes("test-Grace"));
+    assert.equal(visible.statuses["test-Grace"], status);
+  }
+  const unchanged = nextMessage(grace);
+  grace.send(JSON.stringify({ type: "set-user-status", status: "invalid" }));
+  grace.send(JSON.stringify({ type: "get-user-status" }));
+  assert.deepEqual(await unchanged, { type: "user-status", status: "online" });
+});
+
+test("saved invisible status is applied before the first online broadcast", async () => {
+  const url = await startServer();
+  const observer = await connect(url, "Ada");
+  let update = nextMessage(observer);
+  observer.send(
+    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+  );
+  await update;
+  update = nextMessage(observer);
+  await connect(
+    url,
+    "Hidden",
+    permittedChannelIds,
+    ["server-1"],
+    [],
+    "invisible",
+  );
+  assert.deepEqual((await update).userIds, ["test-Ada"]);
+});
+
+test("user presence updates friends and shared-server members across all views without leaking unrelated users", async () => {
+  const url = await startServer();
+  const grace = await connect(url, "Grace", permittedChannelIds, [
+    "server-1",
+    "server-2",
+  ]);
+  const friend = await connect(url, "Friend", [], [], ["test-Grace"]);
+  const member = await connect(url, "Member", permittedChannelIds, [
+    "server-2",
+  ]);
+  const outsider = await connect(url, "Outsider", [], ["private"]);
+  const presence = (socket, predicate = () => true) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        socket.off("message", receive);
+        reject(new Error("User presence update timed out"));
+      }, 2000);
+      function receive(raw) {
+        const message = JSON.parse(raw.toString());
+        if (message.type !== "user-presence" || !predicate(message)) return;
+        clearTimeout(timer);
+        socket.off("message", receive);
+        resolve(message);
+      }
+      socket.on("message", receive);
+    });
+  for (const viewer of [friend, member, outsider]) {
+    const snapshot = presence(viewer);
+    viewer.send(
+      JSON.stringify({
+        type: "subscribe-user-presence",
+        userIds: ["test-Grace"],
+      }),
+    );
+    const initial = await snapshot;
+    assert.equal(initial.userIds.includes("test-Grace"), viewer !== outsider);
+  }
+  for (const status of ["away", "dnd", "invisible", "online"]) {
+    const updates = [friend, member].map((viewer) =>
+      presence(viewer, (message) =>
+        status === "invisible"
+          ? !message.userIds.includes("test-Grace")
+          : message.statuses["test-Grace"] === status,
+      ),
+    );
+    const privateSnapshot = presence(outsider);
+    grace.send(JSON.stringify({ type: "set-user-status", status }));
+    for (const update of await Promise.all(updates))
+      assert.equal("test-Outsider" in update.statuses, false);
+    assert.equal((await privateSnapshot).userIds.includes("test-Grace"), false);
+  }
+  const disconnected = presence(
+    friend,
+    (message) => !message.userIds.includes("test-Grace"),
+  );
+  grace.close();
+  await disconnected;
 });
 
 test("an authenticated internal command disconnects a user immediately", async () => {

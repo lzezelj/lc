@@ -5,6 +5,8 @@ import {
   createMicrophoneGate,
   createVoiceThresholdProcessor,
   readVoiceThreshold,
+  readMicrophoneVolume,
+  setMicrophoneDeafened,
 } from "../app/microphone-gate.ts";
 
 test("voice gate blocks quiet input, opens for speech, and releases without chatter", () => {
@@ -28,6 +30,7 @@ test("gate controls actual output gain, follows live threshold changes, and clea
   );
   const callbacks = new Map();
   let threshold = "-45";
+  let microphoneVolume = "100";
   let level = 0.001;
   const gains = [];
   const outputs = [];
@@ -76,7 +79,14 @@ test("gate controls actual output gain, follows live threshold changes, and clea
   });
   try {
     Object.assign(globalThis, {
-      localStorage: { getItem: () => threshold },
+      localStorage: {
+        getItem: (key) =>
+          key === "lc.voiceThreshold"
+            ? threshold
+            : key === "lc.microphoneVolume"
+              ? microphoneVolume
+              : null,
+      },
       MediaStream: class {},
       window: {
         setInterval(callback) {
@@ -99,6 +109,33 @@ test("gate controls actual output gain, follows live threshold changes, and clea
     level = 0.1;
     callbacks.get(1)();
     assert.equal(gains[0].value, 1);
+    microphoneVolume = "25";
+    callbacks.get(1)();
+    assert.equal(
+      gains[0].value,
+      0.25,
+      "input volume applies to an existing transmitted track",
+    );
+    setMicrophoneDeafened(true);
+    callbacks.get(1)();
+    assert.equal(
+      gains[0].value,
+      0,
+      "deafen blocks transmission even when capture remains enabled",
+    );
+    setMicrophoneDeafened(false);
+    callbacks.get(1)();
+    assert.equal(
+      gains[0].value,
+      0.25,
+      "undeafen restores the saved microphone level",
+    );
+    microphoneVolume = "0";
+    callbacks.get(1)();
+    assert.equal(gains[0].value, 0);
+    microphoneVolume = "invalid";
+    assert.equal(readMicrophoneVolume(), 100);
+    microphoneVolume = "100";
     track.muted = true;
     track.dispatchEvent(new Event("mute"));
     assert.equal(gains[0].value, 0, "capture interruptions close output");
@@ -128,6 +165,7 @@ test("gate controls actual output gain, follows live threshold changes, and clea
     assert.equal(callbacks.size, 0);
     assert.equal(processor.processedTrack, undefined);
   } finally {
+    setMicrophoneDeafened(false);
     for (const [key, descriptor] of previous) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else delete globalThis[key];

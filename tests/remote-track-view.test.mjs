@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { applyCallOutput } from "../app/audio-output.ts";
 
 test("remote audio stays attached through callback-only rerenders", async () => {
   // Exercise the actual component with a minimal hook lifecycle host. No
@@ -51,9 +52,11 @@ test("remote audio stays attached through callback-only rerenders", async () => 
     }
   };
   const events = [];
+  const volumes = [];
   let statsMonitors = 0;
   const track = (name) => ({
     kind: "audio",
+    setVolume: (volume) => volumes.push(volume),
     attach: (target) => {
       assert.equal(target, element);
       events.push(`attach ${name}`);
@@ -74,13 +77,14 @@ test("remote audio stays attached through callback-only rerenders", async () => 
       return () => {};
     },
   });
-  const render = (mediaTrack) => {
+  const render = (mediaTrack, hidden = false, volume = 1) => {
     cursor = 0;
     effects = [];
     const output = Component({
       media: { track: mediaTrack },
       onPingChange: () => {},
-      hidden: false,
+      hidden,
+      volume,
       onFocus: () => {},
     });
     output.props.ref.current = element;
@@ -88,7 +92,11 @@ test("remote audio stays attached through callback-only rerenders", async () => 
   };
   const first = track("first");
   render(first);
-  for (let i = 0; i < 20; i++) render(first);
+  for (let i = 0; i < 20; i++) render(first, i % 2 === 0);
+  render(first, false, 0.35);
+  assert.equal(volumes.at(-1), 0.35);
+  render(first, false, 0);
+  assert.equal(volumes.at(-1), 0, "deafen silences an existing LiveKit track");
   assert.deepEqual(
     events,
     ["attach first"],
@@ -103,4 +111,25 @@ test("remote audio stays attached through callback-only rerenders", async () => 
   ]);
   slots.forEach((slot) => slot?.cleanup?.());
   assert.equal(events.at(-1), "detach replacement");
+});
+
+test("direct output applies volume, deafen and output device without replacing playback", async () => {
+  const stream = {};
+  const sinks = [];
+  const audio = {
+    srcObject: stream,
+    async setSinkId(id) {
+      sinks.push(id);
+    },
+  };
+  await applyCallOutput(audio, 35, true, "headphones");
+  assert.equal(audio.muted, true);
+  assert.equal(audio.volume, 0.35);
+  await applyCallOutput(audio, 35, false, "");
+  assert.equal(audio.muted, false);
+  assert.equal(audio.srcObject, stream);
+  assert.deepEqual(sinks, ["headphones", ""]);
+  const unsupported = {};
+  await applyCallOutput(unsupported, 150, false, "");
+  assert.equal(unsupported.volume, 1);
 });

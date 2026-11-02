@@ -51,6 +51,12 @@ test("settings previews release captures on stop, device change, close, and late
       microphoneProcessing: () => ({}),
       prepareVoiceActivity: () => ({}),
     },
+    "./audio-output": {
+      async applyCallOutput(audio, volume, muted) {
+        audio.volume = volume / 100;
+        audio.muted = muted;
+      },
+    },
     "./microphone-gate": {
       readVoiceThreshold: () => -50,
       createMicrophoneGate() {

@@ -75,6 +75,23 @@ renegotiation and screen-presence state, but never the captured media. In group
 calls the browser uses LiveKit's native screen-share publication, so camera and
 screen can be published as distinct tracks and forwarded by the SFU. Closing
 the browser picker stops the share and clears presence in both call types.
+The call grid includes name-only tiles for participants without video. Voice
+channel clicks join with that grid closed; clicking the already joined channel
+opens the grid. Local camera and screen tiles start hidden; Show yourself reveals
+both, and Hide yourself hides them again without changing outgoing media. Local
+previews are muted; LiveKit renders screen and camera as separate tiles,
+while direct calls preview the screen in the outgoing-video tile during sharing.
+Starting a screen share opens the call grid, respecting local tile visibility; later
+navigation can hide the grid without stopping the share. Channel renaming is
+available to server owners through a channel context menu.
+LiveKit camera previews select the camera publication by source, independently
+of screen publication order. Leaving invalidates the active room before stopping
+capture and detaching tracks; late media callbacks cannot reannounce membership.
+Pending token/capture operations are discarded when their join or room is obsolete.
+Each call tile can be hidden locally and restored individually from Hidden
+windows. Hiding changes only rendering: media elements remain mounted, audio
+continues, and publishing/presence and other participants' views are unaffected.
+Tile visibility lasts for the call and uses separate camera/screen identifiers.
 
 Voice membership is independent from navigation. The client keeps the active
 direct peer connection or LiveKit room mounted while the user visits another
@@ -96,6 +113,28 @@ Forced group-room disconnections clear the active voice selection and call UI.
 The microphone can be muted before joining, and that choice is retained across
 calls during the current app session. Direct capture disables the track before
 publishing; a muted group join keeps microphone capture off until unmuted.
+The headphones control deafens both call playback and microphone transmission,
+preserving the user's independent mute preference when undeafened. Deafen is
+session-local and also closes the shared microphone gain gate, including when
+capture finishes after the toggle. Group microphone updates are serialized and
+remote-track volume updates do not detach audio playback. Device choices are
+grouped in dropdown sections, with saved input/output volume (0–100%) and output
+selection. Input volume scales the gated outgoing track without changing the
+voice threshold. Direct playback uses the persistent audio element's volume and
+sink; group playback uses LiveKit remote-track gain and room audio-output
+switching. Output selection requires browser support for media-element and
+AudioContext sinks; unsupported browsers retain the system output and volume
+controls. These are application audio levels, not hardware mixer controls.
+The idle footer uses the same microphone/device control as a joined call.
+The full call footer appears as soon as joining starts, with Connecting to the
+channel shown until room joining and initial microphone setup finish (including
+receive-only fallback). Media/device actions are disabled during setup, while
+Disconnect remains available; connection diagnostics appear once ready. Direct
+rooms remain ready while waiting for another participant; readiness does not
+depend on remote video, diagnostics, or a second participant arriving.
+Channel highlighting follows the visible workspace: text channels remain
+highlighted during voice-only use; opening the call grid highlights its voice
+channel and clears the text highlight.
 Microphone transmission also passes through a browser Web Audio gain gate before
 WebRTC encoding. The threshold is saved locally (default -50 dBFS), updates live,
 and uses a 6 dB hysteresis and 180 ms release to reduce syllable chopping. Direct
@@ -196,6 +235,24 @@ server or has not joined a voice channel, so online does not mean “in a call.�
 
 Opening the website-level socket broadcasts presence to every server in its
 token, so a user remains online while viewing Friends or a different server.
+The profile footer shows a selectable Online, Away, Do not disturb, or Invisible
+status instead of the user's handle. Status changes are authenticated self-only
+signaling messages, shared across that user's connected sockets. Server-scoped
+online broadcasts include visible status values; Invisible is omitted from the
+online list even when the account has multiple sockets. Voice membership remains
+visible while in a call. Do not disturb silences incoming ringtones but keeps
+call prompts/messages available; Away is manually selected rather than automatic.
+The browser saves the preference locally and supplies it on reconnect, so an
+invisible account is not briefly announced online. In-memory server status lasts
+until the final socket closes; no database migration or authorization change is
+required. Device selection sections are styled and expanded by default.
+Clients subscribe once to a user-presence snapshot covering their authenticated
+friends and shared-server members, independent of the server currently viewed.
+Connect/disconnect and manual status changes refresh these snapshots for every
+subscriber, updating Friends, conversations, profiles and member lists together.
+Unrelated accounts are excluded and Invisible is represented as offline. The
+legacy single-server presence subscription remains available to older clients.
+Input and output menus share the same expanded labeled device selector.
 
 ### LiveKit
 
@@ -231,8 +288,8 @@ Allocation uses the unique handle constraint and retries collisions without
 overwriting a handle assigned by a concurrent request. Stable stored handles
 retain the canonical `username.1234` form; the UI displays `username (1234)` and
 friend/server lookup accepts both forms, including partial bracket searches.
-The current user's handle is included in the session and displayed in both
-Friends and server profile footers.
+The current user's handle is included in the session and account settings;
+Friends and server profile footers show the display name and selected status.
 
 Login sessions use a renewable 24-hour lifetime. Successful session refreshes
 issue a fresh JWT/cookie for another 24 hours, including background session polls;
@@ -381,6 +438,15 @@ can also be hidden to give chat the full width. The user list opens as a drawer
 on tablet/mobile widths. These controls change CSS visibility only and do not
 unmount the active media connection or change voice membership. Scrollbars use
 the shared dark theme throughout the app, including dialogs and legal pages.
+User and server settings open native modal dialogs above the workspace and call
+controls without replacing the workspace or disconnecting media. Both cogs use
+the same SVG. The channel/conversation sidebar can be resized with its right-edge
+drag handle or arrow keys; its preferred width is stored locally and reset by
+double-clicking the handle. Mobile retains a viewport-limited width. Call
+diagnostics open beside the connection-info icon and remain within the viewport.
+The optional `npm run test:webrtc-browser -- --workspace-controls` browser check
+exercises modal focus/stacking, pointer and keyboard resizing, diagnostic placement,
+mobile bounds and persistent call audio while opening and closing settings.
 
 ## Direct WebRTC call flow
 

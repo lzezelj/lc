@@ -14,6 +14,7 @@ const useTurn = process.argv.includes("--turn");
 const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
+const workspaceControls = process.argv.includes("--workspace-controls");
 let rtcConfiguration = {};
 if (useTurn) {
   const local = parse(await readFile(new URL("../.env", import.meta.url)));
@@ -40,7 +41,7 @@ if (useTurn) {
 // generated tone, without requiring microphone access or an external service.
 const directory = await mkdtemp(join(tmpdir(), "lc-webrtc-"));
 let navigationCode = "";
-if (navigation) {
+if (navigation || workspaceControls) {
   const require = createRequire(import.meta.url);
   const { webpack } = require("next/dist/compiled/webpack/webpack");
   const component = await readFile(
@@ -55,10 +56,67 @@ if (navigation) {
       jsx: ts.JsxEmit.ReactJSX,
     }),
   );
+  if (workspaceControls) {
+    for (const name of [
+      "settings-modal",
+      "sidebar-resizer",
+      "device-menu",
+      "device-selection",
+      "audio-device-options",
+      "user-status-menu",
+    ]) {
+      await writeFile(
+        join(directory, `${name}.js`),
+        ts.transpile(
+          await readFile(
+            new URL(`../app/${name}.tsx`, import.meta.url),
+            "utf8",
+          ),
+          {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.CommonJS,
+            jsx: ts.JsxEmit.ReactJSX,
+          },
+        ),
+      );
+    }
+    const page = await readFile(
+      new URL("../app/page.tsx", import.meta.url),
+      "utf8",
+    );
+    const ast = ts.createSourceFile(
+      "page.tsx",
+      page,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const diagnostics = ast.statements.find(
+      (node) =>
+        ts.isFunctionDeclaration(node) &&
+        node.name?.text === "DiagnosticsIndicator",
+    );
+    await writeFile(
+      join(directory, "diagnostics.js"),
+      ts.transpile(
+        `import { useState, useEffect, useId } from 'react';\n${diagnostics.getText(ast)}\nexport { DiagnosticsIndicator };`,
+        {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.CommonJS,
+          jsx: ts.JsxEmit.ReactJSX,
+        },
+      ),
+    );
+  }
   await writeFile(
     join(directory, "entry.mjs"),
     await readFile(
-      new URL("./call-navigation.fixture.mjs", import.meta.url),
+      new URL(
+        workspaceControls
+          ? "./workspace-controls.fixture.mjs"
+          : "./call-navigation.fixture.mjs",
+        import.meta.url,
+      ),
       "utf8",
     ),
   );
@@ -179,6 +237,15 @@ try {
         )
         .replace(/^export /gm, "")
     : "";
+  if (workspaceControls)
+    await call(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false },
+      sessionId,
+    );
+  const workspaceStyles = workspaceControls
+    ? await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
+    : "";
   const result = await call(
     "Runtime.evaluate",
     {
@@ -186,10 +253,12 @@ try {
       userGesture: true,
       returnByValue: true,
       timeout: 20000,
-      expression: microphone
-        ? `(async () => {
+      expression: workspaceControls
+        ? `const css = document.createElement('style'); css.textContent = ${JSON.stringify(workspaceStyles)}; document.head.append(css); ${navigationCode}; window.setupWorkspaceControlsTest()`
+        : microphone
+          ? `(async () => {
         let threshold = '-45';
-        const localStorage = { getItem: () => threshold };
+        const localStorage = { getItem: (key) => key === 'lc.voiceThreshold' ? threshold : null };
         ${gateCode}
         const context = new AudioContext(); await context.resume();
         const oscillator = context.createOscillator();
@@ -214,9 +283,9 @@ try {
         await context.close();
         return { quiet, speech, blocked, disabled, stopped };
       })()`
-        : navigation
-          ? `${navigationCode}; window.runCallNavigationTest()`
-          : `(async () => {
+          : navigation
+            ? `${navigationCode}; window.runCallNavigationTest()`
+            : `(async () => {
     ${queueCode}
     const context = new AudioContext();
     await context.resume();
@@ -273,7 +342,130 @@ try {
   if (result.exceptionDetails)
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
-  if (microphone) {
+  if (workspaceControls) {
+    await call(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x: data.x, y: data.y },
+      sessionId,
+    );
+    await call(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mousePressed",
+        x: data.x,
+        y: data.y,
+        button: "left",
+        clickCount: 1,
+      },
+      sessionId,
+    );
+    await call(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseMoved",
+        x: data.x + 60,
+        y: data.y,
+        button: "left",
+        buttons: 1,
+      },
+      sessionId,
+    );
+    await call(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseReleased",
+        x: data.x + 60,
+        y: data.y,
+        button: "left",
+        clickCount: 1,
+      },
+      sessionId,
+    );
+    const checked = await call(
+      "Runtime.evaluate",
+      {
+        expression: "window.verifyWorkspaceControlsTest()",
+        awaitPromise: true,
+        userGesture: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    if (checked.exceptionDetails)
+      throw new Error(JSON.stringify(checked.exceptionDetails));
+    console.log(
+      "Workspace controls browser check passed:",
+      JSON.stringify(checked.result.value),
+    );
+    for (const selector of [
+      ".voiceDock > .deviceControl:first-of-type > .mediaToggle",
+      ".voiceDock > .deviceControl:nth-of-type(2) > .mediaToggle",
+      ".voiceDock > button:not(.soundboardPlaceholder)",
+      ".soundboardPlaceholder",
+    ]) {
+      const target = await call(
+        "Runtime.evaluate",
+        {
+          expression: `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      await call(
+        "Input.dispatchMouseEvent",
+        { type: "mouseMoved", ...target.result.value },
+        sessionId,
+      );
+      const hovered = await call(
+        "Runtime.evaluate",
+        {
+          expression: `(async () => { await new Promise(resolve => setTimeout(resolve, 180)); const element = document.querySelector(${JSON.stringify(selector)}); return { translate: getComputedStyle(element).translate }; })()`,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      assert.match(
+        hovered.result.value.translate,
+        /-2px/,
+        `${selector} ${JSON.stringify(hovered.result.value)}`,
+      );
+    }
+    console.log(
+      "Microphone, camera, sharing and soundboard hover checks passed",
+    );
+    await call(
+      "Emulation.setDeviceMetricsOverride",
+      { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
+      sessionId,
+    );
+    const mobile = await call(
+      "Runtime.evaluate",
+      {
+        expression:
+          "({ resizerHidden: getComputedStyle(document.querySelector('.sidebarResizer')).display === 'none', noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth })",
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    assert.equal(mobile.result.value.resizerHidden, true);
+    assert.equal(mobile.result.value.noHorizontalOverflow, true);
+    const mobileMicrophone = await call(
+      "Runtime.evaluate",
+      {
+        expression: "window.verifyMicrophonePosition()",
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    if (mobileMicrophone.exceptionDetails)
+      throw new Error(JSON.stringify(mobileMicrophone.exceptionDetails));
+    console.log(
+      "Mobile workspace bounds passed:",
+      JSON.stringify(mobile.result.value),
+    );
+  } else if (microphone) {
     assert.ok(
       data.quiet < 0.000001,
       "Quiet input must be silent at the output",
