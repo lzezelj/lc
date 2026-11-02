@@ -1,6 +1,12 @@
 "use client";
 
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 export function ChatHistory({
   threadId,
@@ -22,6 +28,48 @@ export function ChatHistory({
   children: ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const jump = useRef<HTMLButtonElement>(null);
+  const [showJump, setShowJump] = useState(false);
+  const latestId = messages.at(-1)?.id;
+  useEffect(() => {
+    const node = root.current;
+    const latest = node?.querySelectorAll<HTMLElement>("[data-message-id]");
+    const lastMessage = latest?.[latest.length - 1];
+    if (!node || !ready || !lastMessage) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setShowJump(!entry.isIntersecting),
+      { root: node },
+    );
+    observer.observe(lastMessage);
+    return () => observer.disconnect();
+  }, [latestId, ready, threadId]);
+  useLayoutEffect(() => {
+    const host = wrapper.current;
+    const button = jump.current;
+    if (!host || !button) return;
+    const send = host
+      .closest(".chat")
+      ?.querySelector<HTMLElement>("[data-chat-send]");
+    if (!send) return;
+    const position = () => {
+      const bounds = host.getBoundingClientRect();
+      const target = send.getBoundingClientRect();
+      const center = Math.max(
+        28,
+        Math.min(
+          bounds.width - 28,
+          target.left + target.width / 2 - bounds.left,
+        ),
+      );
+      button.style.setProperty("--jump-center", `${center}px`);
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(host);
+    observer.observe(send);
+    return () => observer.disconnect();
+  }, [showJump, threadId, ready]);
   const pending = useRef(false);
   const state = useRef<{
     thread: string;
@@ -98,27 +146,65 @@ export function ChatHistory({
     }
   }
   return (
-    <div
-      ref={root}
-      className="chatLog"
-      aria-busy={!ready}
-      onScroll={() => {
-        remember();
-        if (root.current && root.current.scrollTop < 80) void loadOlder();
-      }}
-    >
-      {hasMore && (
+    <div className="chatHistory" ref={wrapper}>
+      <div
+        ref={root}
+        tabIndex={-1}
+        className="chatLog"
+        aria-busy={!ready}
+        onScroll={() => {
+          remember();
+          if (root.current && root.current.scrollTop < 80) void loadOlder();
+        }}
+      >
+        {hasMore && (
+          <button
+            className="loadOlderMessages"
+            type="button"
+            disabled={!ready || loadingOlder}
+            onClick={() => void loadOlder()}
+          >
+            {loadingOlder ? "Loading…" : "Load 50 older messages"}
+          </button>
+        )}
+        {!ready && <p className="empty">Loading messages…</p>}
+        {ready ? children : null}
+      </div>
+      {ready && messages.length > 0 && showJump && (
         <button
-          className="loadOlderMessages"
+          ref={jump}
           type="button"
-          disabled={!ready || loadingOlder}
-          onClick={() => void loadOlder()}
+          className="jumpToPresent"
+          aria-label="Jump to present"
+          title="Jump to present"
+          onClick={() => {
+            const node = root.current;
+            if (!node) return;
+            node.focus({ preventScroll: true });
+            node.scrollTo({
+              top: node.scrollHeight,
+              behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+                .matches
+                ? "auto"
+                : "smooth",
+            });
+          }}
         >
-          {loadingOlder ? "Loading…" : "Load 50 older messages"}
+          <svg
+            aria-hidden="true"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 4v16m-6-6 6 6 6-6" />
+          </svg>
         </button>
       )}
-      {!ready && <p className="empty">Loading messages…</p>}
-      {ready ? children : null}
     </div>
   );
 }

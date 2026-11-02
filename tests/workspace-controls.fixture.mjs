@@ -209,6 +209,12 @@ function Workspace() {
           h("small", null, "long.friend.handle (0001)"),
         ),
       ),
+      h(
+        "footer",
+        { className: "appLegalLinks" },
+        h("button", { type: "button" }, "Impressum"),
+        h("button", { type: "button" }, "Privacy"),
+      ),
     ),
     settings &&
       h(
@@ -402,12 +408,24 @@ window.verifyMicrophonePosition = async () => {
   };
   window.setWorkspaceCallJoined(false);
   await wait();
+  const idleLegal = document
+    .querySelector(".appLegalLinks")
+    .getBoundingClientRect();
   const idle = document
     .querySelector(".profileMicrophone .mediaToggle svg")
     .getBoundingClientRect();
   const idleArrow = arrowPosition(".profileMicrophone .deviceMenuTrigger");
   window.setWorkspaceCallJoined(true);
   await wait();
+  const joinedLegal = document
+    .querySelector(".appLegalLinks")
+    .getBoundingClientRect();
+  check(
+    ["x", "y", "width", "height"].every(
+      (key) => Math.abs(idleLegal[key] - joinedLegal[key]) < 0.1,
+    ),
+    "Joining voice moved or resized the legal-links footer",
+  );
   const joined = document
     .querySelector('.voiceDock [aria-label="Mute microphone"] svg')
     .getBoundingClientRect();
@@ -949,6 +967,12 @@ function HistoryFixture() {
         ),
       ),
     ),
+    h(
+      "form",
+      { onSubmit: (event) => event.preventDefault() },
+      h("input", { "aria-label": "Message" }),
+      h("button", { "data-chat-send": true, type: "submit" }, "Send"),
+    ),
   );
 }
 
@@ -968,6 +992,10 @@ window.verifyChatHistory = async () => {
   const atBottom = () =>
     Math.abs(log().scrollHeight - log().clientHeight - log().scrollTop) < 2;
   check(atBottom(), "History did not open at the latest message");
+  check(
+    !container.querySelector(".jumpToPresent"),
+    "Jump arrow is shown while the latest message is visible",
+  );
   const article = container.querySelector("article");
   const sender = article.querySelector(".profileLink");
   check(
@@ -987,6 +1015,42 @@ window.verifyChatHistory = async () => {
   log().scrollTop = 400;
   log().dispatchEvent(new Event("scroll", { bubbles: true }));
   const readingPosition = log().scrollTop;
+  await wait();
+  const jump = container.querySelector(
+    '.jumpToPresent[aria-label="Jump to present"]',
+  );
+  check(
+    jump,
+    "Scrolling away from the latest message did not show the jump arrow",
+  );
+  const send = container
+    .querySelector("[data-chat-send]")
+    .getBoundingClientRect();
+  const arrow = jump.getBoundingClientRect();
+  check(
+    arrow.bottom <= send.top &&
+      Math.abs(arrow.left + arrow.width / 2 - send.left - send.width / 2) < 2,
+    "Jump arrow is not above the Send button",
+  );
+  jump.click();
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches)
+    check(
+      atBottom(),
+      "Reduced-motion jumping must reach the latest message immediately",
+    );
+  for (
+    let frame = 0;
+    frame < 30 && (!atBottom() || container.querySelector(".jumpToPresent"));
+    frame++
+  )
+    await wait();
+  check(
+    atBottom() && !container.querySelector(".jumpToPresent"),
+    "Jump arrow did not return to the latest message and disappear",
+  );
+  log().scrollTop = readingPosition;
+  log().dispatchEvent(new Event("scroll", { bubbles: true }));
+  await wait();
   window.historyTestActions.append();
   await wait();
   check(
@@ -1035,6 +1099,10 @@ window.verifyChatHistory = async () => {
     "Full-width own rows must align the name and message text to the right",
   );
   check(atBottom(), "Sending a message did not reveal the latest message");
+  check(
+    !container.querySelector(".jumpToPresent"),
+    "Sending a message did not hide the jump arrow",
+  );
   window.historyTestActions.switchThread();
   await wait();
   check(

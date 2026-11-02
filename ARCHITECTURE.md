@@ -432,6 +432,10 @@ The browser displays pages chronologically, opens at the latest message, and
 requests 50 older messages when scrolling near the top (with a manual fallback).
 A shared history view preserves the visible message when older rows prepend;
 new arrivals follow the bottom only when already nearby or sent by the viewer.
+A shared down-arrow control appears above Send while the latest message is
+outside the history viewport. It returns to the present, hides once the latest
+row becomes visible and respects reduced-motion preferences. Resize observation
+keeps it aligned with Send in channel and direct-message composers.
 Late history responses from obsolete conversations are discarded and overlapping
 real-time/history rows are deduplicated. Messages use full-width rows in both
 channels and DMs. The viewer's own name, timestamp and message text align right;

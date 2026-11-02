@@ -4482,7 +4482,7 @@ export default function Home() {
                   onChange={(event) => setDraft(event.target.value)}
                   placeholder={`Message ${selectedFriend.name}`}
                 />
-                <button>Send</button>
+                <button data-chat-send>Send</button>
                 <button
                   type="button"
                   onClick={() => void startFriendCall(selectedFriend)}
@@ -5195,7 +5195,9 @@ export default function Home() {
                   }
                 />
               </div>
-              <button disabled={!selectedChannelId}>Send</button>
+              <button data-chat-send disabled={!selectedChannelId}>
+                Send
+              </button>
             </form>
           </section>
         )}

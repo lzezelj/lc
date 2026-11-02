@@ -45,6 +45,7 @@ button {
   --profile-row-height: 76px;
   --connection-row-height: 60px;
   --footer-inset: 8px;
+  --legal-footer-height: calc(var(--profile-row-height) + var(--footer-inset));
   --audio-controls-bottom: calc(var(--footer-inset) + (var(--profile-row-height) - 40px) / 2);
   --sidebar-footer-height: calc(var(--profile-row-height) + var(--footer-inset));
   --voice-dock-height: 0px;
@@ -883,7 +884,6 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .workspace .profileMicrophone .deviceMenuTrigger,
 .workspace .voiceDock > .deviceControl:first-of-type .deviceMenuTrigger { display: grid; place-items: center; padding: 0; line-height: 1; }
 .workspace.channelsHidden .voiceDock > .deviceControl { position: static; }
-.workspace.voiceActive .appLegalLinks { min-height: 76px; flex-basis: 76px; }
 
 .profileConnectionDetails {
   display: flex;
@@ -1492,6 +1492,11 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   overflow-anchor: none;
   padding: 14px 20px;
 }
+.chatHistory { position: relative; min-width: 0; min-height: 0; }
+.chatHistory > .chatLog { height: 100%; }
+.jumpToPresent { position: absolute; z-index: 2; bottom: 12px; left: var(--jump-center, calc(100% - 32px)); margin-left: -20px; display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid #697395; border-radius: 50%; background: #252e45; color: var(--ink); box-shadow: 0 3px 12px #0005; }
+.jumpToPresent:hover { background: #35415e; border-color: #a0afe2; }
+.jumpToPresent:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .messageHeader { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .messageHeader > .profileLink { min-width: 0; max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat .messageHeader time { padding-left: 0; white-space: nowrap; }
@@ -1766,8 +1771,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .appLegalLinks {
   display: flex;
-  flex: 0 0 var(--sidebar-footer-height);
-  min-height: var(--sidebar-footer-height);
+  flex: 0 0 var(--legal-footer-height);
+  min-height: var(--legal-footer-height);
   align-items: center;
   justify-content: center;
   gap: 10px;

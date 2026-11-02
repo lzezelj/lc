@@ -551,11 +551,16 @@ try {
     );
     assert.equal(mobile.result.value.resizerHidden, true);
     assert.equal(mobile.result.value.noHorizontalOverflow, true);
+    await call(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+      sessionId,
+    );
     const mobileMicrophone = await call(
       "Runtime.evaluate",
       {
         expression:
-          "(async () => { await window.verifySettingsAndProfileLayout(); return window.verifyMicrophonePosition(); })()",
+          "(async () => { await window.verifySettingsAndProfileLayout(); await window.verifyChatHistory(); return window.verifyMicrophonePosition(); })()",
         awaitPromise: true,
         returnByValue: true,
       },
