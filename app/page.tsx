@@ -1248,9 +1248,6 @@ export default function Home() {
         textSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
-        setErrorMessage((current) =>
-          current === "Live messaging is reconnecting." ? "" : current,
-        );
         openedSocket.send(
           JSON.stringify({
             type: "subscribe-text",
@@ -1309,7 +1306,7 @@ export default function Home() {
             : [...current, message],
         );
       },
-      onError: () => setErrorMessage("Live messaging is reconnecting."),
+      onError: () => undefined,
     });
     return () => {
       liveText.close();
