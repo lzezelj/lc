@@ -15,6 +15,7 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 - Never display, copy, or commit secrets.
 - Do not deploy or change production infrastructure unless explicitly requested.
 - All buttons must inherit the shared hover animation in `app/globals.css`, including future buttons. Avoid separate hover movement/scaling rules; retain disabled states and reduced-motion support.
+- Reuse shared UI components and styles for equivalent controls. Microphone, output, and camera selectors must use `DeviceSelection`; update its shared CSS instead of styling each device selector separately.
 
 ## Product rules
 

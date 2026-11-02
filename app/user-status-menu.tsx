@@ -30,11 +30,13 @@ export function UserStatusMenu({
   status,
   speaking,
   onChange,
+  onProfile,
 }: {
   name: string;
   status: UserStatus;
   speaking: boolean;
   onChange: (status: UserStatus) => void;
+  onProfile?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 16, bottom: 80 });
@@ -108,7 +110,7 @@ export function UserStatusMenu({
             event.preventDefault();
             const items = [
               ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                'button[role="menuitemradio"]',
+                'button[role="menuitemradio"], button[role="menuitem"]',
               ),
             ];
             const current = items.indexOf(
@@ -126,6 +128,19 @@ export function UserStatusMenu({
             ]?.focus();
           }}
         >
+          {onProfile && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                trigger.current?.focus();
+                onProfile();
+              }}
+            >
+              View profile
+            </button>
+          )}
           {(Object.keys(statusLabels) as UserStatus[]).map((choice) => (
             <button
               key={choice}

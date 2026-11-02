@@ -171,6 +171,52 @@ export function createSignalingServer({
         .catch(() => response.writeHead(400).end("Invalid JSON"));
       return;
     }
+    if (
+      request.method === "POST" &&
+      request.url === "/internal/channel-deleted"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret))
+        return response.writeHead(401).end("Unauthorized");
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.channelId !== "string" ||
+            typeof body.serverId !== "string"
+          )
+            return response.writeHead(400).end("Invalid channel");
+          deletedChannels.add(body.channelId);
+          // Issued tokens last 60 seconds; existing sockets lose access permanently.
+          setTimeout(
+            () => deletedChannels.delete(body.channelId),
+            65000,
+          ).unref();
+          for (const client of ws.clients) {
+            if (!client.identity?.serverIds.includes(body.serverId)) continue;
+            client.allowedChannelIds.delete(body.channelId);
+            client.groupPresence?.delete(body.channelId);
+            if (client.subscribedTextChannelId === body.channelId)
+              client.subscribedTextChannelId = undefined;
+            if (client.readyState === WebSocket.OPEN)
+              client.send(
+                JSON.stringify({
+                  type: "channel-deleted",
+                  channelId: body.channelId,
+                  serverId: body.serverId,
+                }),
+              );
+          }
+          for (const peer of peersFor(body.channelId))
+            peer.close(4003, "Channel deleted");
+          broadcastPresence(body.channelId);
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     if (request.method === "POST" && request.url === "/internal/kick-voice") {
       const supplied = request.headers.authorization?.replace(
         /^Bearer\s+/i,
@@ -213,6 +259,7 @@ export function createSignalingServer({
   });
   const ws = new WebSocketServer({ noServer: true });
   const rooms = new Map();
+  const deletedChannels = new Set();
   const userStatuses = new Map();
   const validStatuses = new Set(["online", "away", "dnd", "invisible"]);
 
@@ -386,6 +433,7 @@ export function createSignalingServer({
     broadcastUserPresence();
 
     const isAllowed = (channelId) => {
+      if (deletedChannels.has(channelId)) return false;
       if (socket.allowedChannelIds.has(channelId)) return true;
       if (typeof channelId !== "string" || !channelId.startsWith("friend:"))
         return false;

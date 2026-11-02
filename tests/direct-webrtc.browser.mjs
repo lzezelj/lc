@@ -15,12 +15,28 @@ const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
 const workspaceControls = process.argv.includes("--workspace-controls");
+const supportedFlags = new Set([
+  "--turn",
+  "--direct-ip",
+  "--navigation",
+  "--microphone",
+  "--workspace-controls",
+]);
+if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
+  throw new Error("Unsupported browser test option");
+if ([navigation, microphone, workspaceControls].filter(Boolean).length > 1)
+  throw new Error("Choose only one browser test mode");
+if (useTurn && (navigation || microphone || workspaceControls))
+  throw new Error("TURN options apply only to the connectivity test");
+if (directIp && !useTurn) throw new Error("--direct-ip requires --turn");
 let rtcConfiguration = {};
 if (useTurn) {
   const local = parse(await readFile(new URL("../.env", import.meta.url)));
   const config = { ...local, ...process.env };
   if (!config.TURN_SECRET || !config.TURN_URLS)
     throw new Error("TURN configuration is missing");
+  if (directIp && !config.TURN_EXTERNAL_IP)
+    throw new Error("TURN_EXTERNAL_IP is required for --direct-ip");
   const username = `${Math.floor(Date.now() / 1000) + 600}:connectivity-test`;
   const credential = createHmac("sha1", config.TURN_SECRET)
     .update(username)
@@ -56,9 +72,92 @@ if (navigation || workspaceControls) {
       jsx: ts.JsxEmit.ReactJSX,
     }),
   );
+  for (const name of [
+    "workspace-shell",
+    ...(navigation
+      ? ["device-menu", "device-selection", "call-tile-controls"]
+      : []),
+  ]) {
+    await writeFile(
+      join(directory, `${name}.js`),
+      ts.transpile(
+        await readFile(new URL(`../app/${name}.tsx`, import.meta.url), "utf8"),
+        {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.CommonJS,
+          jsx: ts.JsxEmit.ReactJSX,
+        },
+      ),
+    );
+  }
+  if (navigation) {
+    const groupSource = await readFile(
+      new URL("../app/group-call.tsx", import.meta.url),
+      "utf8",
+    );
+    const groupAst = ts.createSourceFile(
+      "group-call.tsx",
+      groupSource,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const components = groupAst.statements
+      .filter(
+        (node) =>
+          ts.isFunctionDeclaration(node) &&
+          ["GroupCall", "RemoteTrackView"].includes(node.name?.text),
+      )
+      .map((node) => node.getText(groupAst).replace(/^export /, ""))
+      .join("\n");
+    await writeFile(
+      join(directory, "group-navigation.mock.mjs"),
+      await readFile(
+        new URL("./group-navigation.mock.mjs", import.meta.url),
+        "utf8",
+      ),
+    );
+    await writeFile(
+      join(directory, "group-call-probe.js"),
+      ts.transpile(
+        `
+      import React, {useState, useRef, useEffect} from 'react';
+      import {Room, RoomEvent, Track, TrackEvent} from './group-navigation.mock.mjs';
+      import {DeviceMenu} from './device-menu.js';
+      import {HideTileButton, HiddenTilesMenu, SelfViewButton} from './call-tile-controls.js';
+      const fetch = async () => ({ok: true, json: async () => ({server_url: 'test', participant_token: 'test'})});
+      const prepareVoiceActivity = () => window.groupNavigation.context;
+      const playVoiceSound = () => {};
+      const voiceCaptureOptions = () => ({});
+      const monitorRoomDiagnostics = () => () => {};
+      const monitorTrackVideo = () => () => {};
+      const videoQuality = () => '';
+      ${components}
+      export {GroupCall};
+    `,
+        {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.CommonJS,
+          jsx: ts.JsxEmit.ReactJSX,
+        },
+      ),
+    );
+  }
   if (workspaceControls) {
+    await writeFile(
+      join(directory, "user-handle.js"),
+      ts.transpile(
+        await readFile(new URL("../user-handle.ts", import.meta.url), "utf8"),
+        { module: ts.ModuleKind.CommonJS },
+      ),
+    );
     for (const name of [
       "settings-modal",
+      "channel-manager",
+      "message-delete-action",
+      "chat-history",
+      "message-header",
+      "user-profile",
       "sidebar-resizer",
       "device-menu",
       "device-selection",
@@ -129,6 +228,7 @@ if (navigation || workspaceControls) {
       output: { path: directory, filename: "navigation.js" },
       resolve: {
         modules: [fileURLToPath(new URL("../node_modules", import.meta.url))],
+        alias: { "../user-handle": join(directory, "user-handle.js") },
       },
     });
     compiler.run((error, stats) =>
@@ -425,9 +525,10 @@ try {
         },
         sessionId,
       );
-      assert.match(
-        hovered.result.value.translate,
-        /-2px/,
+      assert.ok(
+        Math.abs(
+          parseFloat(hovered.result.value.translate.split(/\s+/)[1]) + 2,
+        ) < 0.05,
         `${selector} ${JSON.stringify(hovered.result.value)}`,
       );
     }
@@ -453,7 +554,8 @@ try {
     const mobileMicrophone = await call(
       "Runtime.evaluate",
       {
-        expression: "window.verifyMicrophonePosition()",
+        expression:
+          "(async () => { await window.verifySettingsAndProfileLayout(); return window.verifyMicrophonePosition(); })()",
         awaitPromise: true,
         returnByValue: true,
       },
@@ -482,6 +584,8 @@ try {
     assert.equal(data.stopped, "ended");
     console.log("Real browser microphone gate passed:", JSON.stringify(data));
   } else if (navigation) {
+    assert.equal(data.groupRoomPreserved, true);
+    assert.equal(data.groupAudioPreserved, true);
     assert.equal(data.elementStable, true);
     assert.equal(data.streamStable, true);
     assert.equal(data.playbackUninterrupted, true);

@@ -39,7 +39,7 @@ button {
 
 .workspace {
   --rail-width: 72px;
-  --sidebar-width: var(--preferred-sidebar-width, 340px);
+  --sidebar-width: var(--preferred-sidebar-width, 380px);
   --channel-width: var(--sidebar-width);
   --member-width: 340px;
   --profile-row-height: 76px;
@@ -823,7 +823,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .profileIdentity { display: block; min-width: 0; padding-right: 30px; }
 .profileIdentity strong, .profileIdentity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profileStatusMenu { width: 100%; min-width: 0; }
-.workspace .profileBar .profileMenu .profileStatusTrigger { display: flex; align-items: center; gap: 9px; width: max(0px, calc(100% - 166px)); padding: 4px 0; border-radius: 6px; background: transparent; text-align: left; }
+.workspace .profileBar .profileMenu .profileStatusTrigger { display: flex; align-items: center; gap: 9px; width: max(0px, calc(100% - 174px)); padding: 4px 0; border-radius: 6px; background: transparent; text-align: left; }
 .profileStatusTrigger .avatar { flex-shrink: 0; }
 .profileStatusName { min-width: 0; }
 .profileStatusTrigger.speaking strong { color: #64e6a5; }
@@ -848,15 +848,15 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .workspace.voiceActive .profileIdentity { padding-right: 150px; }
 .profileBar .profileSettings { position: fixed; left: calc(var(--rail-width) + var(--sidebar-width) - 52px); bottom: var(--audio-controls-bottom); display: grid; place-items: center; padding: 0; width: 32px; height: 40px; line-height: 1; border-radius: 6px; }
 .profileBar .profileSettings:hover { background: #30384c; color: white; }
-.profileBar .profileMicrophone { position: fixed; left: calc(var(--rail-width) + var(--sidebar-width) - 180px); bottom: var(--audio-controls-bottom); gap: 0; padding: 0; }
+.profileBar .profileMicrophone { position: fixed; left: calc(var(--rail-width) + var(--sidebar-width) - 188px); bottom: var(--audio-controls-bottom); gap: 0; padding: 0; }
 .profileMicrophone .deviceControl { width: 60px; height: 40px; }
 .profileMicrophone .mediaToggle { width: 40px; min-width: 40px; }
 .profileMicrophone .deviceMenuTrigger { width: 20px; min-width: 20px; padding-inline: 3px; }
 .profileMicrophone button { padding: 7px 6px; font-size: 11px; }
 .workspace:not(.voiceActive) .profileIdentity { padding-right: 150px; }
-.profileBar .profileDeafen { position: fixed; z-index: 20; left: calc(var(--rail-width) + var(--sidebar-width) - 112px); bottom: var(--audio-controls-bottom); padding: 0; }
-.profileDeafen .deviceControl { width: 52px; height: 40px; }
-.workspace .profileDeafen .mediaToggle { width: 32px; min-width: 32px; padding: 0; display: grid; place-items: center; }
+.profileBar .profileDeafen { position: fixed; z-index: 20; left: calc(var(--rail-width) + var(--sidebar-width) - 120px); bottom: var(--audio-controls-bottom); padding: 0; }
+.profileDeafen .deviceControl { width: 60px; height: 40px; }
+.workspace .profileDeafen .mediaToggle { width: 40px; min-width: 40px; padding: 0; display: grid; place-items: center; }
 .workspace .profileDeafen .deviceMenuTrigger { width: 20px; min-width: 20px; display: grid; place-items: center; padding: 0; line-height: 1; }
 .profileDeafen button { padding: 7px 6px; font-size: 11px; }
 .profileDeafen button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -872,7 +872,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .workspace .voiceDock > button { min-width: 0; }
 .workspace .voiceDock .soundboardPlaceholder { opacity: .45; cursor: not-allowed; }
 .workspace .voiceDock > .deviceControl { position: fixed; bottom: var(--audio-controls-bottom); z-index: 19; }
-.workspace .voiceDock > .deviceControl:first-of-type { left: calc(var(--rail-width) + var(--sidebar-width) - 180px); width: 60px; height: 40px; }
+.workspace .voiceDock > .deviceControl:first-of-type { left: calc(var(--rail-width) + var(--sidebar-width) - 188px); width: 60px; height: 40px; }
 .workspace .voiceDock > .deviceControl:first-of-type .mediaToggle { width: 40px; min-width: 40px; }
 .workspace .voiceDock > .deviceControl:first-of-type .deviceMenuTrigger { width: 20px; min-width: 20px; }
 .workspace .voiceDock > .deviceControl:nth-of-type(2) { position: relative; bottom: auto; left: auto; }
@@ -1055,6 +1055,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-bottom: calc(var(--sidebar-footer-height) + var(--voice-dock-height) + 12px);
 }
 
@@ -1074,6 +1075,11 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   border-bottom: 1px solid var(--line);
   background: #111625;
 }
+
+.persistentCallLayer { position: relative; z-index: 10; grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; margin-top: 58px; pointer-events: none; }
+.persistentCallLayer:empty { display: none; }
+.persistentCallLayer > .groupCallPanel { height: 100%; pointer-events: auto; }
+.persistentCallLayer > .backgroundCall { height: 1px; }
 
 .backgroundCall {
   position: absolute;
@@ -1265,6 +1271,92 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .settingsActions > button:hover, .settingsClose:hover { background: #342d4d; border-color: #776298; }
 .settingsActions > button.danger { color: #f2a9b5; }
 .settingsModal button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.settingsModal.settingsWorkspace { width: min(1080px, calc(100vw - 40px)); height: min(820px, calc(100dvh - 48px)); padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+.settingsWorkspace > header { padding: 24px 28px; margin: 0; border-bottom: 1px solid var(--line); }
+.settingsLayout { display: grid; grid-template-columns: 220px minmax(0, 1fr); flex: 1; min-height: 0; }
+.settingsNavigation { display: flex; flex-direction: column; gap: 5px; padding: 24px 16px; background: #151925; overflow-y: auto; border-right: 1px solid var(--line); }
+.settingsNavLabel { color: var(--muted); font-size: 12px; font-weight: 700; overflow-wrap: anywhere; margin: 0 10px 12px; }
+.settingsNavigation button { text-align: left; border: 0; background: transparent; color: var(--muted); padding: 11px 14px; border-radius: 6px; }
+.settingsNavigation button.active, .settingsNavigation button:hover { background: #303748; color: var(--ink); }
+.settingsNavigation button.danger { color: #ff899c; margin-top: 16px; }
+.settingsNavigation button.danger:hover, .settingsNavigation button.danger.active { color: #ff899c; background: #85283b33; }
+.settingsDangerZone button.danger, .managedChannelActions button.danger { color: #ff899c; border: 1px solid #a44455; background: #85283b22; }
+.channelManager { display: grid; gap: 12px; }
+.managedChannel { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: #151925; }
+.managedChannelHeading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.managedChannelHeading > div:first-child { min-width: 0; display: grid; gap: 5px; overflow-wrap: anywhere; }
+.managedChannelHeading small { color: var(--muted); }
+.managedChannelActions { display: flex; gap: 8px; flex-wrap: wrap; }
+.managedChannel .settingsNameForm, .managedChannel .settingsDangerZone { margin-top: 18px; }
+.serverMessageGroup { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-block: 12px; }
+.serverMessageGroup > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 16px; background: #20283b; cursor: pointer; }
+.serverMessageGroup > summary::before { content: "▸"; }
+.serverMessageGroup[open] > summary::before { content: "▾"; }
+.serverMessageGroup > summary strong { flex: 1; overflow-wrap: anywhere; }
+.serverMessageGroup > summary small { color: #aebcfc; }
+.serverMessageGroup > summary span { font-size: 12px; color: var(--muted); }
+.serverMessageGroup > article { margin: 12px; }
+.serverMessageGroup > .messageBulkDelete { margin: 12px; }
+.messageBulkDelete > button.danger { color: #ff899c; border: 1px solid #a44455; background: #85283b22; padding: 10px 16px; border-radius: 6px; }
+@media (max-width: 680px) { .managedChannelHeading { align-items: flex-start; flex-direction: column; } }
+.settingsContent { padding: 30px 36px; overflow-y: auto; min-width: 0; }
+.settingsContent h3 { margin: 0 0 24px; font-size: 23px; }
+.settingsContent h4 { margin: 28px 0 16px; }
+.settingsContent label, .settingsNameForm { display: grid; gap: 10px; }
+.settingsNameForm { gap: 20px; }
+.settingsContent input:not([type="checkbox"]):not([type="range"]), .settingsContent select { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 6px; background: #151925; color: var(--ink); }
+.settingsContent button { padding: 10px 16px; border-radius: 6px; }
+.settingsNameForm > button { justify-self: start; }
+.settingsAccountCard { display: flex; align-items: center; gap: 18px; padding: 24px; border: 1px solid var(--line); background: #151925; border-radius: 10px; margin-bottom: 28px; }
+.settingsAccountCard p { color: var(--muted); margin: 6px 0; }
+.settingsChannelList { border: 1px solid var(--line); border-radius: 8px; padding: 0 16px; margin-bottom: 24px; }
+.settingsChannelList p { display: flex; justify-content: space-between; gap: 16px; }
+.settingsChannelList small { color: var(--muted); }
+.settingsDangerZone { border: 1px solid #a44455; padding: 24px; border-radius: 8px; }
+.settingsFeedback { padding: 12px; background: #252d3d; border-radius: 6px; overflow-wrap: anywhere; }
+button.profileLink { display: inline; width: auto; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+button.profileLink:hover { color: #c0cbff; text-decoration: underline; }
+.memberIdentity .profileLink { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settingsModal.userProfileModal { width: min(440px, calc(100vw - 32px)); padding: 0; overflow-x: hidden; }
+.userProfileModal > header { padding: 20px 24px; margin: 0; }
+.userProfileModal .settingsActions { display: block; }
+.profileBanner { height: 112px; display: flex; align-items: flex-start; justify-content: flex-end; padding: 18px 24px; background: radial-gradient(ellipse at 15% 10%, #779edc66, transparent 65%), linear-gradient(120deg, #273b60, #534363); border-top: 1px solid #ffffff0b; }
+.profileBanner span { font-size: 28px; font-weight: 800; letter-spacing: 3px; color: #ffffff26; }
+.profileDetails { padding: 0 24px 24px; }
+.profileDetails .profileAvatar { position: relative; width: 82px; height: 82px; margin-top: -36px; border: 6px solid var(--panel); box-shadow: 0 4px 18px #0003; font-size: 30px; }
+.profileDetails h3 { margin: 12px 0 6px; font-size: 24px; overflow-wrap: anywhere; }
+.profileDetails p { color: var(--muted); margin: 8px 0; overflow-wrap: anywhere; }
+.profileDetails section { margin: 24px 0; padding: 16px; border: 1px solid #ffffff0b; border-radius: 10px; background: #111722; }
+.profileDetails h4 { margin: 0 0 12px; text-transform: uppercase; letter-spacing: .08em; font-size: 11px; color: var(--muted); }
+.profileRole { display: inline-block; padding: 4px 10px; background: #303748; border-radius: 4px; }
+.profileDetails button { width: 100%; padding: 12px; border-radius: 6px; }
+.profilePresence { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.profileRole { text-transform: capitalize; font-size: 12px; border: 1px solid #ffffff0c; }
+.profileActions { display: grid; gap: 10px; }
+.profileActions > button.primary { background: #6a79cc; border: 1px solid #91a0ee; color: #fff; font-weight: 600; }
+.profileActions > button.primary:hover { background: #7b8bdc; }
+.profileActions > button:disabled { opacity: .65; background: #293142; color: var(--muted); border: 1px solid var(--line); }
+.profileActions small { color: var(--muted); }
+.profileActions [role="alert"] { color: #ffabb8; font-size: 13px; }
+button.member { width: calc(100% - 20px); min-width: 0; border: 1px solid transparent; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+button.member:hover, button.member:focus-visible { background: #ffffff09; border-color: #ffffff12; }
+button.friendProfileCard { width: calc(100% - 24px); min-width: 0; border: 1px solid var(--line); background: #171d2b; color: var(--ink); cursor: pointer; border-radius: 12px; padding: 20px; }
+button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
+.voiceParticipant .voiceParticipantIdentity { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 4px; border: 0; border-radius: 5px; color: inherit; background: transparent; text-align: left; }
+.voiceParticipantIdentity:hover { background: #ffffff09; }
+.voiceParticipantIdentity b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.friendRow > .friendConversationLink { display: grid; gap: 4px; flex: 1; min-width: 0; text-align: left; }
+@media (max-width: 680px) {
+  .settingsModal.settingsWorkspace { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; }
+  .settingsWorkspace > header { padding: 16px; }
+  .settingsLayout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settingsNavigation { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 10px; }
+  .settingsNavigation button { white-space: nowrap; }
+  .settingsNavigation .settingsNavLabel { display: none; }
+  .settingsNavigation button.danger { margin: 0; }
+  .settingsContent { padding: 24px 18px; }
+}
 .diagnosticsAnchor { display: inline-flex; align-items: center; }
 .diagnosticsAnchor .diagnosticsIndicator { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid #8f9bb3; border-radius: 50%; background: transparent; color: #b8c3d9; cursor: pointer; }
 .diagnosticsAnchor .diagnosticsIndicator:hover, .diagnosticsAnchor .diagnosticsIndicator:focus-visible { background: #342d4d; color: white; }
@@ -1302,7 +1394,6 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .audioDeviceOptions, .settingsDeviceChoices, .deviceChoices { display: grid; gap: 10px; }
 .audioDeviceOptions label { display: grid; gap: 6px; font-size: 12px; }
 .audioDeviceOptions input, .audioDeviceOptions select { width: 100%; min-width: 0; accent-color: var(--accent); }
-.audioDeviceOptions select { padding: 7px; background: #171d2b; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; }
 .audioDeviceOptions small { color: var(--muted); }
 .audioDeviceOptions { padding: 8px; }
 .audioDeviceOptions summary, .deviceChoices summary, .settingsDeviceChoices summary { cursor: pointer; padding: 8px 4px; }
@@ -1315,8 +1406,12 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .audioDeviceOptions > details > label, .audioDeviceOptions > details > small { margin: 10px; }
 .settingsDeviceChoices > label { margin: 10px; }
 .deviceChoices > label { display: grid; gap: 6px; margin: 10px; font-size: 12px; }
-.deviceChoices select { width: 100%; min-width: 0; padding: 7px; background: #171d2b; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; }
 .deviceChoices .deviceSelectionNote { display: block; margin: 10px; color: var(--muted); font-size: 11px; }
+.deviceSelection { min-width: 0; padding: 8px; }
+.deviceSelection > label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.deviceSelection select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: #171d2b; color: var(--ink); font: inherit; }
+.deviceSelection .deviceSelectionNote { display: block; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.audioDeviceOptions > .deviceSelection { padding: 0; }
 .deviceDropdown > .deviceChoices { margin-inline: 8px; }
 .friendConversationTitle { gap: 6px; }
 .friendConversationTitle > b { flex: 1; min-width: 0; }
@@ -1393,8 +1488,18 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .chatLog {
   min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: none;
   padding: 14px 20px;
 }
+.messageHeader { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.messageHeader > .profileLink { min-width: 0; max-width: 75%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat .messageHeader time { padding-left: 0; white-space: nowrap; }
+.chatLog > article { width: 100%; max-width: 100%; }
+.chatLog > article.messageOwn { margin-left: 0; margin-right: 0; text-align: right; }
+.messageOwn > .messageHeader { justify-content: flex-end; }
+.chatLog > article.messageOther { margin-left: 0; margin-right: auto; text-align: left; }
+.loadOlderMessages { display: block; margin: 0 auto 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: var(--panel); }
 
 .chat article {
   min-width: 0;
@@ -1559,6 +1664,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   padding-bottom: 12px;
 }

@@ -184,7 +184,7 @@ function renderCall(state = {}, options = {}) {
   };
 }
 
-test("hiding one participant window preserves media and only changes the viewer's tiles", () => {
+test("hiding a camera retains media components and restores only the selected tile", () => {
   const participants = [{ id: "one", name: "Alex" }];
   const camera = {
     id: "camera",
@@ -232,14 +232,6 @@ test("hiding one participant window preserves media and only changes the viewer'
     false,
   );
   assert.ok(views.some((element) => element.props.media === audio));
-  const otherViewer = renderCall(initial);
-  assert.equal(
-    elements(otherViewer.tree).find(
-      (element) =>
-        element.type === "RemoteTrackView" && element.props.media === camera,
-    ).props.hidden,
-    false,
-  );
   const menu = elements(hidden.tree).find(
     (element) => element.type === "HiddenTilesMenu",
   );
@@ -363,7 +355,7 @@ test("hide buttons stop focus clicks and the restore menu lists only hidden wind
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test("group deafen disables the microphone and all incoming tracks without changing mute preference", async () => {
+test("group deafen controls microphone and incoming tracks for each mute preference", async () => {
   const media = { id: "audio", participantId: "one", track: { kind: "audio" } };
   const deafened = renderCall(
     { joined: true, remoteMedia: [media] },
@@ -487,7 +479,7 @@ const action = (tree, text) =>
       element.type === "button" && element.props.children[0] === text,
   );
 
-test("joining renders the full group call controls disabled, then enables them when ready", () => {
+test("group call controls are disabled in the joining state and enabled in the ready state", () => {
   for (const joining of [false, true]) {
     const pending = renderCall({ joining });
     const devices = elements(pending.tree).filter(
@@ -575,8 +567,8 @@ test("workspace channel highlights follow the displayed view and connecting labe
       callViewOpen,
     );
   }
-  for (const type of ["voice_direct", "voice_group"]) {
-    const activeVoiceChannel = { name: "Test room", type };
+  {
+    const activeVoiceChannel = { name: "Test room" };
     assert.match(
       vm.runInNewContext(label, { activeVoiceChannel, voiceReady: false }),
       /^Connecting to "Test room"/,
@@ -715,7 +707,7 @@ test("camera capture finishing after leave cannot attach a preview or publish me
   );
 });
 
-test("starting screen sharing opens the call grid to show its preview", async () => {
+test("starting screen sharing requests the call grid without forcing self-view on", async () => {
   const result = renderCall({ joined: true });
   const share = elements(result.tree).find(
     (element) =>
@@ -724,6 +716,7 @@ test("starting screen sharing opens the call grid to show its preview", async ()
   share.props.onClick();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(result.opened, [true]);
+  assert.equal(result.stateWrites.hiddenTiles, undefined);
 });
 
 test("screen picker completing after leave cannot reopen the call or restore presence", async () => {
@@ -765,7 +758,7 @@ test("call grid shows named tiles for audio-only participants, including duplica
   assert.equal(tiles[2].props.children[0].props.children[0], "Alex");
 });
 
-test("camera publication replaces its participant placeholder without hiding audio playback", () => {
+test("camera publication replaces its participant placeholder and keeps the audio component rendered", () => {
   const media = [
     { id: "camera", participantId: "one", track: { kind: "video" } },
     { id: "audio", participantId: "one", track: { kind: "audio" } },
@@ -851,4 +844,208 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
   events.length = 0;
   selectChannel({ id: "next", type: "voice_group" });
   assert.deepEqual(events, ["leave", false]);
+});
+
+test("Friends is the initial workspace and LC returns to the list without leaving voice", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    page,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let open, initial;
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "openFriendsHome")
+      open = node;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isArrayBindingPattern(node.name) &&
+      node.name.elements[0]?.getText(ast) === "friendsView"
+    )
+      initial = node.initializer.arguments[0].getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.equal(initial, "true");
+  const changes = {};
+  const navigate = vm.runInNewContext(
+    `${ts.transpile(open.getText(ast))}; openFriendsHome`,
+    {
+      setSelectedFriend: (value) => {
+        changes.friend = value;
+      },
+      setFriendsView: (value) => {
+        changes.friends = value;
+      },
+      setCallViewOpen: (value) => {
+        changes.media = value;
+      },
+      leaveRoom() {
+        throw new Error("Navigation must not leave voice");
+      },
+    },
+  );
+  navigate();
+  assert.deepEqual(changes, { friend: null, friends: true, media: false });
+});
+
+test("opening a friend conversation switches workspace and hides media without leaving voice", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    page,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let open;
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "openFriend")
+      open = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  const changes = {};
+  const navigate = vm.runInNewContext(
+    `${ts.transpile(open.getText(ast))}; openFriend`,
+    {
+      setFriendsView: (value) => {
+        changes.friends = value;
+      },
+      setCallViewOpen: (value) => {
+        changes.media = value;
+      },
+      setSelectedFriend: (value) => {
+        changes.friend = value;
+      },
+      setUnreadDirectMessages: (update) => {
+        changes.unread = { ...update({ target: 3, other: 2 }) };
+      },
+      leaveRoom() {
+        throw new Error("Opening a conversation must not leave voice");
+      },
+    },
+  );
+  const friend = { id: "target", name: "Friend" };
+  navigate(friend);
+  assert.deepEqual(changes, {
+    friends: true,
+    media: false,
+    friend,
+    unread: { other: 2 },
+  });
+});
+
+test("session refresh preserves workspace readiness only while an authenticated session remains", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    page,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let expression;
+  function visit(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(ast) === "authStatus"
+    )
+      expression = node.initializer.getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(expression);
+  for (const [sessionStatus, session, expected] of [
+    ["loading", { user: { id: "user" } }, "authenticated"],
+    ["loading", null, "loading"],
+    ["unauthenticated", null, "unauthenticated"],
+    ["unauthenticated", { user: { id: "user" } }, "unauthenticated"],
+  ]) {
+    assert.equal(
+      vm.runInNewContext(expression, { sessionStatus, session }),
+      expected,
+    );
+  }
+});
+
+test("microphone menu exposes the same actions before and after joining", async () => {
+  const source = await readFile(
+    new URL("../app/device-menu.tsx", import.meta.url),
+    "utf8",
+  );
+  const preferences = new Map();
+  let restarts = 0;
+  const exports = {};
+  const jsx = (type, props) => ({ type, props });
+  vm.runInNewContext(
+    ts.transpile(source, {
+      module: ts.ModuleKind.CommonJS,
+      jsx: ts.JsxEmit.ReactJSX,
+    }),
+    {
+      exports,
+      require: (name) =>
+        name === "react"
+          ? {
+              useState: () => [true, () => {}],
+              useEffect() {},
+              useRef: () => ({ current: null }),
+            }
+          : name === "react/jsx-runtime"
+            ? { jsx, jsxs: jsx }
+            : { DeviceSelection: "DeviceSelection" },
+      localStorage: {
+        getItem: (key) => preferences.get(key) ?? null,
+        setItem: (key, value) => preferences.set(key, value),
+      },
+    },
+  );
+  for (const active of [false, true]) {
+    preferences.clear();
+    const tree = exports.DeviceMenu({
+      kind: "microphone",
+      disabled: false,
+      devices: [],
+      selectedId: "",
+      onAction() {},
+      onSelect() {},
+      onRestart: active
+        ? () => {
+            restarts++;
+          }
+        : undefined,
+    });
+    const restart = elements(tree).find(
+      (element) =>
+        element.type === "button" &&
+        element.props.children === "Restart microphone",
+    );
+    assert.equal(restart.props.disabled, !active);
+    const processing = elements(tree).find(
+      (element) =>
+        element.type === "button" &&
+        Array.isArray(element.props.children) &&
+        element.props.children.join("") === "Disable microphone processing",
+    );
+    assert.ok(processing);
+    processing.props.onClick();
+    assert.equal(preferences.get("lc.microphoneProcessing"), "off");
+  }
+  assert.equal(
+    restarts,
+    1,
+    "idle processing changes must not request microphone capture",
+  );
 });

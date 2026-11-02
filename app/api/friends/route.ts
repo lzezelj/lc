@@ -95,11 +95,23 @@ export async function POST(request: Request) {
     userId?: string;
     action?: "request" | "accept" | "decline" | "activity";
   };
-  if (body.action === "request" && body.handle) {
+  if (body.action === "request" && (body.handle || body.userId)) {
+    if (
+      body.userId &&
+      (typeof body.userId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          body.userId,
+        ))
+    )
+      return NextResponse.json({ error: "Invalid user" }, { status: 400 });
     const [target] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.handle, normalizeUserHandle(body.handle)));
+      .where(
+        body.userId
+          ? eq(users.id, body.userId)
+          : eq(users.handle, normalizeUserHandle(body.handle!)),
+      );
     if (!target || target.id === session.user.id)
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     const [existing] = await db

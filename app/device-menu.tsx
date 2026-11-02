@@ -98,12 +98,17 @@ export function DeviceMenu({
       </button>
       {open && !unavailable && (
         <div className="deviceDropdown">
-          {onRestart && (
+          {kind === "microphone" && (
             <>
               <button
-                title="Reopens the selected microphone and reconnects its audio track."
+                disabled={!onRestart}
+                title={
+                  onRestart
+                    ? "Reopens the selected microphone and reconnects its audio track."
+                    : "Join a voice channel to restart its microphone."
+                }
                 onClick={() => {
-                  onRestart();
+                  onRestart?.();
                   setOpen(false);
                 }}
               >
@@ -119,7 +124,7 @@ export function DeviceMenu({
                     next ? "on" : "off",
                   );
                   setProcessing(next);
-                  onRestart();
+                  onRestart?.();
                   setOpen(false);
                 }}
               >
@@ -129,7 +134,6 @@ export function DeviceMenu({
           )}
           {kind !== "headphones" && (
             <DeviceSelection
-              title={kind === "microphone" ? "Input devices" : "Camera devices"}
               label={kind === "microphone" ? "Microphone" : "Camera"}
               devices={devices}
               selectedId={selectedId}

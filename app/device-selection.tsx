@@ -3,7 +3,6 @@
 import type { MediaDeviceOption } from "./device-menu";
 
 export function DeviceSelection({
-  title,
   label,
   devices,
   selectedId,
@@ -11,7 +10,6 @@ export function DeviceSelection({
   disabled = false,
   note,
 }: {
-  title: string;
   label: string;
   devices: MediaDeviceOption[];
   selectedId: string;
@@ -20,8 +18,7 @@ export function DeviceSelection({
   note?: string;
 }) {
   return (
-    <details className="deviceChoices" open>
-      <summary>{title}</summary>
+    <div className="deviceSelection">
       <label>
         {label}
         <select
@@ -38,6 +35,6 @@ export function DeviceSelection({
         </select>
       </label>
       {note && <small className="deviceSelectionNote">{note}</small>}
-    </details>
+    </div>
   );
 }

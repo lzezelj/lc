@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
@@ -45,6 +45,7 @@ export async function GET(
         createdAt: messages.createdAt,
         channelName: channels.name,
         serverName: servers.name,
+        serverId: servers.id,
       })
       .from(messages)
       .innerJoin(channels, eq(channels.id, messages.channelId))
@@ -55,7 +56,7 @@ export async function GET(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ userId: string }> },
 ) {
   const session = await auth();
@@ -67,11 +68,36 @@ export async function DELETE(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  const query = new URL(request.url).searchParams;
+  const serverId = query.get("serverId");
+  if (
+    query.has("serverId") &&
+    (!serverId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        serverId,
+      ))
+  ) {
+    return NextResponse.json({ error: "Invalid server" }, { status: 400 });
+  }
   const deletedAt = new Date();
   const deleted = await db
     .update(messages)
     .set({ content: "", deletedAt, editedAt: deletedAt })
-    .where(and(eq(messages.authorId, userId), isNull(messages.deletedAt)))
+    .where(
+      and(
+        eq(messages.authorId, userId),
+        isNull(messages.deletedAt),
+        serverId
+          ? inArray(
+              messages.channelId,
+              db
+                .select({ id: channels.id })
+                .from(channels)
+                .where(eq(channels.serverId, serverId)),
+            )
+          : undefined,
+      ),
+    )
     .returning({ id: messages.id, channelId: messages.channelId });
 
   const signalingUrl =

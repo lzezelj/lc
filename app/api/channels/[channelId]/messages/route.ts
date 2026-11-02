@@ -36,9 +36,13 @@ export async function GET(
   const beforeId = url.searchParams.get("beforeId");
   const cursorDate = beforeCreatedAt ? new Date(beforeCreatedAt) : null;
   if (
-    (beforeCreatedAt || beforeId) &&
+    (url.searchParams.has("beforeCreatedAt") ||
+      url.searchParams.has("beforeId")) &&
     (!beforeCreatedAt ||
       !beforeId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        beforeId,
+      ) ||
       !cursorDate ||
       Number.isNaN(cursorDate.getTime()))
   )
@@ -73,7 +77,7 @@ export async function GET(
           : undefined,
       ),
     )
-    .orderBy(desc(messages.createdAt))
+    .orderBy(desc(messages.createdAt), desc(messages.id))
     .limit(pageSize + 1);
   const hasMore = result.length > pageSize;
   const page = hasMore ? result.slice(0, pageSize) : result;

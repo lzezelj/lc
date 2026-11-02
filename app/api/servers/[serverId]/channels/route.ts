@@ -5,6 +5,7 @@ import { db } from "../../../../../db";
 import { channels, serverMembers } from "../../../../../db/schema";
 import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
 import { notifyServer } from "../../../../../server/notify-server";
+import { removeChannelMedia } from "../../../../../server/remove-channel-media";
 
 async function membership(userId: string, serverId: string) {
   const [result] = await db
@@ -71,6 +72,7 @@ export async function POST(
     .insert(channels)
     .values({ serverId, name, type: body.type! })
     .returning();
+  await notifyServer(serverId);
   return NextResponse.json(channel, { status: 201 });
 }
 
@@ -101,4 +103,48 @@ export async function PATCH(
     return NextResponse.json({ error: "Channel not found" }, { status: 404 });
   void notifyServer(serverId);
   return NextResponse.json(channel);
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ serverId: string }> },
+) {
+  const session = await auth();
+  const { serverId } = await params;
+  const member = session && (await membership(session.user.id, serverId));
+  if (!session || member?.role !== "owner")
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const limit = checkRateLimit(
+    `server-mutation:${session.user.id}`,
+    rateLimits.serverMutation,
+  );
+  if (!limit.allowed)
+    return NextResponse.json(
+      { error: "Too many server changes. Please try again later." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(limit.retryAfterSeconds) },
+      },
+    );
+  const body = (await request.json().catch(() => null)) as {
+    channelId?: string;
+  } | null;
+  if (
+    typeof body?.channelId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      body.channelId,
+    )
+  )
+    return NextResponse.json({ error: "Invalid channel" }, { status: 400 });
+  const [channel] = await db
+    .delete(channels)
+    .where(
+      and(eq(channels.id, body.channelId), eq(channels.serverId, serverId)),
+    )
+    .returning();
+  if (!channel)
+    return NextResponse.json({ error: "Channel not found" }, { status: 404 });
+  await removeChannelMedia(serverId, channel.id, channel.type);
+  await notifyServer(serverId);
+  return NextResponse.json({ id: channel.id });
 }

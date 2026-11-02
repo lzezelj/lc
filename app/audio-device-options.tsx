@@ -28,7 +28,6 @@ export function AudioDeviceOptions({
     <div className="audioDeviceOptions">
       {mode !== "input" && (
         <DeviceSelection
-          title="Output devices"
           label="Headphones / speakers"
           devices={outputs}
           selectedId={outputId}

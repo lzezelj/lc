@@ -6,7 +6,7 @@ import pg from "pg";
 
 const { Client } = pg;
 
-test("database preserves server, channel, membership, and message relationships", async () => {
+test("deleting a server cascades to its channels, memberships, and messages", async () => {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL must be configured");
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
@@ -51,9 +51,14 @@ test("database preserves server, channel, membership, and message relationships"
       "SELECT count(*)::int AS count FROM messages WHERE channel_id = $1",
       [channelId],
     );
+    const channels = await client.query(
+      "SELECT count(*)::int AS count FROM channels WHERE server_id = $1",
+      [serverId],
+    );
 
     assert.equal(memberships.rows[0].count, 0);
     assert.equal(messages.rows[0].count, 0);
+    assert.equal(channels.rows[0].count, 0);
   } finally {
     await client.query("ROLLBACK");
     await client.end();
@@ -66,14 +71,39 @@ test("messages cannot reference users or channels that do not exist", async () =
   await client.connect();
 
   try {
-    await assert.rejects(
-      client.query(
-        "INSERT INTO messages (channel_id, author_id, content) VALUES ($1, $2, 'Invalid')",
-        [randomUUID(), randomUUID()],
-      ),
-      (error) => error.code === "23503",
+    await client.query("BEGIN");
+    const userId = randomUUID();
+    const serverId = randomUUID();
+    const channelId = randomUUID();
+    await client.query(
+      "INSERT INTO users (id, role, name, email) VALUES ($1, 'owner', 'Owner', $2)",
+      [userId, `owner-${userId}@example.test`],
     );
+    await client.query(
+      "INSERT INTO servers (id, name, created_by) VALUES ($1, 'Constraints', $2)",
+      [serverId, userId],
+    );
+    await client.query(
+      "INSERT INTO channels (id, server_id, name, type) VALUES ($1, $2, 'general', 'text')",
+      [channelId, serverId],
+    );
+    for (const [channel, author] of [
+      [randomUUID(), userId],
+      [channelId, randomUUID()],
+    ]) {
+      await client.query("SAVEPOINT invalid_message");
+      await assert.rejects(
+        client.query(
+          "INSERT INTO messages (channel_id, author_id, content) VALUES ($1, $2, 'Invalid')",
+          [channel, author],
+        ),
+        (error) => error.code === "23503",
+      );
+      await client.query("ROLLBACK TO SAVEPOINT invalid_message");
+      await client.query("RELEASE SAVEPOINT invalid_message");
+    }
   } finally {
+    await client.query("ROLLBACK");
     await client.end();
   }
 });

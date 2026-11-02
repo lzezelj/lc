@@ -126,6 +126,18 @@ test("permanent direct-message deletion removes the row", async () => {
   assert.ok(f.notifications.every(({ event }) => event.permanent));
 });
 
+test("a soft-deleted direct message can subsequently be removed permanently", async () => {
+  const f = await fixture();
+  assert.equal((await f.remove()).status, 200);
+  assert.equal(f.rows[0].content, "");
+  assert.ok(f.rows[0].deletedAt);
+  f.notifications.length = 0;
+  assert.equal((await f.remove({ permanent: true })).status, 200);
+  assert.equal(f.rows.length, 0);
+  assert.equal(f.notifications.length, 2);
+  assert.ok(f.notifications.every(({ event }) => event.permanent));
+});
+
 test("recipient and unrelated owner cannot delete another user's direct message", async () => {
   for (const actor of [recipient, stranger]) {
     const f = await fixture({ actor });

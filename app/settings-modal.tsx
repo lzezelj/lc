@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 export function SettingsIcon() {
@@ -26,10 +26,14 @@ export function SettingsModal({
   title,
   onClose,
   children,
+  navigation,
+  className = "",
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  navigation?: ReactNode;
+  className?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -52,7 +56,7 @@ export function SettingsModal({
   return createPortal(
     <dialog
       ref={dialog}
-      className="settingsModal"
+      className={`settingsModal ${navigation ? "settingsWorkspace" : ""} ${className}`}
       aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
@@ -75,14 +79,74 @@ export function SettingsModal({
         <button
           type="button"
           className="settingsClose"
-          aria-label="Close settings"
+          aria-label={
+            title === "User profile" ? "Close profile" : "Close settings"
+          }
           onClick={onClose}
         >
           ×
         </button>
       </header>
-      <div className="settingsActions">{children}</div>
+      {navigation ? (
+        <div className="settingsLayout">
+          <nav className="settingsNavigation" aria-label={`${title} sections`}>
+            {navigation}
+          </nav>
+          <div className="settingsContent">{children}</div>
+        </div>
+      ) : (
+        <div className="settingsActions">{children}</div>
+      )}
     </dialog>,
     document.body,
+  );
+}
+
+export function SettingsNameForm({
+  name,
+  label,
+  onSave,
+}: {
+  name: string;
+  label: string;
+  onSave: (name: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState(name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <form
+      className="settingsNameForm"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setSaving(true);
+        setError("");
+        try {
+          await onSave(value);
+        } catch {
+          setError("Changes could not be saved. Please try again.");
+        } finally {
+          setSaving(false);
+        }
+      }}
+    >
+      <label>
+        {label}
+        <input
+          value={value}
+          maxLength={60}
+          required
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </label>
+      {error && <p role="alert">{error}</p>}
+      <button
+        className="primary"
+        disabled={saving || !value.trim() || value.trim() === name}
+        type="submit"
+      >
+        {saving ? "Saving…" : "Save changes"}
+      </button>
+    </form>
   );
 }

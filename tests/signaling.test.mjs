@@ -112,15 +112,22 @@ test("call invitations require an accepted friend in the signaling token", async
   });
 });
 
-test("online presence is scoped to an authorized server", async () => {
+test("legacy server presence authorizes subscriptions and broadcasts connections and departures", async () => {
   const url = await startServer();
   const first = await connect(url, "Ada");
-  const second = await connect(url, "Grace");
   const presence = nextMessage(first);
   first.send(
     JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
   );
   assert.deepEqual(await presence, {
+    type: "online-presence",
+    serverId: "server-1",
+    userIds: ["test-Ada"],
+    statuses: { "test-Ada": "online" },
+  });
+  const connected = nextMessage(first);
+  const second = await connect(url, "Grace");
+  assert.deepEqual(await connected, {
     type: "online-presence",
     serverId: "server-1",
     userIds: ["test-Ada", "test-Grace"],
@@ -134,24 +141,13 @@ test("online presence is scoped to an authorized server", async () => {
     type: "forbidden",
     channelId: "private",
   });
-});
-
-test("opening the website broadcasts online presence to every server", async () => {
-  const url = await startServer();
-  const observer = await connect(url, "Ada");
-  const initial = nextMessage(observer);
-  observer.send(
-    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
-  );
-  await initial;
-
-  const updated = nextMessage(observer);
-  await connect(url, "Grace", permittedChannelIds, ["server-1"]);
-  assert.deepEqual(await updated, {
+  const disconnected = nextMessage(first);
+  second.close();
+  assert.deepEqual(await disconnected, {
     type: "online-presence",
     serverId: "server-1",
-    userIds: ["test-Ada", "test-Grace"],
-    statuses: { "test-Ada": "online", "test-Grace": "online" },
+    userIds: ["test-Ada"],
+    statuses: { "test-Ada": "online" },
   });
 });
 
@@ -162,7 +158,10 @@ test("status changes are self-only, synchronize sockets, and invisible stays off
   const duplicate = await connect(url, "Grace");
   let update = nextMessage(observer);
   observer.send(
-    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+    JSON.stringify({
+      type: "subscribe-user-presence",
+      userIds: ["test-Ada", "test-Grace"],
+    }),
   );
   await update;
   update = nextMessage(observer);
@@ -208,7 +207,10 @@ test("saved invisible status is applied before the first online broadcast", asyn
   const observer = await connect(url, "Ada");
   let update = nextMessage(observer);
   observer.send(
-    JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+    JSON.stringify({
+      type: "subscribe-user-presence",
+      userIds: ["test-Ada", "test-Hidden"],
+    }),
   );
   await update;
   update = nextMessage(observer);
@@ -418,6 +420,45 @@ test("a direct-room peer remains joined and accepts a replacement peer", async (
   const relayed = nextMessage(remaining);
   replacement.send(JSON.stringify({ type: "candidate", candidate: "fresh" }));
   assert.deepEqual(await relayed, { type: "candidate", candidate: "fresh" });
+});
+
+test("channel deletion authenticates, revokes stale access and leaves other rooms connected", async () => {
+  const url = await startServer();
+  const target = await connect(url, "Target");
+  const other = await connect(url, "Other");
+  const observer = await connect(url, "Observer");
+  for (const [socket, roomId] of [
+    [target, "lounge"],
+    [other, "other-room"],
+  ]) {
+    const joined = nextMessage(socket);
+    socket.send(JSON.stringify({ type: "join", roomId }));
+    await joined;
+  }
+  const request = (secret) =>
+    fetch(`${url.replace("ws://", "http://")}/internal/channel-deleted`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ serverId: "server-1", channelId: "lounge" }),
+    });
+  assert.equal((await request("wrong")).status, 401);
+  assert.equal(target.readyState, WebSocket.OPEN);
+  const closed = once(target, "close");
+  const event = nextMessage(observer);
+  assert.equal((await request(authSecret)).status, 204);
+  assert.equal((await event).type, "channel-deleted");
+  await closed;
+  assert.equal(other.readyState, WebSocket.OPEN);
+  const forbidden = nextMessage(observer);
+  observer.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  assert.equal((await forbidden).type, "forbidden");
+  const stale = await connect(url, "Stale");
+  const denied = nextMessage(stale);
+  stale.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  assert.equal((await denied).type, "forbidden");
 });
 
 test("internal voice kick closes only the selected room participant", async () => {

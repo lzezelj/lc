@@ -40,7 +40,7 @@ test("expired, disabled, and missing accounts are rejected", () => {
   assert.equal(isAccountActive(undefined, now), false);
 });
 
-test("login sessions have a renewable 24-hour lifetime, including legacy cookies", () => {
+test("session age policy rejects tokens at 24 hours, including older legacy tokens", () => {
   assert.equal(SESSION_MAX_AGE_SECONDS, 86400);
   const current = Math.floor(now.getTime() / 1000);
   assert.equal(isSessionWithinLifetime(current - 86399, now), true);
@@ -52,10 +52,11 @@ test("login sessions have a renewable 24-hour lifetime, including legacy cookies
   );
   assert.equal(isSessionWithinLifetime(undefined, now), false);
   assert.equal(isSessionWithinLifetime(NaN, now), false);
-  const later = new Date(now.getTime() + 12 * 60 * 60 * 1000);
+  const later = new Date(now.getTime() + 25 * 60 * 60 * 1000);
+  assert.equal(isSessionWithinLifetime(current, later), false);
   assert.equal(
-    isSessionWithinLifetime(current, later),
+    isSessionWithinLifetime(current + 12 * 60 * 60, later),
     true,
-    "a renewed token gets a fresh window",
+    "age is measured from the supplied issued-at time; cookie renewal is not exercised here",
   );
 });

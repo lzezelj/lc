@@ -102,6 +102,17 @@ Direct-call audio is mounted in `CallMediaProvider` above the Friends/server
 workspace branches. Switching those branches cannot replace the audio element;
 video previews restore their stored streams after navigation. Remote previews
 are muted because the persistent audio element alone plays received sound.
+Fresh authenticated entry and the LC/Friends buttons open the Friends list.
+Reloads restore the last Friends tab/conversation or server/text channel from
+per-account session storage in that browser tab. Startup validates saved IDs
+against current server access, accepted friends and fetched channels; stale
+destinations fall back to Friends or the server's first text channel. Persistence
+waits until restoration finishes so initial defaults cannot overwrite the saved
+destination. This stores navigation IDs only and does not resume calls/capture
+after a full reload. WorkspaceShell keeps the group-call component in a
+stable sibling layer outside changing Friends/server children, so navigation
+preserves the LiveKit room, capture tracks, remote audio elements and call controls.
+The media grid can overlay either workspace without moving the room component.
 The shared profile footer appears in both views and derives its connection label
 from active direct/group voice membership, rather than the currently viewed
 server or a generic signaling status. Long labels truncate with a full-text
@@ -126,6 +137,9 @@ switching. Output selection requires browser support for media-element and
 AudioContext sinks; unsupported browsers retain the system output and volume
 controls. These are application audio levels, not hardware mixer controls.
 The idle footer uses the same microphone/device control as a joined call.
+Both microphone menus expose the same device, volume and processing options;
+Restart is disabled until there is active capture. Processing can be configured
+before joining and applies when microphone capture begins.
 The full call footer appears as soon as joining starts, with Connecting to the
 channel shown until room joining and initial microphone setup finish (including
 receive-only fallback). Media/device actions are disabled during setup, while
@@ -245,14 +259,14 @@ call prompts/messages available; Away is manually selected rather than automatic
 The browser saves the preference locally and supplies it on reconnect, so an
 invisible account is not briefly announced online. In-memory server status lasts
 until the final socket closes; no database migration or authorization change is
-required. Device selection sections are styled and expanded by default.
+required. Device menus use labeled always-visible selectors.
 Clients subscribe once to a user-presence snapshot covering their authenticated
 friends and shared-server members, independent of the server currently viewed.
 Connect/disconnect and manual status changes refresh these snapshots for every
 subscriber, updating Friends, conversations, profiles and member lists together.
 Unrelated accounts are excluded and Invisible is represented as offline. The
 legacy single-server presence subscription remains available to older clients.
-Input and output menus share the same expanded labeled device selector.
+Input and output menus share the same compact labeled device selector.
 
 ### LiveKit
 
@@ -352,6 +366,8 @@ the API; it is not only a UI restriction. The confirmation UI also offers an
 explicit, default-off permanent deletion. Permanent deletion removes the row;
 the reply foreign key uses `ON DELETE SET NULL`, so replies survive without a
 reference to content that no longer exists.
+Own deleted-message placeholders expose a confirmed permanent removal action in
+channel context menus and direct-message rows, using those same authorized APIs.
 
 The owner can replace a demo account's server memberships, regenerate its
 short-lived invitation, revoke it, or delete it. Membership replacement must
@@ -409,9 +425,18 @@ latest history. Replies store the referenced message ID. Deletions follow the
 same API-to-signaling path as new messages, so connected channel subscribers
 replace the content immediately without polling.
 
-Channel history is fetched newest-first in cursor pages of 50 messages. The
-browser displays each page chronologically and requests the next 50 older
-messages only when the user selects the load-more control. The cursor contains
+Channel and direct-message history are fetched newest-first in cursor pages of
+50 messages. Both queries order by timestamp and ID for stable ties; direct
+history remains restricted to the authenticated pair of accepted friends.
+The browser displays pages chronologically, opens at the latest message, and
+requests 50 older messages when scrolling near the top (with a manual fallback).
+A shared history view preserves the visible message when older rows prepend;
+new arrivals follow the bottom only when already nearby or sent by the viewer.
+Late history responses from obsolete conversations are discarded and overlapping
+real-time/history rows are deduplicated. Messages use full-width rows in both
+channels and DMs. The viewer's own name, timestamp and message text align right;
+other authors' messages align left. Shared message headers open profiles.
+The cursor contains
 the oldest message timestamp and ID, which makes pages stable when timestamps
 are shared and new messages arrive concurrently.
 
@@ -439,7 +464,42 @@ on tablet/mobile widths. These controls change CSS visibility only and do not
 unmount the active media connection or change voice membership. Scrollbars use
 the shared dark theme throughout the app, including dialogs and legal pages.
 User and server settings open native modal dialogs above the workspace and call
-controls without replacing the workspace or disconnecting media. Both cogs use
+controls without replacing the workspace or disconnecting media. Each dialog
+has sidebar navigation and an independently scrolling content pane (horizontal
+navigation on small screens). Account, media setup, personal messages, server
+overview, channel creation and friend assignment render inside those panes,
+using the existing authenticated APIs. Personal message deletion confirms inline.
+The Channels section supports inline renaming and confirmed deletion as well as
+creation. Deletion verifies server ownership, scopes the SQL delete to that server,
+and cascades channel messages. An authenticated internal channel-deleted event
+revokes channel permissions on existing signaling sockets, clears presence and
+closes direct peers in that channel; group deletion also removes its LiveKit room.
+Clients clear only a matching active call and refresh the server's channel list.
+Stale 60-second signaling tokens are blocked for 65 seconds after deletion while
+the signaling service stays running. Media cleanup is best effort if a service
+is unavailable. Personal messages include server IDs and are grouped by server,
+with the currently viewed server first and expanded. Other groups expand on demand.
+Each group offers confirmed deletion of that account's messages in its server.
+The account-message DELETE API accepts an optional server ID and restricts the
+update by both author and channels belonging to that server; invalid filters
+are rejected instead of falling back to deletion across all servers. Omitting
+the filter retains the existing all-server action. Both actions clear content,
+mark messages deleted and broadcast the affected message IDs in real time.
+The right-hand Friends profile card fits within its panel including side margins,
+avoiding horizontal overflow. Sidebar navigation and member/profile lists scroll
+vertically only; their horizontal overflow is clipped. Vertical scrollbars retain
+their normal styling. Member buttons also account for their horizontal margins.
+Username changes refresh the Auth.js session in place rather than reloading the
+application. Public profile dialogs open from identity links and show existing
+name/handle, live presence, the shared server in the current view and a Message
+action for accepted friends that opens their conversation in the Friends
+workspace without leaving voice. Member and friend entries open profiles across
+their full identity area, including the avatar. Profiles offer friend requests
+by public user ID through the existing authenticated Friends API, acceptance of
+incoming requests, and a pending state for sent requests. Demo accounts retain
+the API restriction on friendship changes. Profiles use already authorized client data; they
+do not fetch private account details or introduce new public profile fields.
+Both cogs use
 the same SVG. The channel/conversation sidebar can be resized with its right-edge
 drag handle or arrow keys; its preferred width is stored locally and reset by
 double-clicking the handle. Mobile retains a viewport-limited width. Call

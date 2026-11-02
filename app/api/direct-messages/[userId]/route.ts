@@ -1,4 +1,4 @@
-import { and, asc, eq, or } from "drizzle-orm";
+import { and, desc, eq, lt, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../auth";
 import { db } from "../../../../db";
@@ -8,13 +8,30 @@ import { checkRateLimit, rateLimits } from "../../../../server/rate-limit";
 import { notifyUser } from "../../../../server/notify-user";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ userId: string }> },
 ) {
   const session = await auth();
   const { userId } = await params;
   if (!session || !(await areFriends(session.user.id, userId)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const query = new URL(request.url).searchParams;
+  const beforeCreatedAt = query.get("beforeCreatedAt");
+  const beforeId = query.get("beforeId");
+  const cursorDate = beforeCreatedAt ? new Date(beforeCreatedAt) : null;
+  if (
+    (query.has("beforeCreatedAt") || query.has("beforeId")) &&
+    (!cursorDate ||
+      Number.isNaN(cursorDate.getTime()) ||
+      !beforeId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        beforeId,
+      ))
+  )
+    return NextResponse.json(
+      { error: "Invalid message cursor" },
+      { status: 400 },
+    );
   const rows = await db
     .select({
       id: directMessages.id,
@@ -29,20 +46,43 @@ export async function GET(
     .from(directMessages)
     .innerJoin(users, eq(users.id, directMessages.senderId))
     .where(
-      or(
-        and(
-          eq(directMessages.senderId, session.user.id),
-          eq(directMessages.recipientId, userId),
+      and(
+        or(
+          and(
+            eq(directMessages.senderId, session.user.id),
+            eq(directMessages.recipientId, userId),
+          ),
+          and(
+            eq(directMessages.senderId, userId),
+            eq(directMessages.recipientId, session.user.id),
+          ),
         ),
-        and(
-          eq(directMessages.senderId, userId),
-          eq(directMessages.recipientId, session.user.id),
-        ),
+        cursorDate && beforeId
+          ? or(
+              lt(directMessages.createdAt, cursorDate),
+              and(
+                eq(directMessages.createdAt, cursorDate),
+                lt(directMessages.id, beforeId),
+              ),
+            )
+          : undefined,
       ),
     )
-    .orderBy(asc(directMessages.createdAt))
-    .limit(100);
-  return NextResponse.json(rows);
+    .orderBy(desc(directMessages.createdAt), desc(directMessages.id))
+    .limit(51);
+  const hasMore = rows.length > 50;
+  const page = rows.slice(0, 50);
+  const oldest = page.at(-1);
+  return NextResponse.json({
+    messages: page.reverse(),
+    nextCursor:
+      hasMore && oldest
+        ? {
+            beforeCreatedAt: oldest.createdAt.toISOString(),
+            beforeId: oldest.id,
+          }
+        : null,
+  });
 }
 
 export async function POST(

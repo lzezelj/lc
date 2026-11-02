@@ -11,7 +11,9 @@ import {
 import { signOut, useSession } from "next-auth/react";
 import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
 import { DeviceMenu, MediaDeviceOption, MediaIcon } from "./device-menu";
+import { DeviceSelection } from "./device-selection";
 import { GroupCall } from "./group-call";
+import { WorkspaceShell } from "./workspace-shell";
 import {
   HideTileButton,
   HiddenTilesMenu,
@@ -26,7 +28,23 @@ import {
 } from "./microphone-gate";
 import { AudioDeviceOptions } from "./audio-device-options";
 import { applyCallOutput, readOutputVolume } from "./audio-output";
-import { SettingsIcon, SettingsModal } from "./settings-modal";
+import {
+  SettingsIcon,
+  SettingsModal,
+  SettingsNameForm,
+} from "./settings-modal";
+import { UserProfile, type ProfileUser } from "./user-profile";
+import { ChannelManager } from "./channel-manager";
+import { groupMessagesByServer } from "./message-groups";
+import { MessageDeleteAction } from "./message-delete-action";
+import { ChatHistory } from "./chat-history";
+import { MessageHeader } from "./message-header";
+import {
+  readWorkspaceLocation,
+  saveWorkspaceLocation,
+  restoredTextChannel,
+  type WorkspaceLocation,
+} from "./workspace-location";
 import { SidebarResizer } from "./sidebar-resizer";
 import {
   UserStatusMenu,
@@ -55,6 +73,19 @@ type ChatMessage = {
   kind: "message" | "call";
   callDurationSeconds: number | null;
 };
+
+type MessageCursor = { beforeCreatedAt: string; beforeId: string };
+type HistoryPage = {
+  messages: Parameters<typeof toChatMessage>[0][];
+  nextCursor: MessageCursor | null;
+};
+function mergeChatMessages(incoming: ChatMessage[], current: ChatMessage[]) {
+  return [
+    ...new Map(
+      [...incoming, ...current].map((message) => [message.id, message]),
+    ).values(),
+  ];
+}
 
 type Server = { id: string; name: string; role?: "owner" | "member" };
 type Friend = {
@@ -87,6 +118,7 @@ type DemoAccount = {
   servers: Server[];
 };
 type AccountMessage = {
+  serverId: string;
   id: string;
   text: string;
   createdAt: string;
@@ -118,6 +150,7 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  channelId?: string;
   type: string;
   serverId?: string;
   userIds?: string[];
@@ -186,9 +219,18 @@ function formatCallDuration(seconds: number | null) {
 
 export default function Home() {
   const remoteAudio = useCallAudio();
-  const { data: session, status: authStatus } = useSession();
+  const sessionState = useSession();
+  const session = sessionState.data;
+  const sessionStatus: string = sessionState.status;
+  const updateSession = sessionState.update;
+  // Auth.js retains the current session while update() refreshes it. Keep the
+  // workspace and presence mounted through that temporary loading state.
+  const authStatus =
+    session?.user.id && sessionStatus === "loading"
+      ? "authenticated"
+      : sessionStatus;
   const [servers, setServers] = useState<Server[]>([]);
-  const [friendsView, setFriendsView] = useState(false);
+  const [friendsView, setFriendsView] = useState(true);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [friendSearch, setFriendSearch] = useState("");
   const [friendResults, setFriendResults] = useState<Friend[]>([]);
@@ -197,6 +239,13 @@ export default function Home() {
   );
   const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
   const [directMessages, setDirectMessages] = useState<ChatMessage[]>([]);
+  const [directMessageCursor, setDirectMessageCursor] =
+    useState<MessageCursor | null>(null);
+  const [loadingOlderDirect, setLoadingOlderDirect] = useState(false);
+  const [directHistoryLoaded, setDirectHistoryLoaded] = useState("");
+  const directHistoryGeneration = useRef(0);
+  const [channelHistoryLoaded, setChannelHistoryLoaded] = useState("");
+  const channelHistoryGeneration = useRef(0);
   const [unreadDirectMessages, setUnreadDirectMessages] = useState<
     Record<string, number>
   >({});
@@ -208,6 +257,9 @@ export default function Home() {
   const [callPeerPresent, setCallPeerPresent] = useState(false);
   const [signalingRefreshKey, setSignalingRefreshKey] = useState(0);
   const [serversLoaded, setServersLoaded] = useState(false);
+  const [navigationReady, setNavigationReady] = useState(false);
+  const pendingLocation = useRef<WorkspaceLocation | null>(null);
+  const locationUser = useRef("");
   const [selectedServerId, setSelectedServerId] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -218,7 +270,7 @@ export default function Home() {
   );
   const [selectedChannelId, setSelectedChannelId] = useState("");
   const [form, setForm] = useState<
-    "server" | "channel" | "account" | "manage" | "media" | "messages" | null
+    "server" | "channel" | "account" | "manage" | "messages" | null
   >(null);
   const [formName, setFormName] = useState("");
   const [channelType, setChannelType] = useState<ChannelType>("text");
@@ -238,6 +290,10 @@ export default function Home() {
   });
   const [userListToggled, setUserListToggled] = useState(false);
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
+  const [userSettingsSection, setUserSettingsSection] = useState("account");
+  const [serverSettingsSection, setServerSettingsSection] =
+    useState("overview");
+  const [profileUser, setProfileUser] = useState<ProfileUser | null>(null);
   const [serverContext, setServerContext] = useState<{
     server: Server;
     x: number;
@@ -250,7 +306,6 @@ export default function Home() {
     y: number;
   } | null>(null);
   const channelContextRef = useRef<HTMLDivElement>(null);
-  const [addFriendsOpen, setAddFriendsOpen] = useState(false);
   const [deleteServerOpen, setDeleteServerOpen] = useState(false);
   const [serverFriendSearch, setServerFriendSearch] = useState("");
   const [selectedServerFriendIds, setSelectedServerFriendIds] = useState<
@@ -275,7 +330,6 @@ export default function Home() {
   const [revokeCandidateId, setRevokeCandidateId] = useState("");
   const [messageAccount, setMessageAccount] = useState({ id: "", name: "" });
   const [accountMessages, setAccountMessages] = useState<AccountMessage[]>([]);
-  const [deleteMessagesPending, setDeleteMessagesPending] = useState(false);
   const [returnToDemoManager, setReturnToDemoManager] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [nextMessageCursor, setNextMessageCursor] = useState<{
@@ -293,6 +347,7 @@ export default function Home() {
     id: string;
     preview: string;
     conversationUserId?: string;
+    alreadyDeleted?: boolean;
   } | null>(null);
   const [permanentMessageDeletion, setPermanentMessageDeletion] =
     useState(false);
@@ -345,6 +400,8 @@ export default function Home() {
   const [voiceJoinKey, setVoiceJoinKey] = useState(0);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
+  const activeVoiceChannelRef = useRef("");
+  activeVoiceChannelRef.current = activeVoiceChannelId;
   const [connectedGroupChannelId, setConnectedGroupChannelId] = useState("");
   const [activeVoiceChannelSnapshot, setActiveVoiceChannelSnapshot] =
     useState<Channel | null>(null);
@@ -458,15 +515,98 @@ export default function Home() {
 
   useEffect(() => {
     if (authStatus === "unauthenticated") location.href = "/login";
-    if (authStatus !== "authenticated") return;
+    if (authStatus !== "authenticated" || !session?.user.id) return;
+    let active = true;
+    let saved: WorkspaceLocation | null = null;
+    try {
+      const navigation = performance.getEntriesByType("navigation")[0] as
+        PerformanceNavigationTiming | undefined;
+      saved = readWorkspaceLocation(
+        window.sessionStorage,
+        session.user.id,
+        navigation?.type === "reload",
+      );
+    } catch {
+      /* Storage may be unavailable in private or restricted contexts. */
+    }
     void fetch("/api/servers")
-      .then((response) => response.json())
-      .then((data: Server[]) => {
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Servers could not be loaded.");
+        const data = (await response.json()) as Server[];
+        if (!Array.isArray(data))
+          throw new Error("Servers could not be loaded.");
+        let savedFriend: Friend | undefined;
+        if (saved?.view === "friends" && saved.friendId) {
+          const friendResponse = await fetch("/api/friends");
+          if (friendResponse.ok) {
+            const nextFriends = (await friendResponse.json()) as Friend[];
+            if (Array.isArray(nextFriends)) {
+              savedFriend = nextFriends.find(
+                (friend) =>
+                  friend.id === saved!.friendId && friend.status === "accepted",
+              );
+              if (active) setFriends(nextFriends);
+            }
+          }
+        }
+        if (!active) return;
+        const serverExists =
+          saved?.view === "server" &&
+          data.some((server) => server.id === saved!.serverId);
+        pendingLocation.current = serverExists ? saved : null;
+        locationUser.current = session.user.id;
         setServers(data);
-        setSelectedServerId((current) => current || data[0]?.id || "");
+        setSelectedServerId(
+          serverExists ? saved!.serverId : (data[0]?.id ?? ""),
+        );
+        setFriendsView(!serverExists);
+        setSelectedFriend(savedFriend ?? null);
+        if (saved) setFriendTab(saved.friendTab);
+        setNavigationReady(!serverExists);
       })
-      .finally(() => setServersLoaded(true));
-  }, [authStatus]);
+      .catch(() => {
+        if (active) {
+          setErrorMessage("The saved workspace could not be loaded.");
+          setNavigationReady(true);
+        }
+      })
+      .finally(() => {
+        if (active) setServersLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authStatus, session?.user.id]);
+
+  useEffect(() => {
+    if (
+      !navigationReady ||
+      !serversLoaded ||
+      !session?.user.id ||
+      locationUser.current !== session.user.id
+    )
+      return;
+    try {
+      saveWorkspaceLocation(window.sessionStorage, session.user.id, {
+        view: friendsView ? "friends" : "server",
+        serverId: selectedServerId,
+        channelId: selectedChannelId,
+        friendId: selectedFriend?.id ?? "",
+        friendTab,
+      });
+    } catch {
+      /* Keep navigation available if storage access is blocked. */
+    }
+  }, [
+    navigationReady,
+    serversLoaded,
+    session?.user.id,
+    friendsView,
+    selectedServerId,
+    selectedChannelId,
+    selectedFriend?.id,
+    friendTab,
+  ]);
 
   async function loadFriends() {
     const response = await fetch("/api/friends");
@@ -557,15 +697,84 @@ export default function Home() {
   }, [friendsView]);
 
   useEffect(() => {
-    if (!selectedFriend) return;
-    void fetch(`/api/direct-messages/${selectedFriend.id}`)
-      .then((response) => response.json())
-      .then((data) =>
-        setDirectMessages(Array.isArray(data) ? data.map(toChatMessage) : []),
+    const userId = selectedFriend?.id;
+    const generation = ++directHistoryGeneration.current;
+    void Promise.resolve().then(() => {
+      if (generation !== directHistoryGeneration.current) return;
+      setDirectHistoryLoaded("");
+      setDirectMessages([]);
+      setDirectMessageCursor(null);
+      setLoadingOlderDirect(false);
+    });
+    if (!userId) return;
+    void fetch(`/api/direct-messages/${userId}`)
+      .then(async (response) => {
+        const page = await readJsonResponse<HistoryPage>(response);
+        if (!response.ok) throw new Error(apiErrorMessage(page));
+        if (generation !== directHistoryGeneration.current) return;
+        if (!Array.isArray(page.messages))
+          throw new Error("Messages could not be loaded.");
+        setDirectMessages((current) =>
+          mergeChatMessages(page.messages.map(toChatMessage), current),
+        );
+        setDirectMessageCursor(page.nextCursor);
+        setDirectHistoryLoaded(userId);
+      })
+      .catch((error) => {
+        if (generation === directHistoryGeneration.current) {
+          setDirectHistoryLoaded(userId);
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : "Messages could not be loaded.",
+          );
+        }
+      });
+    return () => {
+      directHistoryGeneration.current = generation + 1;
+    };
+  }, [selectedFriend?.id]);
+
+  async function loadOlderDirectMessages() {
+    const userId = selectedFriend?.id;
+    if (!userId || !directMessageCursor || loadingOlderDirect) return;
+    const generation = directHistoryGeneration.current;
+    setLoadingOlderDirect(true);
+    try {
+      const response = await fetch(
+        `/api/direct-messages/${userId}?${new URLSearchParams(directMessageCursor)}`,
       );
-  }, [selectedFriend]);
+      const page = await readJsonResponse<HistoryPage>(response);
+      if (!response.ok) throw new Error(apiErrorMessage(page));
+      if (generation !== directHistoryGeneration.current) return;
+      if (!Array.isArray(page.messages))
+        throw new Error("Older messages could not be loaded.");
+      setDirectMessages((current) =>
+        mergeChatMessages(page.messages.map(toChatMessage), current),
+      );
+      setDirectMessageCursor(page.nextCursor);
+    } catch (error) {
+      if (generation === directHistoryGeneration.current)
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Older messages could not be loaded.",
+        );
+    } finally {
+      if (generation === directHistoryGeneration.current)
+        setLoadingOlderDirect(false);
+    }
+  }
+
+  function openFriendsHome() {
+    setSelectedFriend(null);
+    setCallViewOpen(false);
+    setFriendsView(true);
+  }
 
   function openFriend(friend: Friend) {
+    setFriendsView(true);
+    setCallViewOpen(false);
     setSelectedFriend(friend);
     setUnreadDirectMessages((current) => {
       const next = { ...current };
@@ -583,25 +792,28 @@ export default function Home() {
 
   async function friendAction(
     action: "request" | "accept" | "decline",
-    friend: Friend,
+    friend: { id: string; handle?: string },
   ) {
     const response = await fetch("/api/friends", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
         action === "request"
-          ? { action, handle: friend.handle }
+          ? { action, userId: friend.id }
           : { action, userId: friend.id },
       ),
     });
-    if (!response.ok)
-      setErrorMessage((await response.json()).error ?? "Friend action failed.");
-    else {
+    if (!response.ok) {
+      const message = (await response.json()).error ?? "Friend action failed.";
+      setErrorMessage(message);
+      return false;
+    } else {
       setFriendResults([]);
       setFriendSearch("");
       await loadFriends();
       invalidateSignalingToken();
       setSignalingRefreshKey((current) => current + 1);
+      return true;
     }
   }
 
@@ -617,7 +829,10 @@ export default function Home() {
     const message = await response.json();
     if (!response.ok)
       return setErrorMessage(message.error ?? "Message could not be sent.");
-    setDirectMessages((current) => [...current, toChatMessage(message)]);
+    if (selectedFriendId.current === selectedFriend.id)
+      setDirectMessages((current) =>
+        mergeChatMessages(current, [toChatMessage(message)]),
+      );
     await loadFriends();
     setDraft("");
   }
@@ -660,6 +875,10 @@ export default function Home() {
     });
     if (!response.ok) return;
     const message = toChatMessage(await response.json());
+    if (selectedFriendId.current !== partnerId) {
+      await loadFriends();
+      return;
+    }
     setDirectMessages((current) =>
       current.some((candidate) => candidate.id === message.id)
         ? current
@@ -735,29 +954,49 @@ export default function Home() {
     if (!selectedServerId) return;
     let active = true;
     void Promise.all([
-      fetch(`/api/servers/${selectedServerId}/channels`).then((response) =>
-        response.json(),
-      ),
-      fetch(`/api/servers/${selectedServerId}/members`).then((response) =>
-        response.json(),
-      ),
+      fetch(`/api/servers/${selectedServerId}/channels`).then((response) => {
+        if (!response.ok) throw new Error("Channels could not be loaded.");
+        return response.json();
+      }),
+      fetch(`/api/servers/${selectedServerId}/members`).then((response) => {
+        if (!response.ok) throw new Error("Members could not be loaded.");
+        return response.json();
+      }),
     ])
       .then(([channelData, memberData]: [Channel[], Member[]]) => {
         if (!active) return;
-        setChannels(Array.isArray(channelData) ? channelData : []);
+        const nextChannels = Array.isArray(channelData) ? channelData : [];
+        setChannels(nextChannels);
         setMembers(Array.isArray(memberData) ? memberData : []);
-        const firstTextChannel = channelData.find(
-          (channel) => channel.type === "text",
+        const savedChannel =
+          pendingLocation.current?.serverId === selectedServerId
+            ? pendingLocation.current.channelId
+            : "";
+        const textChannel = restoredTextChannel(nextChannels, savedChannel);
+        lastTextChannelId.current = textChannel;
+        setSelectedChannelId((current) =>
+          current &&
+          nextChannels.some((channel) => channel.id === current) &&
+          !savedChannel
+            ? current
+            : textChannel || nextChannels[0]?.id || "",
         );
-        lastTextChannelId.current = firstTextChannel?.id ?? "";
-        setSelectedChannelId(firstTextChannel?.id ?? channelData[0]?.id ?? "");
+        pendingLocation.current = null;
+        setNavigationReady(true);
         if (session?.user.id) {
           setOnlineUserIds((current) => [
             ...new Set([...current, session.user.id]),
           ]);
         }
       })
-      .catch(() => setErrorMessage("The server could not be loaded."))
+      .catch(() => {
+        if (active) {
+          pendingLocation.current = null;
+          setFriendsView(true);
+          setNavigationReady(true);
+          setErrorMessage("The server could not be loaded.");
+        }
+      })
       .finally(() => undefined);
     return () => {
       active = false;
@@ -927,70 +1166,74 @@ export default function Home() {
     };
   }, [memberMenu, voiceMenu]);
 
+  const historyChannelType = channels.find(
+    (channel) => channel.id === selectedChannelId,
+  )?.type;
   useEffect(() => {
-    const selected = channels.find(
-      (channel) => channel.id === selectedChannelId,
-    );
-    if (!selectedChannelId || selected?.type !== "text") {
-      return;
-    }
+    const generation = ++channelHistoryGeneration.current;
+    void Promise.resolve().then(() => {
+      if (generation !== channelHistoryGeneration.current) return;
+      setChannelHistoryLoaded("");
+      setMessages([]);
+      setNextMessageCursor(null);
+      setLoadingMoreMessages(false);
+    });
+    if (!selectedChannelId || historyChannelType !== "text") return;
     void fetch(`/api/channels/${selectedChannelId}/messages`)
       .then(async (response) => {
-        const data = await readJsonResponse<unknown>(response);
-        if (!response.ok) throw new Error(apiErrorMessage(data));
-        return data;
-      })
-      .then((data: unknown) => {
-        if (
-          !data ||
-          typeof data !== "object" ||
-          !Array.isArray((data as { messages?: unknown }).messages)
-        )
-          return;
-        const page = data as {
-          messages: Parameters<typeof toChatMessage>[0][];
-          nextCursor: {
-            beforeCreatedAt: string;
-            beforeId: string;
-          } | null;
-        };
-        setMessages(page.messages.map(toChatMessage));
+        const page = await readJsonResponse<HistoryPage>(response);
+        if (!response.ok) throw new Error(apiErrorMessage(page));
+        if (generation !== channelHistoryGeneration.current) return;
+        if (!Array.isArray(page.messages))
+          throw new Error("Messages could not be loaded.");
+        setMessages((current) =>
+          mergeChatMessages(page.messages.map(toChatMessage), current),
+        );
         setNextMessageCursor(page.nextCursor);
+        setChannelHistoryLoaded(selectedChannelId);
       })
-      .catch((error: unknown) =>
-        setErrorMessage(
-          error instanceof Error
-            ? error.message
-            : "Messages could not be loaded.",
-        ),
-      );
-  }, [channels, selectedChannelId]);
+      .catch((error) => {
+        if (generation === channelHistoryGeneration.current) {
+          setChannelHistoryLoaded(selectedChannelId);
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : "Messages could not be loaded.",
+          );
+        }
+      });
+    return () => {
+      channelHistoryGeneration.current = generation + 1;
+    };
+  }, [historyChannelType, selectedChannelId]);
 
   async function loadMoreMessages() {
     if (!selectedChannelId || !nextMessageCursor || loadingMoreMessages) return;
+    const generation = channelHistoryGeneration.current;
     setLoadingMoreMessages(true);
     try {
-      const parameters = new URLSearchParams(nextMessageCursor);
       const response = await fetch(
-        `/api/channels/${selectedChannelId}/messages?${parameters}`,
+        `/api/channels/${selectedChannelId}/messages?${new URLSearchParams(nextMessageCursor)}`,
       );
-      const data = await readJsonResponse<{
-        messages?: Parameters<typeof toChatMessage>[0][];
-        nextCursor?: { beforeCreatedAt: string; beforeId: string } | null;
-      }>(response);
-      if (!response.ok) throw new Error(apiErrorMessage(data));
-      const messageRows = data.messages;
-      if (!Array.isArray(messageRows)) return;
-      setMessages((current) => [...messageRows.map(toChatMessage), ...current]);
-      setNextMessageCursor(data.nextCursor ?? null);
+      const page = await readJsonResponse<HistoryPage>(response);
+      if (!response.ok) throw new Error(apiErrorMessage(page));
+      if (generation !== channelHistoryGeneration.current) return;
+      if (!Array.isArray(page.messages))
+        throw new Error("Older messages could not be loaded.");
+      setMessages((current) =>
+        mergeChatMessages(page.messages.map(toChatMessage), current),
+      );
+      setNextMessageCursor(page.nextCursor);
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Older messages could not be loaded.",
-      );
+      if (generation === channelHistoryGeneration.current)
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Older messages could not be loaded.",
+        );
     } finally {
-      setLoadingMoreMessages(false);
+      if (generation === channelHistoryGeneration.current)
+        setLoadingMoreMessages(false);
     }
   }
 
@@ -1130,6 +1373,18 @@ export default function Home() {
           refreshAccessRef.current();
           return;
         }
+        if (message.type === "channel-deleted" && message.channelId) {
+          if (activeVoiceChannelRef.current === message.channelId)
+            closeCallViewRef.current();
+          setChannels((current) =>
+            current.filter((channel) => channel.id !== message.channelId),
+          );
+          setSelectedChannelId((current) =>
+            current === message.channelId ? "" : current,
+          );
+          invalidateSignalingToken();
+          return;
+        }
         if (
           message.type === "server-updated" &&
           message.serverId === selectedServerIdRef.current
@@ -1144,7 +1399,16 @@ export default function Home() {
             ),
           ]).then(([nextServers, nextChannels, nextMembers]) => {
             if (Array.isArray(nextServers)) setServers(nextServers);
-            if (Array.isArray(nextChannels)) setChannels(nextChannels);
+            if (Array.isArray(nextChannels)) {
+              setChannels(nextChannels);
+              setSelectedChannelId((current) =>
+                nextChannels.some((channel: Channel) => channel.id === current)
+                  ? current
+                  : (nextChannels.find(
+                      (channel: Channel) => channel.type === "text",
+                    )?.id ?? ""),
+              );
+            }
             if (Array.isArray(nextMembers)) setMembers(nextMembers);
           });
           return;
@@ -1208,17 +1472,16 @@ export default function Home() {
         ) {
           const directMessage = toChatMessage(message.message);
           void loadFriends();
-          if (
+          if (selectedFriendId.current === message.fromUserId) {
+            setDirectMessages((current) =>
+              mergeChatMessages(current, [directMessage]),
+            );
+          }
+          if (!(
             friendsViewRef.current &&
             selectedFriendId.current === message.fromUserId &&
             document.visibilityState === "visible"
-          ) {
-            setDirectMessages((current) =>
-              current.some((candidate) => candidate.id === directMessage.id)
-                ? current
-                : [...current, directMessage],
-            );
-          } else {
+          )) {
             setUnreadDirectMessages((current) => ({
               ...current,
               [message.fromUserId!]: (current[message.fromUserId!] ?? 0) + 1,
@@ -1579,15 +1842,7 @@ export default function Home() {
       friendCallPartnerId.current = "";
       setCallPeerPresent(false);
       returnToPreviousTextChannel();
-      if (selectedFriend) {
-        void fetch(`/api/direct-messages/${selectedFriend.id}`)
-          .then((response) => response.json())
-          .then((data) =>
-            setDirectMessages(
-              Array.isArray(data) ? data.map(toChatMessage) : [],
-            ),
-          );
-      }
+
       return;
     }
     if (message.type === "camera-state") {
@@ -2162,6 +2417,7 @@ export default function Home() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || !selectedChannelId) return;
+    const generation = channelHistoryGeneration.current;
     try {
       const response = await fetch(
         `/api/channels/${selectedChannelId}/messages`,
@@ -2174,6 +2430,7 @@ export default function Home() {
       const message =
         await readJsonResponse<Parameters<typeof toChatMessage>[0]>(response);
       if (!response.ok) throw new Error(apiErrorMessage(message));
+      if (generation !== channelHistoryGeneration.current) return;
       setDraft("");
       setReplyingTo(null);
       const chatMessage = toChatMessage(message);
@@ -2524,12 +2781,13 @@ export default function Home() {
     userId: string,
     name: string,
     fromDemoManager = false,
+    inSettings = false,
   ) {
-    setAccountMenuOpen(false);
+    if (!inSettings) setAccountMenuOpen(false);
     setMessageAccount({ id: userId, name });
-    setDeleteMessagesPending(false);
     setReturnToDemoManager(fromDemoManager);
-    setForm("messages");
+    if (!inSettings) setForm("messages");
+    setAccountMessages([]);
     try {
       const response = await fetch(`/api/users/${userId}/messages`);
       const data = await readJsonResponse<unknown>(response);
@@ -2545,24 +2803,42 @@ export default function Home() {
     }
   }
 
-  async function deleteAccountMessages() {
-    const response = await fetch(`/api/users/${messageAccount.id}/messages`, {
-      method: "DELETE",
-    });
-    if (!response.ok) return;
-    setAccountMessages([]);
-    setDeleteMessagesPending(false);
+  async function deleteAccountMessages(serverId?: string) {
+    const query = serverId ? `?serverId=${encodeURIComponent(serverId)}` : "";
+    const response = await fetch(
+      `/api/users/${messageAccount.id}/messages${query}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      const result = await readJsonResponse<{ error?: string }>(response);
+      throw new Error(result?.error ?? "Messages could not be deleted.");
+    }
+    setAccountMessages((current) =>
+      serverId
+        ? current.filter((message) => message.serverId !== serverId)
+        : [],
+    );
+    setDeleteMessageCandidate(null);
+    setNoticeMessage(
+      serverId ? "Messages deleted in this server." : "All messages deleted.",
+    );
   }
 
   function requestMessageDeletion(
     messageId: string,
     preview: string,
     conversationUserId?: string,
+    alreadyDeleted = false,
   ) {
     setMessageMenu(null);
     setErrorMessage("");
-    setPermanentMessageDeletion(false);
-    setDeleteMessageCandidate({ id: messageId, preview, conversationUserId });
+    setPermanentMessageDeletion(alreadyDeleted);
+    setDeleteMessageCandidate({
+      id: messageId,
+      preview,
+      conversationUserId,
+      alreadyDeleted,
+    });
   }
 
   async function deleteMessage() {
@@ -2633,7 +2909,6 @@ export default function Home() {
     if (form === "messages" && returnToDemoManager) {
       setForm("manage");
       setAccountMessages([]);
-      setDeleteMessagesPending(false);
       setReturnToDemoManager(false);
       return;
     }
@@ -2646,21 +2921,23 @@ export default function Home() {
     setInviteUrl("");
     setChooseInviteServer(false);
     setRevokeCandidateId("");
-    setDeleteMessagesPending(false);
     setReturnToDemoManager(false);
   }
 
-  async function saveRename(event: FormEvent) {
-    event.preventDefault();
-    if (!renameTarget) return;
-    const name = renameTarget.name.trim();
+  async function saveRename(
+    event: FormEvent | undefined,
+    target = renameTarget,
+  ) {
+    event?.preventDefault();
+    if (!target) return;
+    const name = target.name.trim();
     if (!name) return;
     const endpoint =
-      renameTarget.kind === "user"
+      target.kind === "user"
         ? "/api/users/me"
-        : renameTarget.kind === "demo"
+        : target.kind === "demo"
           ? "/api/demo-accounts"
-          : renameTarget.kind === "server"
+          : target.kind === "server"
             ? "/api/servers"
             : `/api/servers/${selectedServerId}/channels`;
     const response = await fetch(endpoint, {
@@ -2668,12 +2945,12 @@ export default function Home() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
-        ...(renameTarget.kind === "demo"
-          ? { demoUserId: renameTarget.id, action: "rename" }
-          : renameTarget.kind === "server"
-            ? { serverId: renameTarget.id }
-            : renameTarget.kind === "channel"
-              ? { channelId: renameTarget.id }
+        ...(target.kind === "demo"
+          ? { demoUserId: target.id, action: "rename" }
+          : target.kind === "server"
+            ? { serverId: target.id }
+            : target.kind === "channel"
+              ? { channelId: target.id }
               : {}),
       }),
     });
@@ -2682,46 +2959,46 @@ export default function Home() {
       setErrorMessage(result?.error ?? "The name could not be changed.");
       return;
     }
-    if (renameTarget.kind === "demo") {
+    if (target.kind === "demo") {
       setDemoAccounts((current) =>
         current.map((account) =>
-          account.id === renameTarget.id ? { ...account, name } : account,
+          account.id === target.id ? { ...account, name } : account,
         ),
       );
       setMembers((current) =>
         current.map((member) =>
-          member.id === renameTarget.id ? { ...member, name } : member,
+          member.id === target.id ? { ...member, name } : member,
         ),
       );
-    } else if (renameTarget.kind === "server") {
+    } else if (target.kind === "server") {
       setServers((current) =>
         current.map((server) =>
-          server.id === renameTarget.id ? { ...server, name } : server,
+          server.id === target.id ? { ...server, name } : server,
         ),
       );
-    } else if (renameTarget.kind === "channel") {
+    } else if (target.kind === "channel") {
       setChannels((current) =>
         current.map((channel) =>
-          channel.id === renameTarget.id ? { ...channel, name } : channel,
+          channel.id === target.id ? { ...channel, name } : channel,
         ),
       );
       setActiveVoiceChannelSnapshot((current) =>
-        current?.id === renameTarget.id ? { ...current, name } : current,
+        current?.id === target.id ? { ...current, name } : current,
       );
     }
     setRenameTarget(null);
     setNoticeMessage(
-      renameTarget.kind === "user"
-        ? "Username changed. Reloading your session..."
+      target.kind === "user"
+        ? "Username changed."
         : `${
-            renameTarget.kind === "server"
+            target.kind === "server"
               ? "Server"
-              : renameTarget.kind === "channel"
+              : target.kind === "channel"
                 ? "Channel"
                 : "Demo account"
           } renamed.`,
     );
-    if (renameTarget.kind === "user") location.reload();
+    if (target.kind === "user") await updateSession();
   }
 
   function selectVoiceChannel(channel: Channel) {
@@ -2895,6 +3172,13 @@ export default function Home() {
           name={session.user.name ?? "You"}
           status={userStatus}
           speaking={directLocalSpeaking}
+          onProfile={() =>
+            setProfileUser({
+              id: session.user.id,
+              name: session.user.name ?? "You",
+              handle: session.user.handle ?? undefined,
+            })
+          }
           onChange={(next) => {
             localStorage.setItem("lc.userStatus", next);
             setUserStatus(next);
@@ -2935,7 +3219,10 @@ export default function Home() {
           aria-haspopup="dialog"
           title="Settings"
           aria-expanded={accountMenuOpen}
-          onClick={() => setAccountMenuOpen((current) => !current)}
+          onClick={() => {
+            setUserSettingsSection("account");
+            setAccountMenuOpen((current) => !current);
+          }}
         >
           <SettingsIcon />
         </button>
@@ -3071,6 +3358,222 @@ export default function Home() {
     </div>
   );
 
+  const mediaSettingsContent = (
+    <div className="mediaSettings">
+      <p>
+        Grant access once so LC can show device names and use your saved choices
+        when you join.
+      </p>
+      <button
+        className="permissionButton"
+        type="button"
+        onClick={() => void requestMediaPermissions()}
+        disabled={requestingPermissions}
+      >
+        {requestingPermissions
+          ? "Waiting for browser..."
+          : "Grant microphone & camera access"}
+      </button>
+      <details className="settingsDeviceChoices" open>
+        <summary>Input/output devices</summary>
+        <DeviceSelection
+          label="Microphone"
+          devices={microphones}
+          selectedId={microphoneId}
+          onSelect={(deviceId) => {
+            if (activeVoiceChannel?.type === "voice_direct" && joined)
+              void changeActiveMicrophone(deviceId);
+            else selectMicrophone(deviceId);
+          }}
+        />
+        {renderAudioDeviceOptions("both")}
+      </details>
+      <DeviceSelection
+        label="Camera"
+        devices={cameras}
+        selectedId={cameraId}
+        onSelect={selectCamera}
+      />
+      <small>
+        Camera access is requested here for setup, but your camera remains off
+        when joining a channel.
+      </small>
+      <MediaTests
+        microphoneId={microphoneId}
+        cameraId={cameraId}
+        outputVolume={outputVolume}
+        outputId={outputId}
+        deafened={deafened}
+      />
+    </div>
+  );
+  const accountMessagesContent = (
+    <div className="accountMessageList">
+      <p>
+        Messages written by <strong>{messageAccount.name}</strong>
+      </p>
+      {accountMessages.length === 0 && (
+        <p className="empty">No messages found.</p>
+      )}
+      {groupMessagesByServer(accountMessages, selectedServerId).map((group) => (
+        <details
+          className="serverMessageGroup"
+          key={group.id}
+          open={group.id === selectedServerId}
+        >
+          <summary>
+            <strong>{group.name}</strong>
+            {group.id === selectedServerId && <small>Current server</small>}
+            <span>{group.messages.length} messages</span>
+          </summary>
+          <MessageDeleteAction
+            key={`${messageAccount.id}:${group.id}`}
+            label="Delete all messages in this server"
+            confirmation={`Delete all messages written by ${messageAccount.name} in "${group.name}"? Messages in other servers will be kept. This cannot be undone.`}
+            onDelete={() => deleteAccountMessages(group.id)}
+          />
+          {group.messages.map((message) => (
+            <article key={message.id}>
+              <div className="managedMessageHeader">
+                <small>
+                  {message.serverName} / #{message.channelName} ·{" "}
+                  {formatLocalDateTime(message.createdAt)}
+                </small>
+                <button
+                  className="messageDeleteButton"
+                  type="button"
+                  onClick={() =>
+                    requestMessageDeletion(message.id, message.text)
+                  }
+                >
+                  Delete
+                </button>
+              </div>
+              <p>{message.text}</p>
+              {accountMenuOpen && deleteMessageCandidate?.id === message.id && (
+                <div className="settingsDangerZone">
+                  <p>Delete this message?</p>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={permanentMessageDeletion}
+                      disabled={deleteMessageCandidate?.alreadyDeleted}
+                      onChange={(event) =>
+                        setPermanentMessageDeletion(event.target.checked)
+                      }
+                    />
+                    Permanently remove this message
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteMessageCandidate(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void deleteMessage()}
+                  >
+                    Confirm delete
+                  </button>
+                </div>
+              )}
+            </article>
+          ))}
+        </details>
+      ))}
+      {accountMessages.length > 0 && (
+        <MessageDeleteAction
+          key={messageAccount.id}
+          label="Delete all messages"
+          confirmation={`Delete all messages written by ${messageAccount.name} across every server? This cannot be undone.`}
+          onDelete={() => deleteAccountMessages()}
+        />
+      )}
+    </div>
+  );
+
+  const profileOverlay = profileUser && session && (
+    <UserProfile
+      key={profileUser.id}
+      user={{
+        ...friends.find((friend) => friend.id === profileUser.id),
+        ...profileUser,
+      }}
+      status={
+        profileUser.id === session.user.id
+          ? statusLabels[userStatus]
+          : onlineUserIds.includes(profileUser.id)
+            ? statusLabels[userStatuses[profileUser.id] ?? "online"]
+            : "Offline"
+      }
+      mutualServers={
+        members.some((member) => member.id === profileUser.id)
+          ? servers
+              .filter((server) => server.id === selectedServerId)
+              .map((server) => server.name)
+          : []
+      }
+      onClose={() => setProfileUser(null)}
+      requestPending={friends.some(
+        (friend) =>
+          friend.id === profileUser.id &&
+          friend.status === "pending" &&
+          !friend.incoming,
+      )}
+      friendActionsUnavailable={
+        profileUser.id !== session.user.id &&
+        session.user.role === "demo" &&
+        !friends.some(
+          (friend) =>
+            friend.id === profileUser.id && friend.status === "accepted",
+        )
+      }
+      onAddFriend={
+        profileUser.id !== session.user.id &&
+        session.user.role !== "demo" &&
+        !friends.some((friend) => friend.id === profileUser.id)
+          ? async () => {
+              if (!(await friendAction("request", profileUser)))
+                throw new Error(
+                  "The friend request could not be sent. Please try again.",
+                );
+            }
+          : undefined
+      }
+      onAcceptFriend={
+        session.user.role !== "demo" &&
+        friends.some(
+          (friend) =>
+            friend.id === profileUser.id &&
+            friend.status === "pending" &&
+            friend.incoming,
+        )
+          ? async () => {
+              if (!(await friendAction("accept", profileUser)))
+                throw new Error(
+                  "The friend request could not be accepted. Please try again.",
+                );
+            }
+          : undefined
+      }
+      onMessage={
+        friends.some(
+          (friend) =>
+            friend.id === profileUser.id && friend.status === "accepted",
+        )
+          ? () => {
+              const friend = friends.find(
+                (friend) => friend.id === profileUser.id,
+              );
+              if (friend) openFriend(friend);
+              setProfileUser(null);
+            }
+          : undefined
+      }
+    />
+  );
   const settingsOverlay = session &&
     (accountMenuOpen || (serverSettingsOpen && isSelectedServerOwner)) && (
       <SettingsModal
@@ -3078,102 +3581,319 @@ export default function Home() {
         onClose={() => {
           setAccountMenuOpen(false);
           setServerSettingsOpen(false);
+          setDeleteMessageCandidate(null);
         }}
+        navigation={
+          <>
+            <p className="settingsNavLabel">
+              {accountMenuOpen
+                ? session.user.name
+                : servers.find((server) => server.id === selectedServerId)
+                    ?.name}
+            </p>
+            {(accountMenuOpen
+              ? [
+                  ["account", "My account"],
+                  ["media", "Voice & video"],
+                  ["messages", "My messages"],
+                ]
+              : [
+                  ["overview", "Overview"],
+                  ["channels", "Channels"],
+                  ["members", "Members"],
+                  ["delete", "Delete server"],
+                ]
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`${id === "delete" ? "danger" : ""} ${id === (accountMenuOpen ? userSettingsSection : serverSettingsSection) ? "active" : ""}`}
+                aria-current={
+                  id ===
+                  (accountMenuOpen
+                    ? userSettingsSection
+                    : serverSettingsSection)
+                    ? "page"
+                    : undefined
+                }
+                onClick={() => {
+                  if (accountMenuOpen) {
+                    setUserSettingsSection(id);
+                    if (id === "media") void loadMediaDevices();
+                    if (id === "messages")
+                      void openAccountMessages(
+                        session.user.id,
+                        session.user.name ?? "My account",
+                        false,
+                        true,
+                      );
+                  } else {
+                    setServerSettingsSection(id);
+                    if (id === "members") void loadFriends();
+                  }
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            {accountMenuOpen && (
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void signOut({ callbackUrl: "/login" })}
+              >
+                Log out
+              </button>
+            )}
+          </>
+        }
       >
+        {errorMessage && (
+          <p role="alert" className="settingsFeedback">
+            {errorMessage}
+          </p>
+        )}
+        {noticeMessage && (
+          <p role="status" className="settingsFeedback">
+            {noticeMessage}
+          </p>
+        )}
         {accountMenuOpen ? (
           <>
-            <p className="settingsDescription">
-              {session.user.name} ·{" "}
-              {session.user.handle
-                ? formatUserHandle(session.user.handle)
-                : "My account"}
-            </p>
-            <button
-              onClick={() => {
-                setAccountMenuOpen(false);
-                setFriendsView(false);
-                setForm("media");
-                void loadMediaDevices();
-              }}
-            >
-              Voice &amp; video settings
-            </button>
-            <button
-              onClick={() => {
-                setAccountMenuOpen(false);
-                setFriendsView(false);
-                void openAccountMessages(
-                  session.user.id,
-                  session.user.name ?? "My account",
-                );
-              }}
-            >
-              My messages
-            </button>
-            <button
-              onClick={() => {
-                setAccountMenuOpen(false);
-                setFriendsView(false);
-                setRenameTarget({
-                  kind: "user",
-                  id: session.user.id,
-                  name: session.user.name ?? "",
-                });
-              }}
-            >
-              Change username
-            </button>
-            <button
-              className="danger"
-              onClick={() => void signOut({ callbackUrl: "/login" })}
-            >
-              Log out
-            </button>
+            {userSettingsSection === "account" && (
+              <>
+                <h3>My account</h3>
+                <div className="settingsAccountCard">
+                  <span className="avatar">
+                    {session.user.name?.[0]?.toUpperCase()}
+                  </span>
+                  <div>
+                    <strong>{session.user.name}</strong>
+                    <p>
+                      {session.user.handle
+                        ? formatUserHandle(session.user.handle)
+                        : "My account"}
+                    </p>
+                    <small>{statusLabels[userStatus]}</small>
+                  </div>
+                </div>
+                <SettingsNameForm
+                  key={session.user.name}
+                  name={session.user.name ?? ""}
+                  label="Display name"
+                  onSave={(name) =>
+                    saveRename(undefined, {
+                      kind: "user",
+                      id: session.user.id,
+                      name,
+                    })
+                  }
+                />
+                <p className="settingsDescription">
+                  Your display name is visible to friends and server members.
+                </p>
+              </>
+            )}
+            {userSettingsSection === "media" && (
+              <>
+                <h3>Voice & video</h3>
+                {mediaSettingsContent}
+              </>
+            )}
+            {userSettingsSection === "messages" && (
+              <>
+                <h3>My messages</h3>
+                {accountMessagesContent}
+              </>
+            )}
           </>
         ) : (
           <>
-            <p className="settingsDescription">
-              {servers.find((server) => server.id === selectedServerId)?.name}
-            </p>
-            <button
-              onClick={() => {
-                const server = servers.find(
-                  (candidate) => candidate.id === selectedServerId,
-                );
-                if (server) setRenameTarget({ kind: "server", ...server });
-                setServerSettingsOpen(false);
-              }}
-            >
-              Rename server
-            </button>
-            <button
-              onClick={() => {
-                setServerSettingsOpen(false);
-                setForm("channel");
-              }}
-            >
-              Create channel
-            </button>
-            <button
-              onClick={() => {
-                setServerSettingsOpen(false);
-                setServerFriendSearch("");
-                setSelectedServerFriendIds([]);
-                setAddFriendsOpen(true);
-                void loadFriends();
-              }}
-            >
-              Add friends to server
-            </button>
-            <button
-              className="danger"
-              onClick={() => {
-                setServerSettingsOpen(false);
-                setDeleteServerOpen(true);
-              }}
-            >
-              Delete server
-            </button>
+            {serverSettingsSection === "overview" && (
+              <>
+                <h3>Server overview</h3>
+                <SettingsNameForm
+                  key={selectedServerId}
+                  name={
+                    servers.find((server) => server.id === selectedServerId)
+                      ?.name ?? ""
+                  }
+                  label="Server name"
+                  onSave={(name) =>
+                    saveRename(undefined, {
+                      kind: "server",
+                      id: selectedServerId,
+                      name,
+                    })
+                  }
+                />
+                <p className="settingsDescription">
+                  {members.length} members · {channels.length} channels
+                </p>
+              </>
+            )}
+            {serverSettingsSection === "channels" && (
+              <>
+                <h3>Channels</h3>
+                <ChannelManager
+                  key={selectedServerId}
+                  channels={channels}
+                  onRename={async (channel, name) => {
+                    await saveRename(undefined, {
+                      kind: "channel",
+                      id: channel.id,
+                      name,
+                    });
+                  }}
+                  onDelete={async (channel) => {
+                    const response = await fetch(
+                      `/api/servers/${selectedServerId}/channels`,
+                      {
+                        method: "DELETE",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ channelId: channel.id }),
+                      },
+                    );
+                    const result = await readJsonResponse<{ error?: string }>(
+                      response,
+                    );
+                    if (!response.ok)
+                      throw new Error(
+                        result?.error ?? "Channel could not be deleted.",
+                      );
+                    if (activeVoiceChannelRef.current === channel.id)
+                      returnToPreviousTextChannel();
+                    const remaining = channels.filter(
+                      (item) => item.id !== channel.id,
+                    );
+                    setChannels(remaining);
+                    setSelectedChannelId((current) =>
+                      current === channel.id
+                        ? (remaining.find((item) => item.type === "text")?.id ??
+                          "")
+                        : current,
+                    );
+                    invalidateSignalingToken();
+                    setNoticeMessage("Channel deleted.");
+                  }}
+                />
+                <h4>Create channel</h4>
+                <form className="settingsNameForm" onSubmit={createChannel}>
+                  <label>
+                    Name
+                    <input
+                      required
+                      maxLength={60}
+                      value={formName}
+                      onChange={(event) => setFormName(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Channel type
+                    <select
+                      value={channelType}
+                      onChange={(event) =>
+                        setChannelType(event.target.value as ChannelType)
+                      }
+                    >
+                      <option value="text">Text</option>
+                      <option value="voice_direct">
+                        Direct voice/video (2 people)
+                      </option>
+                      <option value="voice_group">
+                        Group voice/video (media server)
+                      </option>
+                    </select>
+                  </label>
+                  <button type="submit" className="primary">
+                    Create channel
+                  </button>
+                </form>
+              </>
+            )}
+            {serverSettingsSection === "members" && (
+              <>
+                <h3>Members</h3>
+                <div className="settingsChannelList">
+                  {members.map((member) => (
+                    <p key={member.id}>
+                      <strong>{member.name}</strong>
+                      <small>{member.role}</small>
+                    </p>
+                  ))}
+                </div>
+                <h4>Add friends to server</h4>
+                <p className="settingsDescription">
+                  Friends already in this server are hidden.
+                </p>
+                <input
+                  autoFocus
+                  value={serverFriendSearch}
+                  onChange={(event) =>
+                    setServerFriendSearch(event.target.value)
+                  }
+                  placeholder="Search friends"
+                />
+                <div className="friendPickerList">
+                  {availableServerFriends.map((friend) => (
+                    <label className="friendPickerRow" key={friend.id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedServerFriendIds.includes(friend.id)}
+                        onChange={(event) =>
+                          setSelectedServerFriendIds((current) =>
+                            event.target.checked
+                              ? [...current, friend.id]
+                              : current.filter((id) => id !== friend.id),
+                          )
+                        }
+                      />
+                      <span>
+                        <b>{friend.name}</b>
+                        <small>{formatUserHandle(friend.handle)}</small>
+                      </span>
+                    </label>
+                  ))}
+                  {availableServerFriends.length === 0 && (
+                    <p className="emptyState">
+                      No available friends match this search.
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={selectedServerFriendIds.length === 0}
+                  onClick={() => void addSelectedFriendsToServer()}
+                >
+                  Add selected ({selectedServerFriendIds.length})
+                </button>
+              </>
+            )}
+            {serverSettingsSection === "delete" && (
+              <section className="settingsDangerZone">
+                <h3>Delete server</h3>
+                <p>
+                  This permanently deletes{" "}
+                  <strong>
+                    {
+                      servers.find((server) => server.id === selectedServerId)
+                        ?.name
+                    }
+                  </strong>
+                  , including all its channels and messages. This cannot be
+                  undone.
+                </p>
+                <button
+                  className="danger"
+                  type="button"
+                  onClick={() => void deleteServer()}
+                >
+                  Permanently delete server
+                </button>
+              </section>
+            )}
           </>
         )}
       </SettingsModal>
@@ -3269,16 +3989,27 @@ export default function Home() {
         aria-labelledby="direct-delete-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 id="direct-delete-title">Delete message?</h2>
+        <h2 id="direct-delete-title">
+          {deleteMessageCandidate.alreadyDeleted
+            ? "Remove deleted message?"
+            : "Delete message?"}
+        </h2>
         <p>
-          The content will be erased for both people and replaced with{" "}
-          <em>Deleted message</em>.
+          {deleteMessageCandidate.alreadyDeleted ? (
+            "This permanently removes the deleted-message placeholder from both histories. This cannot be undone."
+          ) : (
+            <>
+              The content will be erased for both people and replaced with{" "}
+              <em>Deleted message</em>.
+            </>
+          )}
         </p>
         <blockquote>{deleteMessageCandidate.preview}</blockquote>
         <label className="permanentDeleteOption">
           <input
             type="checkbox"
             checked={permanentMessageDeletion}
+            disabled={deleteMessageCandidate?.alreadyDeleted}
             onChange={(event) =>
               setPermanentMessageDeletion(event.target.checked)
             }
@@ -3308,7 +4039,56 @@ export default function Home() {
     </div>
   );
 
-  if (authStatus !== "authenticated" || !serversLoaded) {
+  const groupCall = session && activeVoiceChannel?.type === "voice_group" && (
+    <GroupCall
+      key={`${activeVoiceChannel.id}-${voiceJoinKey}`}
+      channelId={activeVoiceChannel.id}
+      currentUserName={session.user.name ?? "You"}
+      microphoneId={microphoneId}
+      cameraId={cameraId}
+      initialMuted={microphoneMuted}
+      deafened={deafened}
+      outputVolume={outputVolume / 100}
+      outputId={outputId}
+      audioDeviceOptions={audioDeviceOptions}
+      microphones={microphones}
+      cameras={cameras}
+      autoJoin={voiceJoinTarget === activeVoiceChannel.id}
+      viewOpen={callViewOpen}
+      onOpenView={() => setCallViewOpen(true)}
+      onMicrophoneChange={selectMicrophone}
+      onCameraChange={selectCamera}
+      onConnectionChange={(present) =>
+        handleGroupConnection(activeVoiceChannel.id, present)
+      }
+      onMediaStateChange={(media) => {
+        if (activeGroupChannelId.current !== activeVoiceChannel.id) return;
+        if (!deafened) setMuted(media.muted);
+        sendGroupPresence(
+          activeVoiceChannel.id,
+          true,
+          presenceSocket.current,
+          media,
+        );
+      }}
+      onPingChange={(ping) =>
+        setChannelPing((current) => ({
+          ...current,
+          [activeVoiceChannel.id]: ping,
+        }))
+      }
+      onDiagnosticsChange={setCallDiagnostics}
+      onLeave={returnToPreviousTextChannel}
+      onError={setErrorMessage}
+    />
+  );
+
+  if (
+    !session ||
+    authStatus !== "authenticated" ||
+    !serversLoaded ||
+    !navigationReady
+  ) {
     return (
       <main className="loginPage appLoadingPage">
         <span className="loadingSpinner" />
@@ -3337,7 +4117,8 @@ export default function Home() {
         : !onlineUserIds.includes(friend.id),
     );
     return (
-      <main
+      <WorkspaceShell
+        call={groupCall}
         className={`workspace friendsScreen ${panelClasses}`}
         style={sidebarStyle}
       >
@@ -3346,7 +4127,7 @@ export default function Home() {
             className="workspaceLogo friendsActive"
             aria-label="Friends"
             aria-current="page"
-            onClick={() => setSelectedFriend(null)}
+            onClick={openFriendsHome}
           >
             LC
             {notificationCount > 0 && (
@@ -3429,7 +4210,7 @@ export default function Home() {
               className={`friendsHomeButton ${!selectedFriend ? "active" : ""}`}
               type="button"
               aria-current={!selectedFriend ? "page" : undefined}
-              onClick={() => setSelectedFriend(null)}
+              onClick={openFriendsHome}
             >
               Friends
             </button>
@@ -3480,7 +4261,17 @@ export default function Home() {
         </aside>
         <section className="room friendsRoom">
           <header className="roomHeader">
-            <strong>{selectedFriend?.name ?? "Friends"}</strong>
+            {selectedFriend ? (
+              <button
+                className="profileLink"
+                type="button"
+                onClick={() => setProfileUser(selectedFriend)}
+              >
+                {selectedFriend.name}
+              </button>
+            ) : (
+              <strong>Friends</strong>
+            )}
             {panelControls}
           </header>
           {!selectedFriend && (
@@ -3587,10 +4378,11 @@ export default function Home() {
                   <p className="sectionLabel">{friendTab.toUpperCase()}</p>
                   {visibleFriends.map((friend) => (
                     <button
+                      type="button"
                       className="friendRow"
                       data-status={userStatuses[friend.id] ?? "offline"}
                       key={friend.id}
-                      onClick={() => openFriend(friend)}
+                      onClick={() => setProfileUser(friend)}
                     >
                       <span className="friendListAvatar" aria-hidden="true">
                         {friend.name[0]?.toUpperCase()}
@@ -3598,7 +4390,7 @@ export default function Home() {
                           className={`friendStatusDot statusDot status-${userStatuses[friend.id] ?? "offline"}`}
                         />
                       </span>
-                      <span>
+                      <span className="friendConversationLink">
                         <b>{friend.name}</b>
                         <small>
                           {onlineUserIds.includes(friend.id)
@@ -3617,11 +4409,21 @@ export default function Home() {
             <section
               className={`chat directMessages ${activeVoiceChannel?.type === "voice_direct" ? "callActive" : ""}`}
             >
-              <div className="chatLog">
+              <ChatHistory
+                key={selectedFriend.id}
+                threadId={selectedFriend.id}
+                messages={directMessages}
+                ready={directHistoryLoaded === selectedFriend.id}
+                hasMore={Boolean(directMessageCursor)}
+                loadingOlder={loadingOlderDirect}
+                onLoadOlder={loadOlderDirectMessages}
+                ownUserId={session.user.id}
+              >
                 {directMessages.map((message) => (
                   <article
-                    className={`${message.kind === "call" ? "callHistory" : ""} ${message.deleted ? "deletedMessage" : ""}`}
+                    className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.kind === "call" ? "callHistory" : ""} ${message.deleted ? "deletedMessage" : ""}`}
                     key={message.id}
+                    data-message-id={message.id}
                   >
                     {message.kind === "call" && !message.deleted ? (
                       <p>
@@ -3632,32 +4434,51 @@ export default function Home() {
                       </p>
                     ) : (
                       <>
-                        <b>{message.author}</b>
-                        <time>{message.time}</time>
+                        <MessageHeader
+                          name={message.author}
+                          time={message.time}
+                          onProfile={() =>
+                            setProfileUser({
+                              id: message.authorId,
+                              name: message.author,
+                              ...friends.find(
+                                (friend) => friend.id === message.authorId,
+                              ),
+                            })
+                          }
+                        />
                         <p>{message.text}</p>
                       </>
                     )}
-                    {message.authorId === session.user.id &&
-                      !message.deleted && (
-                        <button
-                          type="button"
-                          className="directMessageDelete"
-                          aria-label="Delete message"
-                          title="Delete message"
-                          onClick={() =>
-                            requestMessageDeletion(
-                              message.id,
-                              message.text,
-                              selectedFriend.id,
-                            )
-                          }
-                        >
-                          Delete
-                        </button>
-                      )}
+                    {message.authorId === session.user.id && (
+                      <button
+                        type="button"
+                        className="directMessageDelete"
+                        aria-label={
+                          message.deleted
+                            ? "Delete permanently"
+                            : "Delete message"
+                        }
+                        title={
+                          message.deleted
+                            ? "Delete permanently"
+                            : "Delete message"
+                        }
+                        onClick={() =>
+                          requestMessageDeletion(
+                            message.id,
+                            message.text,
+                            selectedFriend.id,
+                            message.deleted,
+                          )
+                        }
+                      >
+                        {message.deleted ? "Remove" : "Delete"}
+                      </button>
+                    )}
                   </article>
                 ))}
-              </div>
+              </ChatHistory>
               <form onSubmit={sendDirectMessage}>
                 <input
                   value={draft}
@@ -3765,11 +4586,16 @@ export default function Home() {
         </section>
         <aside className="memberSidebar friendsInfoSidebar">
           <header className="memberSidebarHeader">
-            Profile{closeUserList}
+            Profile
+            {closeUserList}
           </header>
           <div className="memberScroll">
             {selectedFriend ? (
-              <div className="friendProfileCard">
+              <button
+                type="button"
+                className="friendProfileCard"
+                onClick={() => setProfileUser(selectedFriend)}
+              >
                 <span className="avatar">
                   {selectedFriend.name[0]?.toUpperCase()}
                 </span>
@@ -3780,7 +4606,7 @@ export default function Home() {
                     : "Offline"}
                 </small>
                 <small>{formatUserHandle(selectedFriend.handle)}</small>
-              </div>
+              </button>
             ) : (
               <p className="empty">Select a friend to view their profile.</p>
             )}
@@ -3790,20 +4616,21 @@ export default function Home() {
         {incomingCallOverlay}
         {legalOverlay}
         {settingsOverlay}
+        {profileOverlay}
         {serverContextMenu}
         {directDeletionDialog}
-      </main>
+      </WorkspaceShell>
     );
   }
 
   if (serversLoaded && servers.length === 0) {
     return (
-      <main className="noServerPage">
+      <WorkspaceShell call={groupCall} className="noServerPage">
         <section>
           <button
             className="workspaceLogo noServerFriendsButton"
             aria-label="Friends"
-            onClick={() => setFriendsView(true)}
+            onClick={openFriendsHome}
           >
             LC
             {notificationCount > 0 && (
@@ -3839,17 +4666,21 @@ export default function Home() {
           </button>
         </section>
         {incomingCallOverlay}
-      </main>
+      </WorkspaceShell>
     );
   }
 
   return (
-    <main className={`workspace ${panelClasses}`} style={sidebarStyle}>
+    <WorkspaceShell
+      call={groupCall}
+      className={`workspace ${panelClasses}`}
+      style={sidebarStyle}
+    >
       <aside className="workspaceRail" aria-label="Workspaces">
         <button
           className="workspaceLogo"
           aria-label="Friends"
-          onClick={() => setFriendsView(true)}
+          onClick={openFriendsHome}
         >
           LC
           {notificationCount > 0 && (
@@ -3936,7 +4767,13 @@ export default function Home() {
                 aria-haspopup="dialog"
                 title="Server settings"
                 aria-expanded={serverSettingsOpen}
-                onClick={() => setServerSettingsOpen((current) => !current)}
+                onClick={() => {
+                  setServerSettingsSection("overview");
+                  setFormName("");
+                  setServerFriendSearch("");
+                  setSelectedServerFriendIds([]);
+                  setServerSettingsOpen((current) => !current);
+                }}
               >
                 <SettingsIcon />
               </button>
@@ -4035,8 +4872,21 @@ export default function Home() {
                           });
                         }}
                       >
-                        <i>{participant.name[0]?.toUpperCase()}</i>
-                        <b>{participant.name}</b>
+                        <button
+                          className="voiceParticipantIdentity"
+                          type="button"
+                          disabled={!participant.userId}
+                          onClick={() =>
+                            participant.userId &&
+                            setProfileUser({
+                              id: participant.userId,
+                              name: participant.name,
+                            })
+                          }
+                        >
+                          <i>{participant.name[0]?.toUpperCase()}</i>
+                          <b>{participant.name}</b>
+                        </button>
                         <em className="voiceIndicators">
                           {participant.muted && (
                             <span title="Muted">
@@ -4264,73 +5114,31 @@ export default function Home() {
             {mediaNotice && <p className="mediaNotice">{mediaNotice}</p>}
           </section>
         )}
-        {activeVoiceChannel?.type === "voice_group" && (
-          <GroupCall
-            key={`${activeVoiceChannel.id}-${voiceJoinKey}`}
-            channelId={activeVoiceChannel.id}
-            currentUserName={session.user.name ?? "You"}
-            microphoneId={microphoneId}
-            cameraId={cameraId}
-            initialMuted={microphoneMuted}
-            deafened={deafened}
-            outputVolume={outputVolume / 100}
-            outputId={outputId}
-            audioDeviceOptions={audioDeviceOptions}
-            microphones={microphones}
-            cameras={cameras}
-            autoJoin={voiceJoinTarget === activeVoiceChannel.id}
-            viewOpen={callViewOpen}
-            onOpenView={() => setCallViewOpen(true)}
-            onMicrophoneChange={selectMicrophone}
-            onCameraChange={selectCamera}
-            onConnectionChange={(present) =>
-              handleGroupConnection(activeVoiceChannel.id, present)
-            }
-            onMediaStateChange={(media) => {
-              if (activeGroupChannelId.current !== activeVoiceChannel.id)
-                return;
-              if (!deafened) setMuted(media.muted);
-              sendGroupPresence(
-                activeVoiceChannel.id,
-                true,
-                presenceSocket.current,
-                media,
-              );
-            }}
-            onPingChange={(ping) =>
-              setChannelPing((current) => ({
-                ...current,
-                [activeVoiceChannel.id]: ping,
-              }))
-            }
-            onDiagnosticsChange={setCallDiagnostics}
-            onLeave={returnToPreviousTextChannel}
-            onError={setErrorMessage}
-          />
-        )}
         {selectedChannel?.type === "text" && !callViewOpen && (
           <section className="chat">
-            <div className="chatLog">
-              {nextMessageCursor && (
-                <button
-                  type="button"
-                  onClick={() => void loadMoreMessages()}
-                  disabled={loadingMoreMessages}
-                >
-                  {loadingMoreMessages ? "Loading…" : "Load 50 older messages"}
-                </button>
-              )}
-              {messages.length === 0 && (
-                <p className="empty">
-                  {selectedChannelId
-                    ? "This channel has no messages yet."
-                    : "Create or select a channel to begin."}
-                </p>
-              )}
+            <ChatHistory
+              key={selectedChannelId}
+              threadId={selectedChannelId}
+              messages={messages}
+              ready={channelHistoryLoaded === selectedChannelId}
+              hasMore={Boolean(nextMessageCursor)}
+              loadingOlder={loadingMoreMessages}
+              onLoadOlder={loadMoreMessages}
+              ownUserId={session.user.id}
+            >
+              {channelHistoryLoaded === selectedChannelId &&
+                messages.length === 0 && (
+                  <p className="empty">
+                    {selectedChannelId
+                      ? "This channel has no messages yet."
+                      : "Create or select a channel to begin."}
+                  </p>
+                )}
               {messages.map((message) => (
                 <article
-                  className={message.deleted ? "deletedMessage" : undefined}
+                  className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.deleted ? "deletedMessage" : ""}`}
                   key={message.id}
+                  data-message-id={message.id}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     setMessageMenu({
@@ -4346,12 +5154,23 @@ export default function Home() {
                       <span>{message.replyTo.text}</span>
                     </div>
                   )}
-                  <b>{message.author}</b>
-                  <time>{message.time}</time>
+                  <MessageHeader
+                    name={message.author}
+                    time={message.time}
+                    onProfile={() =>
+                      setProfileUser({
+                        id: message.authorId,
+                        name: message.author,
+                        ...friends.find(
+                          (friend) => friend.id === message.authorId,
+                        ),
+                      })
+                    }
+                  />
                   <p>{message.text}</p>
                 </article>
               ))}
-            </div>
+            </ChatHistory>
             <form onSubmit={submit}>
               <div className="messageComposer">
                 {replyingTo && (
@@ -4400,10 +5219,12 @@ export default function Home() {
         <div className="memberScroll">
           <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
           {onlineMembers.map((member) => (
-            <div
+            <button
+              type="button"
               className="member online"
               data-status={userStatuses[member.id] ?? "online"}
               key={member.id}
+              onClick={() => setProfileUser(member)}
               onContextMenu={(event) => {
                 if (!isSelectedServerOwner || member.role === "owner") return;
                 event.preventDefault();
@@ -4418,19 +5239,21 @@ export default function Home() {
                 {member.name[0]?.toUpperCase()}
               </span>
               <span className="memberIdentity">
-                <strong title={member.name}>{member.name}</strong>
+                <strong>{member.name}</strong>
                 <small>
                   {statusLabels[userStatuses[member.id] ?? "online"]} ·{" "}
                   {member.role}
                 </small>
               </span>
-            </div>
+            </button>
           ))}
           <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
           {offlineMembers.map((member) => (
-            <div
+            <button
+              type="button"
               className="member offline"
               key={member.id}
+              onClick={() => setProfileUser(member)}
               onContextMenu={(event) => {
                 if (!isSelectedServerOwner || member.role === "owner") return;
                 event.preventDefault();
@@ -4445,16 +5268,17 @@ export default function Home() {
                 {member.name[0]?.toUpperCase()}
               </span>
               <span className="memberIdentity">
-                <strong title={member.name}>{member.name}</strong>
+                <strong>{member.name}</strong>
                 <small>{member.role}</small>
               </span>
-            </div>
+            </button>
           ))}
         </div>
         {legalLinks}
       </aside>
       {legalOverlay}
       {settingsOverlay}
+      {profileOverlay}
       {serverContextMenu}
       {channelContextMenu}
       {memberMenu && (
@@ -4514,93 +5338,25 @@ export default function Home() {
           >
             Reply
           </button>
-          {messageMenu.message.authorId === session.user.id &&
-            !messageMenu.message.deleted && (
-              <button
-                className="danger"
-                type="button"
-                role="menuitem"
-                onClick={() =>
-                  requestMessageDeletion(
-                    messageMenu.message.id,
-                    messageMenu.message.text,
-                  )
-                }
-              >
-                Delete message
-              </button>
-            )}
-        </div>
-      )}
-      {addFriendsOpen && (
-        <div
-          className="modalBackdrop nestedModalBackdrop"
-          onMouseDown={() => {
-            setAddFriendsOpen(false);
-            setServerSettingsOpen(false);
-          }}
-        >
-          <section
-            className="modalCard addFriendsModal"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <h2>Add friends to server</h2>
-            <p>
-              Select one or more friends. Friends already in this server are
-              hidden.
-            </p>
-            <input
-              autoFocus
-              value={serverFriendSearch}
-              onChange={(event) => setServerFriendSearch(event.target.value)}
-              placeholder="Search friends"
-            />
-            <div className="friendPickerList">
-              {availableServerFriends.map((friend) => (
-                <label className="friendPickerRow" key={friend.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedServerFriendIds.includes(friend.id)}
-                    onChange={(event) =>
-                      setSelectedServerFriendIds((current) =>
-                        event.target.checked
-                          ? [...current, friend.id]
-                          : current.filter((id) => id !== friend.id),
-                      )
-                    }
-                  />
-                  <span>
-                    <b>{friend.name}</b>
-                    <small>{formatUserHandle(friend.handle)}</small>
-                  </span>
-                </label>
-              ))}
-              {availableServerFriends.length === 0 && (
-                <p className="emptyState">
-                  No available friends match this search.
-                </p>
-              )}
-            </div>
-            <div className="modalActions">
-              <button
-                type="button"
-                onClick={() => {
-                  setAddFriendsOpen(false);
-                  setServerSettingsOpen(false);
-                }}
-              >
-                Close
-              </button>
-              <button
-                className="primary"
-                type="button"
-                disabled={selectedServerFriendIds.length === 0}
-                onClick={() => void addSelectedFriendsToServer()}
-              >
-                Add selected ({selectedServerFriendIds.length})
-              </button>
-            </div>
-          </section>
+          {messageMenu.message.authorId === session.user.id && (
+            <button
+              className="danger"
+              type="button"
+              role="menuitem"
+              onClick={() =>
+                requestMessageDeletion(
+                  messageMenu.message.id,
+                  messageMenu.message.text,
+                  undefined,
+                  messageMenu.message.deleted,
+                )
+              }
+            >
+              {messageMenu.message.deleted
+                ? "Delete permanently"
+                : "Delete message"}
+            </button>
+          )}
         </div>
       )}
       {deleteServerOpen && (
@@ -4681,7 +5437,7 @@ export default function Home() {
       {form && (
         <div className="modalBackdrop" onMouseDown={closeCurrentForm}>
           <form
-            className={`modalCard ${form === "manage" ? "manageDemoModal" : form === "media" ? "voiceVideoModal" : ""}`}
+            className={`modalCard ${form === "manage" ? "manageDemoModal" : ""}`}
             onSubmit={
               form === "server"
                 ? createServer
@@ -4700,13 +5456,11 @@ export default function Home() {
                   ? "Create channel"
                   : form === "account"
                     ? "Create demo account"
-                    : form === "media"
-                      ? "Voice & video settings"
-                      : form === "messages"
-                        ? "Account messages"
-                        : "Manage demo accounts"}
+                    : form === "messages"
+                      ? "Account messages"
+                      : "Manage demo accounts"}
             </h2>
-            {form !== "manage" && form !== "media" && form !== "messages" && (
+            {form !== "manage" && form !== "messages" && (
               <label>
                 Name
                 <input
@@ -4862,139 +5616,16 @@ export default function Home() {
                 ))}
               </div>
             )}
-            {form === "media" && (
-              <div className="mediaSettings">
-                <p>
-                  Grant access once so LC can show device names and use your
-                  saved choices when you join.
-                </p>
-                <button
-                  className="permissionButton"
-                  type="button"
-                  onClick={() => void requestMediaPermissions()}
-                  disabled={requestingPermissions}
-                >
-                  {requestingPermissions
-                    ? "Waiting for browser..."
-                    : "Grant microphone & camera access"}
-                </button>
-                <details className="settingsDeviceChoices" open>
-                  <summary>Input/output devices</summary>
-                  <label>
-                    Default microphone
-                    <select
-                      value={microphoneId}
-                      onChange={(event) => {
-                        if (
-                          activeVoiceChannel?.type === "voice_direct" &&
-                          joined
-                        )
-                          void changeActiveMicrophone(event.target.value);
-                        else selectMicrophone(event.target.value);
-                      }}
-                    >
-                      <option value="">System default</option>
-                      {microphones.map((device) => (
-                        <option value={device.deviceId} key={device.deviceId}>
-                          {device.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {renderAudioDeviceOptions("both")}
-                </details>
-                <label>
-                  Default camera
-                  <select
-                    value={cameraId}
-                    onChange={(event) => selectCamera(event.target.value)}
-                  >
-                    <option value="">System default</option>
-                    {cameras.map((device) => (
-                      <option value={device.deviceId} key={device.deviceId}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <small>
-                  Camera access is requested here for setup, but your camera
-                  remains off when joining a channel.
-                </small>
-                <MediaTests
-                  microphoneId={microphoneId}
-                  cameraId={cameraId}
-                  outputVolume={outputVolume}
-                  outputId={outputId}
-                  deafened={deafened}
-                />
-              </div>
-            )}
-            {form === "messages" && (
-              <div className="accountMessageList">
-                <p>
-                  Messages written by <strong>{messageAccount.name}</strong>
-                </p>
-                {accountMessages.length === 0 && (
-                  <p className="empty">No messages found.</p>
-                )}
-                {accountMessages.map((message) => (
-                  <article key={message.id}>
-                    <div className="managedMessageHeader">
-                      <small>
-                        {message.serverName} / #{message.channelName} ·{" "}
-                        {formatLocalDateTime(message.createdAt)}
-                      </small>
-                      <button
-                        className="messageDeleteButton"
-                        type="button"
-                        onClick={() =>
-                          requestMessageDeletion(message.id, message.text)
-                        }
-                      >
-                        Delete
-                      </button>
-                    </div>
-                    <p>{message.text}</p>
-                  </article>
-                ))}
-                {accountMessages.length > 0 &&
-                  (deleteMessagesPending ? (
-                    <div className="revokeActions">
-                      <button
-                        type="button"
-                        onClick={() => setDeleteMessagesPending(false)}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        className="danger"
-                        type="button"
-                        onClick={() => void deleteAccountMessages()}
-                      >
-                        Confirm delete all
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="danger"
-                      type="button"
-                      onClick={() => setDeleteMessagesPending(true)}
-                    >
-                      Delete all messages
-                    </button>
-                  ))}
-              </div>
-            )}
+            {form === "messages" && accountMessagesContent}
             <div className="modalActions">
               <button type="button" onClick={closeCurrentForm}>
-                {form === "manage" || form === "media" || form === "messages"
+                {form === "manage" || form === "messages"
                   ? form === "messages" && returnToDemoManager
                     ? "Back"
                     : "Close"
                   : "Cancel"}
               </button>
-              {form !== "manage" && form !== "media" && form !== "messages" && (
+              {form !== "manage" && form !== "messages" && (
                 <button className="primary" type="submit">
                   {form === "account" && inviteUrl
                     ? "Create another"
@@ -5201,67 +5832,80 @@ export default function Home() {
         </div>
       )}
       {directDeletionDialog}
-      {deleteMessageCandidate && !deleteMessageCandidate.conversationUserId && (
-        <div
-          className="modalBackdrop deletionConfirmationBackdrop"
-          onMouseDown={() => {
-            setDeleteMessageCandidate(null);
-            setPermanentMessageDeletion(false);
-          }}
-        >
-          <section
-            className="modalCard deletionConfirmation"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-message-title"
-            onMouseDown={(event) => event.stopPropagation()}
+      {deleteMessageCandidate &&
+        !deleteMessageCandidate.conversationUserId &&
+        !accountMenuOpen && (
+          <div
+            className="modalBackdrop deletionConfirmationBackdrop"
+            onMouseDown={() => {
+              setDeleteMessageCandidate(null);
+              setPermanentMessageDeletion(false);
+            }}
           >
-            <h2 id="delete-message-title">Delete message?</h2>
-            <p>
-              By default, LC erases the message content but keeps a
-              <em> Deleted message </em>
-              placeholder so existing replies still make sense.
-            </p>
-            <blockquote>{deleteMessageCandidate.preview}</blockquote>
-            <label className="permanentDeleteOption">
-              <input
-                type="checkbox"
-                checked={permanentMessageDeletion}
-                onChange={(event) =>
-                  setPermanentMessageDeletion(event.target.checked)
-                }
-              />
-              <span>
-                Delete completely
-                <small>
-                  Permanently removes the database row and disconnects replies
-                  from this message. This cannot be undone.
-                </small>
-              </span>
-            </label>
-            <div className="modalActions">
-              <button
-                type="button"
-                onClick={() => {
-                  setDeleteMessageCandidate(null);
-                  setPermanentMessageDeletion(false);
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                className="danger"
-                type="button"
-                onClick={() => void deleteMessage()}
-              >
-                {permanentMessageDeletion
-                  ? "Delete permanently"
-                  : "Delete message"}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+            <section
+              className="modalCard deletionConfirmation"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-message-title"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <h2 id="delete-message-title">
+                {deleteMessageCandidate.alreadyDeleted
+                  ? "Remove deleted message?"
+                  : "Delete message?"}
+              </h2>
+              <p>
+                {deleteMessageCandidate.alreadyDeleted ? (
+                  "This permanently removes the deleted-message placeholder. Existing replies will remain, without a link to this message. This cannot be undone."
+                ) : (
+                  <>
+                    By default, LC erases the content but keeps a{" "}
+                    <em>Deleted message</em> placeholder so existing replies
+                    still make sense.
+                  </>
+                )}
+              </p>
+              <blockquote>{deleteMessageCandidate.preview}</blockquote>
+              <label className="permanentDeleteOption">
+                <input
+                  type="checkbox"
+                  checked={permanentMessageDeletion}
+                  disabled={deleteMessageCandidate?.alreadyDeleted}
+                  onChange={(event) =>
+                    setPermanentMessageDeletion(event.target.checked)
+                  }
+                />
+                <span>
+                  Delete completely
+                  <small>
+                    Permanently removes the database row and disconnects replies
+                    from this message. This cannot be undone.
+                  </small>
+                </span>
+              </label>
+              <div className="modalActions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteMessageCandidate(null);
+                    setPermanentMessageDeletion(false);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="danger"
+                  type="button"
+                  onClick={() => void deleteMessage()}
+                >
+                  {permanentMessageDeletion
+                    ? "Delete permanently"
+                    : "Delete message"}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       {deleteDemoCandidate && (
         <div className="modalBackdrop deletionConfirmationBackdrop">
           <section
@@ -5331,7 +5975,7 @@ export default function Home() {
         </div>
       )}
       {incomingCallOverlay}
-    </main>
+    </WorkspaceShell>
   );
 }
 
