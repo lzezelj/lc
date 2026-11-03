@@ -73,7 +73,13 @@ at 30 fps before the browser's source picker. Direct capture requests the chosen
 resolution, and its help tooltip explains that selecting 4K cannot add pixels
 to a lower-resolution source. Audio capture is requested alongside screen video;
 the browser picker and OS determine whether tab, window or system audio is
-available and enabled. Direct calls reserve a second audio transceiver for
+available and enabled. Shared audio capture requests stereo without echo
+cancellation, noise suppression or automatic gain control. Group publication
+uses a 192 kbps stereo audio preset with DTX disabled; direct audio uses a
+192 kbps sender ceiling and marks captured audio as music. These requests avoid
+speech processing and silence suppression changing shared content, but browser
+capture, codec negotiation and network conditions still determine actual quality.
+Direct calls reserve a second audio transceiver for
 screen audio, separate from the microphone, and play it through a second stable
 audio element in CallMediaProvider. Silent placeholders added with addTrack keep
 the slots reusable while answering offers, including microphone permission
@@ -88,6 +94,12 @@ the grid. Closing the panel, hiding the tile or focusing a different video
 silences that screen without stopping voice audio or capture/publication.
 Local previews remain muted. Starting a share plays a short notification tone
 for the sharer and connected listeners; stopping sharing plays a descending tone.
+Explicit microphone mute/unmute, deafen/undeafen and camera on/off actions play
+distinct short local confirmation tones through `call-sounds.ts` in both native
+and LiveKit calls. Each reverse action uses the corresponding reversed tone.
+These synthesized cues go directly to local output, including the deafen
+confirmation, and are never published to other participants. Failed capture or
+publication, reconnects and automatic microphone muting do not trigger them.
 Participant camera and bordered Watch shortcuts
 open the media panel, reveal and focus that participant's matching tile.
 Direct calls expose the camera shortcut only while the outgoing video is a
@@ -140,7 +152,9 @@ Direct-call audio is mounted in `CallMediaProvider` above the Friends/server
 workspace branches. Switching those branches cannot replace the audio element;
 video previews restore their stored streams after navigation. Remote previews
 are muted because the persistent audio element alone plays received sound.
-Fresh authenticated entry and the LC/Friends buttons open the Friends list.
+Fresh authenticated entry and the Friends button open the Friends list. The LC
+button returns to the selected direct conversation when switching back from a
+server; switching workspaces retains that selection without affecting calls.
 Reloads restore the last Friends tab/conversation or server/text channel from
 per-account session storage in that browser tab. Startup validates saved IDs
 against current server access, accepted friends and fetched channels; stale
@@ -215,6 +229,143 @@ speech passage, live threshold changes and output-track cleanup.
 Server navigation fetches the destination channels and members before swapping
 the visible workspace, leaving the current screen usable instead of covering it
 with an intermediate loading overlay.
+
+### Server and channel activity
+
+Unread text activity appears as a dot on the server icon and beside its channel
+name, in both Friends and server workspaces. The account's persistent signaling
+socket subscribes to workspace activity using only channel IDs in its signed
+token. Message events contain channel/message IDs, author ID and creation time;
+they do not duplicate the message body or replace the selected channel's text
+socket. Own messages and duplicate/older events do not create unread markers.
+
+GET `/api/workspace-activity` checks the session and joins current server
+memberships to channels, returning channel/server mappings and the latest live
+message from another author per channel. It does not return message contents.
+Startup, reconnect, focus, deletions and server changes refresh this PostgreSQL
+snapshot. Generation guards retain live events arriving during a fetch and reject
+responses from obsolete requests/accounts. Server-update events refresh signaling
+credentials so new channels join the authorized workspace subscription.
+
+Read cursors are stored locally per account and merged across tabs. The first
+visit establishes the current latest messages as a baseline rather than flagging
+all old history. A channel clears only after its history successfully loads and
+it is visible in a foreground tab, outside Friends, the call grid, legal pages
+or user/server settings. Hidden tabs retain unread markers. These are unread
+indicators, not exact message counts, and are not synchronized across devices.
+Revoked/deleted channels disappear from snapshots and their local read markers
+are pruned. No database migration is required for this browser-local read state.
+
+The workspace subscription also receives initial and live direct/group voice
+presence for every authorized server channel, independently of navigation.
+It cannot subscribe to arbitrary channels or friend-call rooms. Occupied servers
+show a speaker badge with a live participant count on their icon; hover or
+keyboard focus lists participant names below the server name. Pointer clicks
+do not pin the tooltip open after the pointer leaves. Users in multiple
+sessions/channels are deduplicated by user ID in both the count and tooltip,
+while different users with the same display name remain separate.
+Snapshots clear stale occupants on signaling reconnect. Existing administrative
+socket revocation applies to these subscriptions; media owners and calls are
+unaffected by notification/navigation updates.
+
+### Server soundboards
+
+Each server starts with an empty soundboard. Metadata and uploaded WAV audio are served by
+`/api/servers/{serverId}/soundboard`, with a `clip` query for audio. Both reads
+validate the current Auth.js session and PostgreSQL server membership. Responses
+are private/no-store; there are no public clip paths or built-in sounds.
+Server owners open a shared Add custom sound dialog from the call dropup or the
+Soundboard section of server settings. Removal is available in server settings,
+not on call tiles. POST accepts a raw WAV body and name query; DELETE accepts
+a custom clip ID. Both enforce current server ownership, limit changes to 20 per
+user per minute and recheck ownership under a membership-row lock before writing.
+The same lock serializes concurrent uploads so the 20-custom-clip server limit
+cannot be exceeded. Members can read metadata and audio but cannot manage clips.
+
+Custom audio and metadata live in PostgreSQL `server_sounds`, with server-delete
+cascades, a server index and constraints on name, byte length and duration. WAV
+uploads are limited to 2 MiB and ten seconds of 16-bit PCM mono/stereo at
+8–48 kHz. The API bounds the streamed request even without Content-Length and
+validates the RIFF format, chunk sizes, sample alignment and duration independently
+of the extension, MIME label or client. Metadata queries never select audio bytes;
+clip bytes are fetched only on demand through the same membership-protected route.
+Immutable random clip IDs are cache versions. This bounded first implementation
+keeps audio in existing database backups without adding filesystem volumes or
+object storage. It stores up to 40 MiB of custom audio per server. Compressed
+formats, conversion, trimming and clip renaming are not implemented yet.
+
+The browser loads metadata when opening the board and audio only when selected.
+A server-and-version-keyed memory LRU holds at most 24 clips and 4 MiB of encoded
+audio; decoded buffers last only for playback. The call's captured server ID,
+rather than the viewed workspace, determines the board. Friend calls have no
+server board. The board opens as a dropup directly above the call controls,
+matching the footer width. Its two-column tile grid shows three rows (six sounds)
+with further rows scrolling vertically using the application's shared scrollbar
+styles. Names and the Preview icon are centered. A search input filters sound
+names. Clicking a sound publishes to the call; the separate Preview icon appears on hover or
+keyboard focus and remains visible on touch devices. Published sounds also play
+locally for the sender; Preview uses a separate local-only player and
+never publishes or announces speaking. The compact mute icon sits alongside the
+volume slider. Navigation and closing the board do not stop an active clip.
+Metadata refreshes when reopening the board; upload and settings removal update
+their own lists immediately. Server settings manages the viewed server, while
+the call dropup and its upload dialog stay scoped to the active call's server.
+The upload dialog supports file preview before saving and authenticated preview
+of the uploaded clip after saving without closing the dialog. Server settings
+also provides local preview. These native audio controls use temporary Blob URLs
+and the same bounded audio cache as call playback, with the selected output
+device/volume and Deafen. Dialog/preview teardown pauses playback and revokes
+the Blob URL; it never publishes tracks, announces speaking or tears down calls.
+Every published play, including a cache hit, requests
+POST `/api/servers/{serverId}/soundboard/play?clip={id}`. The API rechecks current
+membership and clip/server association, then grants at most one play per account
+per second across tabs and servers. HTTP 429 includes Retry-After. The browser
+also guards rapid clicks and disables Play for one second, using call-owned state
+that survives dropup closure/navigation; local Preview is independent. Playback
+limits use the same single-process in-memory rate limiter as other API limits.
+These are control-plane limits; a modified client can bypass playback requests
+and send arbitrary RTC audio, just as with a microphone. Deletion blocks future
+fetches and playback permits but does not stop an already playing clip or erase
+downloaded bytes/local previews from another browser.
+
+Each sender plays one clip at a time through a Web Audio destination independent
+of microphone capture, processing and mute. Direct WebRTC reserves a third audio
+transceiver (microphone, screen, soundboard) using the same silent-slot technique
+as screen audio. Microphone device replacement explicitly excludes both auxiliary
+senders. The persistent CallMediaProvider owns a separate soundboard audio element.
+LiveKit publishes a named `lc-soundboard` audio track with Unknown source, keeping
+microphone and ScreenShareAudio publications separate. Listener soundboard volume
+and mute apply to all incoming soundboard tracks, multiply main output gain and
+respect Deafen, independently of the media panel. The same settings apply to
+sender playback and previews through dedicated local audio elements owned by the
+call hook. They remain mounted independently of the dropup. Soundboard settings
+are session/call UI state. Zero-volume group tracks also disable their native
+receiver track before attachment and when muted, preventing LiveKit's initial
+Web Audio gain fade from leaking part of a short clip. Nonzero volume reopens
+the same receiver without detaching playback. This also makes Deafen and hidden
+screen-audio gating immediate.
+
+Natural completion, replacement, leaving and call
+changes release the source and publication. Generation checks discard obsolete
+downloads/decodes and clean up late publication results. Signaling transports no
+soundboard payloads. The published sound's audio detector combines with microphone
+activity in the existing speaking presence, including when the microphone is
+muted; preview activity is excluded. Existing room membership/token checks and revocation govern
+media access. As with microphone audio, a modified client can publish arbitrary
+audio; the clip API protects stored catalog access, not the content of RTC media.
+
+`npm run test:soundboard` covers API access and ownership, upload validation,
+stream limits, quota/lock handling, empty boards, ten-second stereo WAV bounds,
+client/server playback rate limits, cache bounds and
+playback cancellation/cleanup. Call-grid tests cover separate listener gain,
+mute, Deafen and combined speaking state. The workspace browser check verifies
+local-only preview, sender monitoring, dropup alignment and focus, actual LiveKit
+receiver muting before gain fades, search, upload/removal controls, third-track RTP audio with the microphone
+muted and independent screen/soundboard stop behavior. LiveKit
+publication still needs verification against a configured SFU with two clients.
+Database tests apply the sound migration in a temporary transactional schema,
+verify byte round trips, invalid-record constraints and server cascades, then
+roll back the entire schema.
 
 ### Cloudflare
 
@@ -303,8 +454,14 @@ status instead of the user's handle. Status changes are authenticated self-only
 signaling messages, shared across that user's connected sockets. Server-scoped
 online broadcasts include visible status values; Invisible is omitted from the
 online list even when the account has multiple sockets. Voice membership remains
-visible while in a call. Do not disturb silences incoming ringtones but keeps
-call prompts/messages available; Away is manually selected rather than automatic.
+visible while in a call. Do not disturb suppresses server/channel unread dots,
+DM/Friends badges, unread browser-title counts, incoming ringtones and global
+call popups. Unread state and incoming invitations are retained: a pending call
+shows a quiet inline Answer/Decline banner only inside that caller's DM, including
+while in Do not disturb. Outside DND that same inline banner replaces the popup
+when the matching DM is open. Invitations still expire after 20 seconds; changing
+status affects ringing/presentation without restarting the expiry. Away is
+manually selected rather than automatic.
 The browser saves the preference locally and supplies it on reconnect, so an
 invisible account is not briefly announced online. In-memory server status lasts
 until the final socket closes; no database migration or authorization change is
@@ -612,6 +769,18 @@ exercises modal focus/stacking, pointer and keyboard resizing, diagnostic placem
 mobile bounds and persistent call audio while opening and closing settings.
 
 ## Direct WebRTC call flow
+
+Server two-person rooms and DM calls share the native WebRTC media implementation
+but have separate contexts: server rooms use channel UUIDs, and DM rooms use the
+canonical `friend:{userId}:{userId}` pair. Only an exact matching friend room
+activates that DM's call layout. Server voice, or a call with someone else, keeps
+the viewed DM in its normal message layout. Its call controls/audio remain
+available in the footer without showing a false DM call panel. Explicitly opening
+the active media view labels server voice as Server voice. Switching a viewed
+conversation alone never changes transport membership. Incoming DM invitations
+can be retained while in server voice; Answer explicitly switches the call.
+Decline/cancel handling checks the matching room/caller so unrelated DM events
+cannot disconnect a server room or clear a different invitation.
 
 ```mermaid
 sequenceDiagram

@@ -286,7 +286,7 @@ export function createSignalingServer({
   };
 
   const presenceFor = (roomId) => [
-    ...[...peersFor(roomId)].map((peer) => ({
+    ...[...(rooms.get(roomId) ?? [])].map((peer) => ({
       userId: peer.identity.sub,
       name: peer.participantName ?? "Guest",
       muted: Boolean(peer.mediaState?.muted),
@@ -308,7 +308,9 @@ export function createSignalingServer({
     });
     for (const client of ws.clients) {
       if (
-        client.subscribedRoomIds?.has(roomId) &&
+        (client.subscribedRoomIds?.has(roomId) ||
+          (client.subscribedWorkspace &&
+            client.allowedChannelIds.has(roomId))) &&
         client.readyState === WebSocket.OPEN
       ) {
         client.send(message);
@@ -329,6 +331,21 @@ export function createSignalingServer({
       ) {
         client.send(outgoing);
       }
+      if (
+        client.subscribedWorkspace &&
+        client.allowedChannelIds.has(channelId) &&
+        client.readyState === WebSocket.OPEN
+      ) {
+        client.send(
+          JSON.stringify({
+            type: "channel-activity",
+            channelId,
+            messageId: message.id,
+            createdAt: message.createdAt,
+            authorId: message.authorId,
+          }),
+        );
+      }
     }
   };
 
@@ -346,6 +363,14 @@ export function createSignalingServer({
       ) {
         client.send(outgoing);
       }
+      if (
+        client.subscribedWorkspace &&
+        client.allowedChannelIds.has(channelId) &&
+        client.readyState === WebSocket.OPEN
+      )
+        client.send(
+          JSON.stringify({ type: "channel-activity-changed", channelId }),
+        );
     }
   };
 
@@ -459,6 +484,22 @@ export function createSignalingServer({
       if (message.type === "subscribe-user-presence") {
         socket.subscribedUserPresence = true;
         broadcastUserPresence();
+        return;
+      }
+      if (message.type === "subscribe-workspace") {
+        socket.subscribedWorkspace = true;
+        // The signed token controls the complete subscription. Client-supplied
+        // channel/server IDs cannot expand access or expose friend-call rooms.
+        for (const roomId of socket.allowedChannelIds) {
+          if (!deletedChannels.has(roomId))
+            socket.send(
+              JSON.stringify({
+                type: "presence",
+                roomId,
+                participants: presenceFor(roomId),
+              }),
+            );
+        }
         return;
       }
       if (message.type === "get-user-status") {

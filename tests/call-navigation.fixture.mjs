@@ -5,6 +5,9 @@ import { WorkspaceShell } from "./workspace-shell.js";
 import { GroupCall } from "./group-call-probe.js";
 
 window.runCallNavigationTest = async () => {
+  const errors = [];
+  const recordError = (event) => errors.push(event.message);
+  window.addEventListener("error", recordError);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -79,7 +82,7 @@ window.runCallNavigationTest = async () => {
     for (let i = 0; i < 20 && !window.groupNavigation.connected; i++)
       await new Promise((resolve) => setTimeout(resolve, 20));
     if (!window.groupNavigation.connected)
-      throw new Error("Group call did not join");
+      throw new Error(`Group call did not join: ${errors.join("; ")}`);
     const groupAudio = container.querySelector(".persistentCallLayer audio");
     if (!groupAudio) throw new Error("Group audio did not attach");
     await groupAudio.play();
@@ -123,6 +126,7 @@ window.runCallNavigationTest = async () => {
       groupAudioPreserved: true,
     };
   } finally {
+    window.removeEventListener("error", recordError);
     root.unmount();
     container.remove();
     tone.stop();

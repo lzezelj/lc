@@ -1,5 +1,6 @@
 import {
   AnyPgColumn,
+  customType,
   index,
   integer,
   pgEnum,
@@ -158,6 +159,25 @@ export const channels = pgTable(
       .notNull(),
   },
   (table) => [index("channels_server_id_idx").on(table.serverId)],
+);
+
+const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
+
+export const serverSounds = pgTable(
+  "server_sounds",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    serverId: uuid("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    audio: bytea("audio").notNull(),
+    durationMs: integer("duration_ms").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("server_sounds_server_id_idx").on(table.serverId)],
 );
 
 export const messages = pgTable(

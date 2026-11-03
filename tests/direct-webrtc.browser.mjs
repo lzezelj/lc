@@ -128,6 +128,7 @@ if (navigation || workspaceControls) {
       import React, {useState, useRef, useEffect} from 'react';
       import {Room, RoomEvent, Track, TrackEvent} from './group-navigation.mock.mjs';
       import {DeviceMenu} from './device-menu.js';
+      import {applyRemoteAudioVolume} from './remote-audio-volume.js';
       import {HideTileButton, HiddenTilesMenu, SelfViewButton} from './call-tile-controls.js';
       const fetch = async () => ({ok: true, json: async () => ({server_url: 'test', participant_token: 'test'})});
       const prepareVoiceActivity = () => window.groupNavigation.context;
@@ -136,6 +137,8 @@ if (navigation || workspaceControls) {
       const monitorRoomDiagnostics = () => () => {};
       const monitorTrackVideo = () => () => {};
       const videoQuality = () => '';
+      const useSoundboard = () => ({player: useRef(null), volume: 100, muted: false});
+      const SoundboardButton = () => null;
       ${components}
       export {GroupCall};
     `,
@@ -168,6 +171,10 @@ if (navigation || workspaceControls) {
       "chat-history",
       "stream-info",
       "stream-volume",
+      "soundboard",
+      "sound-manager",
+      "server-nav-button",
+      "incoming-call-notice",
       "screen-audio",
       "screen-share-options",
       "camera-resolution",
@@ -223,6 +230,37 @@ if (navigation || workspaceControls) {
           module: ts.ModuleKind.CommonJS,
           jsx: ts.JsxEmit.ReactJSX,
         },
+      ),
+    );
+  }
+  for (const name of [
+    "remote-audio-volume",
+    ...(workspaceControls
+      ? [
+          "soundboard-audio",
+          "soundboard-library",
+          "workspace-activity",
+          "use-workspace-activity",
+          "call-context",
+          "voice-activity",
+          "audio-output",
+          "soundboard-catalog",
+        ]
+      : []),
+  ]) {
+    await writeFile(
+      join(directory, `${name}.js`),
+      ts.transpile(
+        await readFile(
+          new URL(
+            name === "soundboard-catalog"
+              ? "./sound-wave.ts"
+              : `../app/${name}.ts`,
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
       ),
     );
   }
@@ -527,7 +565,8 @@ try {
         const optionsCheck = await call(
           "Runtime.evaluate",
           {
-            expression: "window.verifyWorkspaceAdditions()",
+            expression:
+              "(async () => { await window.verifyWorkspaceAdditions(); await window.verifySoundboard(); await window.verifyWorkspaceActivity(); await window.verifyCallContext(); })()",
             awaitPromise: true,
             userGesture: true,
             returnByValue: true,
@@ -538,6 +577,74 @@ try {
           throw new Error(JSON.stringify(optionsCheck.exceptionDetails));
       }
       console.log("Media options desktop/mobile checks passed");
+      const mounted = await call(
+        "Runtime.evaluate",
+        {
+          expression: "window.mountServerTooltipTest()",
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      if (mounted.exceptionDetails)
+        throw new Error(JSON.stringify(mounted.exceptionDetails));
+      try {
+        const point = mounted.result.value;
+        await call(
+          "Input.dispatchMouseEvent",
+          { type: "mouseMoved", ...point },
+          sessionId,
+        );
+        const readTooltip = async () => {
+          const result = await call(
+            "Runtime.evaluate",
+            {
+              expression:
+                "(async () => { await new Promise(resolve => setTimeout(resolve, 180)); return window.readServerTooltipTest(); })()",
+              awaitPromise: true,
+              returnByValue: true,
+            },
+            sessionId,
+          );
+          if (result.exceptionDetails)
+            throw new Error(JSON.stringify(result.exceptionDetails));
+          return result.result.value;
+        };
+        assert.equal(
+          (await readTooltip()).opacity,
+          "1",
+          "Hover reveals the server tooltip",
+        );
+        for (const type of ["mousePressed", "mouseReleased"])
+          await call(
+            "Input.dispatchMouseEvent",
+            { type, ...point, button: "left", clickCount: 1 },
+            sessionId,
+          );
+        await call(
+          "Input.dispatchMouseEvent",
+          { type: "mouseMoved", x: 200, y: 200 },
+          sessionId,
+        );
+        const clicked = await readTooltip();
+        assert.equal(
+          clicked.focused,
+          true,
+          "Click keeps keyboard focus on the server button",
+        );
+        assert.equal(
+          clicked.opacity,
+          "0",
+          "Click must not pin the server tooltip after pointer exit",
+        );
+        console.log("Server tooltip pointer checks passed");
+      } finally {
+        await call(
+          "Runtime.evaluate",
+          { expression: "window.cleanupServerTooltipTest()" },
+          sessionId,
+        );
+      }
     } else {
       const checked = await call(
         "Runtime.evaluate",

@@ -16,6 +16,8 @@ servers; route and component tests use controlled dependencies.
 | `channel-management.test.mjs` | Server-scoped channel deletion, ownership, rate limits, cleanup ordering, and message grouping by stable server ID |
 | `server-message-deletion.test.mjs` | Account authorization, per-server message deletion, invalid-filter rejection, all-server compatibility, and deletion broadcasts |
 | `workspace-location.test.mjs` | Reload restoration through the app's startup effects, server/channel/friend validation, fresh-visit defaults, and account-scoped storage |
+| `workspace-activity.test.mjs` | Read baselines/cursors, duplicate and own messages, reconnect races, deletion/revocation, cross-tab markers, server voice summaries and API membership/privacy |
+| `call-context.test.mjs` | DM/server room separation, matching-conversation call layout, scoped cancellation/decline, DND badges/title/ringing, inline invitations and stable invitation expiry |
 | `message-pagination.test.mjs` | Latest-50 channel/direct history, stable timestamp ties, cursor validation, authorization, and history response races |
 | `signaling.test.mjs` | Real local signaling transport, authorization, rooms, reconnection, text events, voice presence, current user presence, and legacy server-presence compatibility |
 | `direct-negotiation.test.mjs` | Signal ordering, queue recovery, and audio statistics windows |
@@ -23,7 +25,9 @@ servers; route and component tests use controlled dependencies.
 | `remote-track-view.test.mjs` | Media attachment lifecycle and output-device/volume updates |
 | `media-tests.test.mjs` | Device-test capture races and cleanup |
 | `call-grid.test.mjs` | Group-call rendering/actions, source selection, leave races, hidden tiles, deafen, and selected workspace handlers |
-| `database.test.mjs` | PostgreSQL cascades, independent message foreign keys, and voice-channel types |
+| `call-sounds.test.mjs` | Local mute/deafen/camera confirmations, failed capture, distinct tone envelopes and local-only output routing; LiveKit action success/failure is also covered in `call-grid.test.mjs` |
+| `soundboard.test.mjs` | Empty boards, member/owner authorization, upload/removal, ten-second WAV and byte bounds, quota locking, client cooldown, account-wide playback permits, cache and cleanup (also runnable with `npm.cmd run test:soundboard`) |
+| `database.test.mjs` | PostgreSQL cascades, message foreign keys, voice-channel types and custom-sound migration/constraints in a rolled-back test schema |
 
 ## Browser checks
 
@@ -49,7 +53,19 @@ npm.cmd run test:webrtc-browser -- --workspace-controls --media-options-only
   loading and anchor preservation, incoming-message scrolling, and thread changes.
   Also covers selected-video fullscreen, stream volume controls, resolution help,
   and separate screen-audio RTP delivery through real local peer connections,
-  including silent microphone fallback and stopping screen audio independently.
+  including silent microphone fallback, soundboard RTP with a muted microphone,
+  and stopping screen/soundboard audio independently. Soundboard checks cover
+  the footer dropup on desktop/mobile, keyboard actions, local preview versus
+  publication, sender monitoring, speaking activity and cleanup. They also verify
+  the two-column/three-row scrolling grid, shared scrollbar styling, upload dialog
+  previews, nested server-settings management and preview cleanup. An actual
+  LiveKit RemoteAudioTrack checks immediate receiver muting before its gain fade.
+  The media-options check also exercises workspace unread dots, foreground versus
+  hidden-channel reading, persisted read markers and keyboard voice tooltips on
+  desktop/mobile. Signaling tests cover authorization of workspace metadata and
+  initial/live voice snapshots across channels.
+  Call-context browser checks cover DND popup suppression, inline Answer/Decline,
+  unrelated DM/server call layouts and persistent audio on desktop/mobile.
 
 The navigation and workspace fixtures are supporting files, not independent
 test suites. The `--media-options-only` filter limits workspace checks to native

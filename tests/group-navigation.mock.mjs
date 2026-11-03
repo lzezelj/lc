@@ -29,6 +29,7 @@ export class Room {
     window.groupNavigation.connects++;
     const track = {
       kind: "audio",
+      mediaStreamTrack: window.groupNavigation.stream.getAudioTracks()[0],
       volume: 1,
       elements: new Set(),
       setVolume(volume) {

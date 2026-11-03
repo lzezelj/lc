@@ -58,9 +58,10 @@ export function ChatHistory({
     const host = wrapper.current;
     const button = jump.current;
     if (!host || !button) return;
-    const send = host
-      .closest(".chat")
-      ?.querySelector<HTMLElement>("[data-chat-send]");
+    const chat = host.closest(".chat");
+    const send =
+      chat?.querySelector<HTMLElement>("[data-chat-jump-target]") ??
+      chat?.querySelector<HTMLElement>("[data-chat-send]");
     if (!send) return;
     const position = () => {
       const bounds = host.getBoundingClientRect();
@@ -118,9 +119,10 @@ export function ChatHistory({
     const previous = state.current;
     const first = messages[0]?.id ?? "",
       last = messages.at(-1)?.id ?? "";
-    if (!previous.initialized || previous.thread !== threadId)
+    if (!previous.initialized || previous.thread !== threadId) {
       node.scrollTop = node.scrollHeight;
-    else if (
+      setShowJump(false);
+    } else if (
       first !== previous.first &&
       messages.some((message) => message.id === previous.first)
     ) {
@@ -135,8 +137,10 @@ export function ChatHistory({
     } else if (
       last !== previous.last &&
       (previous.nearBottom || messages.at(-1)?.authorId === ownUserId)
-    )
+    ) {
       node.scrollTop = node.scrollHeight;
+      setShowJump(false);
+    }
     state.current = {
       ...previous,
       thread: threadId,

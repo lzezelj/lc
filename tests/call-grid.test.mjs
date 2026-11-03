@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { sharedAudioCapture, sharedAudioPublish } from "../app/shared-audio.ts";
 
 const source = await readFile(
   new URL("../app/group-call.tsx", import.meta.url),
@@ -59,6 +60,7 @@ function renderCall(state = {}, options = {}) {
   const detached = [];
   const opened = [];
   const events = [];
+  const sounds = [];
   const handlers = new Map();
   const stateWrites = {};
   const track = {
@@ -91,13 +93,19 @@ function renderCall(state = {}, options = {}) {
     },
     localParticipant: {
       trackPublications: publications,
+      async publishTrack(track, settings) {
+        events.push(["publish sound", track, settings]);
+      },
+      async unpublishTrack(track) {
+        events.push(["unpublish sound", track]);
+      },
       videoTrackPublications: publications,
       getTrackPublication: (source) =>
         source === "mic" && options.microphoneTrack
           ? { track: options.microphoneTrack }
           : (publications.get(source) ?? {}),
-      async setScreenShareEnabled(enabled, options) {
-        events.push(["screen capture", enabled, options]);
+      async setScreenShareEnabled(enabled, options, publishOptions) {
+        events.push(["screen capture", enabled, options, publishOptions]);
         await options.screenPending;
       },
       async setCameraEnabled() {
@@ -156,7 +164,12 @@ function renderCall(state = {}, options = {}) {
     },
     Track: {
       Kind: { Video: "video", Audio: "audio" },
-      Source: { ScreenShare: "screen", Camera: "camera", Microphone: "mic" },
+      Source: {
+        ScreenShare: "screen",
+        Camera: "camera",
+        Microphone: "mic",
+        Unknown: "unknown",
+      },
     },
     Room: class {
       constructor() {
@@ -165,11 +178,16 @@ function renderCall(state = {}, options = {}) {
       }
     },
     RoomEvent: new Proxy({}, { get: (_, name) => name }),
+    LocalAudioTrack: class {
+      constructor(track) {
+        this.mediaStreamTrack = track;
+      }
+    },
     TrackEvent: { Restarted: "restart" },
     monitorVoiceActivity: () => () => {},
     prepareVoiceActivity() {},
     voiceCaptureOptions: () => ({}),
-    playVoiceSound() {},
+    playVoiceSound: (type) => sounds.push(type),
     monitorTrackVideo: () => () => {},
     monitorRoomDiagnostics: () => () => {},
     fetch:
@@ -182,6 +200,17 @@ function renderCall(state = {}, options = {}) {
     DeviceMenu: "DeviceMenu",
     StreamInfo: "StreamInfo",
     StreamVolume: "StreamVolume",
+    SoundboardButton: "SoundboardButton",
+    sharedAudioCapture,
+    sharedAudioPublish,
+    useSoundboard: (_channel, settings) => {
+      options.soundSettings = settings;
+      return {
+        player: { current: { stop() {} } },
+        volume: options.soundboardVolume ?? 100,
+        muted: options.soundboardMuted ?? false,
+      };
+    },
     fullscreenVideoTile() {},
     ScreenShareOptions: "ScreenShareOptions",
     screenShareResolutions,
@@ -209,6 +238,7 @@ function renderCall(state = {}, options = {}) {
     onMediaStateChange: (media) => events.push(["media", media]),
     onDiagnosticsChange() {},
     onError(message) {
+      if (options.onError) return options.onError(message);
       throw new Error(message);
     },
     onOpenView: () => opened.push(true),
@@ -225,6 +255,7 @@ function renderCall(state = {}, options = {}) {
     detached,
     opened,
     events,
+    sounds,
     refs,
     handlers,
     stateWrites,
@@ -235,6 +266,76 @@ function renderCall(state = {}, options = {}) {
     },
   };
 }
+
+test("LiveKit mute/unmute and camera on/off actions play local confirmation only when successful", async () => {
+  const fixture = renderCall({ joined: true });
+  const action = (kind) =>
+    elements(fixture.rerender().tree)
+      .find(
+        (element) =>
+          element.type === "DeviceMenu" && element.props.kind === kind,
+      )
+      .props.onAction();
+  action("microphone");
+  await settle();
+  assert.deepEqual(fixture.sounds, ["mute"]);
+  action("microphone");
+  await settle();
+  assert.deepEqual(fixture.sounds, ["mute", "unmute"]);
+  action("camera");
+  await settle();
+  assert.deepEqual(fixture.sounds, ["mute", "unmute", "camera-on"]);
+  action("camera");
+  await settle();
+  assert.deepEqual(fixture.sounds, [
+    "mute",
+    "unmute",
+    "camera-on",
+    "camera-off",
+  ]);
+});
+
+test("failed LiveKit mute or camera actions do not play success tones", async () => {
+  const errors = [];
+  const fixture = renderCall(
+    { joined: true },
+    {
+      onMicrophoneUpdate: async () => {
+        throw new Error("unavailable");
+      },
+      onError: (message) => errors.push(message),
+    },
+  );
+  elements(fixture.tree)
+    .find(
+      (element) =>
+        element.type === "DeviceMenu" && element.props.kind === "microphone",
+    )
+    .props.onAction();
+  await settle();
+  assert.equal(errors.length, 1);
+  assert.deepEqual(fixture.sounds, []);
+  let rejectCamera;
+  const camera = renderCall(
+    { joined: true },
+    {
+      cameraPending: new Promise((_, reject) => {
+        rejectCamera = reject;
+      }),
+      onError: (message) => errors.push(message),
+    },
+  );
+  elements(camera.tree)
+    .find(
+      (element) =>
+        element.type === "DeviceMenu" && element.props.kind === "camera",
+    )
+    .props.onAction();
+  rejectCamera(new Error("denied"));
+  await settle();
+  assert.equal(errors.length, 2);
+  assert.deepEqual(camera.sounds, []);
+});
 
 test("hiding a camera retains media components and restores only the selected tile", () => {
   const participants = [{ id: "one", name: "Alex" }];
@@ -547,6 +648,125 @@ test("mute button, capture and presence stay aligned through SDK-triggered rende
   }
 });
 
+test("group soundboard publishes a named separate track and removes that same publication", async () => {
+  const result = renderCall({ joined: true, muted: true });
+  const board = elements(result.tree).find(
+    (element) => element.type === "SoundboardButton",
+  );
+  const track = { id: "generated-sound" };
+  const release = await board.props.publish(track);
+  const published = result.events.find((event) => event[0] === "publish sound");
+  assert.equal(published[1].mediaStreamTrack, track);
+  assert.equal(published[2].name, "lc-soundboard");
+  assert.equal(published[2].source, "unknown");
+  release();
+  assert.equal(
+    result.events.find((event) => event[0] === "unpublish sound")[1],
+    published[1],
+  );
+});
+
+test("published soundboard activity announces speaking even with a muted microphone and clears on completion", () => {
+  const options = {};
+  const result = renderCall({ joined: true, userMuted: true }, options);
+  options.soundSettings.onSpeakingChange(true);
+  const active = result.events
+    .filter((event) => event[0] === "media")
+    .at(-1)[1];
+  assert.equal(active.speaking, true);
+  assert.equal(active.muted, true);
+  options.soundSettings.onSpeakingChange(false);
+  assert.equal(
+    result.events.filter((event) => event[0] === "media").at(-1)[1].speaking,
+    false,
+  );
+});
+
+test("direct speaking combines microphone and soundboard without one source clearing the other", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const source = ts.createSourceFile(
+    "page.tsx",
+    page,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let declaration;
+  function visit(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === "updateDirectSpeaking"
+    )
+      declaration = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  const directMicSpeaking = { current: false },
+    directSoundSpeaking = { current: true };
+  const emitted = [],
+    indicators = [];
+  const update = vm.runInNewContext(
+    `${ts.transpile(declaration.getText(source))}; updateDirectSpeaking`,
+    {
+      directMicSpeaking,
+      directSoundSpeaking,
+      effectiveMutedRef: { current: true },
+      stream: { current: null },
+      screenSharing: false,
+      session: { user: { id: "me" } },
+      setDirectLocalSpeaking: (value) => indicators.push(value),
+      setDirectParticipantSpeaking() {},
+      send: (value) => emitted.push(value),
+    },
+  );
+  update();
+  assert.equal(emitted.at(-1).speaking, true);
+  assert.equal(emitted.at(-1).muted, true);
+  directMicSpeaking.current = true;
+  directSoundSpeaking.current = false;
+  update();
+  assert.equal(indicators.at(-1), true);
+  directMicSpeaking.current = false;
+  update();
+  assert.equal(indicators.at(-1), false);
+});
+
+test("soundboard gain, mute and deafen are independent of microphone and media-panel visibility", () => {
+  const media = [
+    { id: "voice", track: { kind: "audio" }, isScreen: false },
+    {
+      id: "sound",
+      track: { kind: "audio" },
+      isScreen: false,
+      isSoundboard: true,
+    },
+  ];
+  for (const [options, voice, sound] of [
+    [{ soundboardVolume: 25, viewOpen: false }, 0.4, 0.1],
+    [{ soundboardMuted: true }, 0.4, 0],
+    [{ deafened: true }, 0, 0],
+  ]) {
+    const result = renderCall(
+      { joined: true, muted: true, remoteMedia: media },
+      options,
+    );
+    const views = elements(result.tree).filter(
+      (element) => element.type === "RemoteTrackView",
+    );
+    assert.equal(
+      views.find((view) => view.props.media.id === "voice").props.volume,
+      voice,
+    );
+    assert.equal(
+      views.find((view) => view.props.media.id === "sound").props.volume,
+      sound,
+    );
+  }
+});
+
 test("screen audio volume is independent from voices and participant shortcuts reveal the matching tile", async () => {
   const media = [
     {
@@ -676,6 +896,7 @@ test("the direct deafen control restores the user's previous mute choice", async
           cameraOff: true,
           screenSharing: false,
           send() {},
+          playVoiceSound() {},
         },
       );
       change();
@@ -815,6 +1036,10 @@ test("workspace channel highlights follow the displayed view and connecting labe
       cameras: [],
       cameraId: "",
       screenSharing: false,
+      directSoundboard: {
+        type: "button",
+        props: { disabled: true, children: ["Soundboard"] },
+      },
     },
   );
   assert.equal(
@@ -945,7 +1170,8 @@ test("starting screen sharing requests the call grid without forcing self-view o
   );
   assert.equal(capture[2].resolution.width, 2560);
   assert.equal(capture[2].resolution.height, 1440);
-  assert.equal(capture[2].audio, true);
+  assert.deepEqual(capture[2].audio, sharedAudioCapture);
+  assert.deepEqual(capture[3], sharedAudioPublish);
 });
 
 test("screen picker completing after leave cannot reopen the call or restore presence", async () => {
@@ -1054,10 +1280,13 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
   }
   visit(pageAst);
   const events = [];
+  let voiceSnapshot;
   const selectChannel = vm.runInNewContext(
     `${ts.transpile(select.getText(pageAst))}; selectVoiceChannel`,
     {
       activeVoiceChannelId: "active",
+      selectedServerId: "server-a",
+      servers: [{ id: "server-a", name: "Server A" }],
       setMediaFocusTarget() {},
       setCallViewOpen: (open) => events.push(open),
       leaveRoom: () => events.push("leave"),
@@ -1065,7 +1294,9 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
       prepareRemoteAudio() {},
       prepareVoiceSounds() {},
       setActiveVoiceChannelId() {},
-      setActiveVoiceChannelSnapshot() {},
+      setActiveVoiceChannelSnapshot(value) {
+        voiceSnapshot = value;
+      },
       setVoiceJoinTarget() {},
       setVoiceJoinKey() {},
       setCallPeerPresent() {},
@@ -1076,9 +1307,16 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
   events.length = 0;
   selectChannel({ id: "next", type: "voice_group" });
   assert.deepEqual(events, ["leave", false]);
+  assert.equal(voiceSnapshot.serverId, "server-a");
+  selectChannel({ id: "other", type: "voice_group", serverId: "server-b" });
+  assert.equal(
+    voiceSnapshot.serverId,
+    "server-b",
+    "The channel's server wins over the viewed workspace",
+  );
 });
 
-test("Friends is the initial workspace and LC returns to the list without leaving voice", async () => {
+test("Friends is the initial workspace and LC preserves the selected DM without leaving voice", async () => {
   const page = await readFile(
     new URL("../app/page.tsx", import.meta.url),
     "utf8",
@@ -1123,7 +1361,7 @@ test("Friends is the initial workspace and LC returns to the list without leavin
     },
   );
   navigate();
-  assert.deepEqual(changes, { friend: null, friends: true, media: false });
+  assert.deepEqual(changes, { friends: true, media: false });
 });
 
 test("opening a friend conversation switches workspace and hides media without leaving voice", async () => {

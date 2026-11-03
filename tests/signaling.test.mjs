@@ -351,6 +351,174 @@ function nextMessage(socket) {
   return once(socket, "message").then(([data]) => JSON.parse(data.toString()));
 }
 
+function matchingMessage(socket, predicate) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off("message", receive);
+      reject(new Error("Expected signaling activity did not arrive"));
+    }, 1500);
+    function receive(raw) {
+      const message = JSON.parse(raw.toString());
+      if (predicate(message)) {
+        clearTimeout(timer);
+        socket.off("message", receive);
+        resolve(message);
+      }
+    }
+    socket.on("message", receive);
+  });
+}
+
+test("workspace subscriptions deliver only authorized message metadata across channels", async () => {
+  const url = await startServer();
+  const viewer = await connect(url, "Viewer", ["general", "random"]);
+  const outsider = await connect(
+    url,
+    "Outsider",
+    ["private"],
+    ["other-server"],
+  );
+  const ready = matchingMessage(
+    viewer,
+    (message) => message.type === "presence" && message.roomId === "random",
+  );
+  viewer.send(
+    JSON.stringify({ type: "subscribe-workspace", channelIds: ["private"] }),
+  );
+  await ready;
+  const outsiderReady = nextMessage(outsider);
+  outsider.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await outsiderReady;
+  const incoming = matchingMessage(
+    viewer,
+    (message) => message.type === "channel-activity",
+  );
+  const quiet = expectNoMessage(outsider);
+  await fetch(`${url.replace("ws://", "http://")}/internal/text-message`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${authSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      channelId: "general",
+      message: {
+        id: "m1",
+        text: "Message body",
+        author: "Sender",
+        authorId: "sender",
+        createdAt: "2026-11-03T12:00:00Z",
+      },
+    }),
+  });
+  assert.deepEqual(await incoming, {
+    type: "channel-activity",
+    channelId: "general",
+    messageId: "m1",
+    authorId: "sender",
+    createdAt: "2026-11-03T12:00:00Z",
+  });
+  await quiet;
+  const viewerQuiet = expectNoMessage(viewer);
+  await fetch(`${url.replace("ws://", "http://")}/internal/text-message`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${authSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      channelId: "private",
+      message: {
+        id: "m2",
+        text: "Private",
+        author: "Sender",
+        authorId: "sender",
+        createdAt: "2026-11-03T12:00:00Z",
+      },
+    }),
+  });
+  await viewerQuiet;
+});
+
+test("workspace voice presence covers initial occupants and live changes across all authorized rooms", async () => {
+  const url = await startServer();
+  const speaker = await connect(url, "Speaker", ["lounge", "group-room"]);
+  const joined = nextMessage(speaker);
+  speaker.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "lounge",
+      participantName: "Speaker",
+    }),
+  );
+  await joined;
+  const viewer = await connect(url, "Viewer", ["lounge", "group-room"]);
+  const initial = matchingMessage(
+    viewer,
+    (message) => message.type === "presence" && message.roomId === "lounge",
+  );
+  const ready = matchingMessage(
+    viewer,
+    (message) => message.type === "presence" && message.roomId === "group-room",
+  );
+  viewer.send(JSON.stringify({ type: "subscribe-workspace" }));
+  assert.equal((await initial).participants[0].name, "Speaker");
+  await ready;
+  const newcomer = await connect(url, "Newcomer", ["lounge"]);
+  const joinedLive = matchingMessage(
+    viewer,
+    (message) =>
+      message.type === "presence" &&
+      message.roomId === "lounge" &&
+      message.participants.length === 2,
+  );
+  newcomer.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  assert.deepEqual(
+    (await joinedLive).participants.map((person) => person.name).sort(),
+    ["Newcomer", "Speaker"],
+  );
+  const leftLive = matchingMessage(
+    viewer,
+    (message) =>
+      message.type === "presence" &&
+      message.roomId === "lounge" &&
+      message.participants.length === 1,
+  );
+  newcomer.close();
+  assert.equal((await leftLive).participants[0].name, "Speaker");
+  const group = matchingMessage(
+    viewer,
+    (message) =>
+      message.type === "presence" &&
+      message.roomId === "group-room" &&
+      message.participants.length === 1,
+  );
+  speaker.send(
+    JSON.stringify({
+      type: "set-group-presence",
+      roomId: "group-room",
+      present: true,
+      participantName: "Speaker",
+    }),
+  );
+  assert.equal((await group).participants[0].userId, "test-Speaker");
+  const left = matchingMessage(
+    viewer,
+    (message) =>
+      message.type === "presence" &&
+      message.roomId === "group-room" &&
+      message.participants.length === 0,
+  );
+  speaker.send(
+    JSON.stringify({
+      type: "set-group-presence",
+      roomId: "group-room",
+      present: false,
+    }),
+  );
+  await left;
+});
+
 function expectNoMessage(socket, duration = 75) {
   return new Promise((resolve, reject) => {
     const onMessage = (data) => {

@@ -21,7 +21,9 @@ import {
   HiddenTilesMenu,
   SelfViewButton,
 } from "./call-tile-controls";
-import { useCallAudio, useScreenAudio } from "./call-media";
+import { useCallAudio, useScreenAudio, useSoundboardAudio } from "./call-media";
+import { SoundboardButton, useSoundboard } from "./soundboard";
+import { sharedAudioCapture, preferSharedAudio } from "./shared-audio";
 import { StreamVolume } from "./stream-volume";
 import {
   CameraResolutionSelection,
@@ -53,6 +55,18 @@ import { PersonalMessages } from "./personal-messages";
 import { AccountDeletion } from "./account-deletion";
 import { SettingsMembers } from "./settings-members";
 import { SettingsNavigation } from "./settings-navigation";
+import { SoundManager } from "./sound-manager";
+import { useWorkspaceActivity } from "./use-workspace-activity";
+import { serverVoiceUsers } from "./workspace-activity";
+import { ServerNavButton } from "./server-nav-button";
+import {
+  friendCallRoom,
+  isFriendCall,
+  conversationHasCall,
+  incomingCallMatches,
+  type IncomingCall,
+} from "./call-context";
+import { IncomingCallNotice } from "./incoming-call-notice";
 import {
   StreamInfo,
   fullscreenVideoTile,
@@ -130,7 +144,13 @@ type Friend = {
   } | null;
 };
 type ChannelType = "text" | "voice_direct" | "voice_group";
-type Channel = { id: string; name: string; type: ChannelType };
+type Channel = {
+  id: string;
+  name: string;
+  type: ChannelType;
+  serverId?: string;
+  serverName?: string;
+};
 type Member = {
   id: string;
   name: string;
@@ -178,6 +198,8 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  authorId?: string;
+  createdAt?: string;
   channelId?: string;
   type: string;
   serverId?: string;
@@ -249,6 +271,8 @@ export default function Home() {
   const remoteAudio = useCallAudio();
   const remoteScreenAudio = useScreenAudio();
   const screenAudioSender = useRef<RTCRtpSender | null>(null);
+  const soundboardSender = useRef<RTCRtpSender | null>(null);
+  const remoteSoundboardAudio = useSoundboardAudio();
   const stopScreenAudioSlot = useRef<(() => void) | null>(null);
   const remoteSharing = useRef(false);
   const [streamVolume, setStreamVolume] = useState(100);
@@ -285,15 +309,12 @@ export default function Home() {
   const [directHistoryLoaded, setDirectHistoryLoaded] = useState("");
   const directHistoryGeneration = useRef(0);
   const [channelHistoryLoaded, setChannelHistoryLoaded] = useState("");
+  const [readableHistoryChannel, setReadableHistoryChannel] = useState("");
   const channelHistoryGeneration = useRef(0);
   const [unreadDirectMessages, setUnreadDirectMessages] = useState<
     Record<string, number>
   >({});
-  const [incomingCall, setIncomingCall] = useState<{
-    fromUserId: string;
-    fromName: string;
-    roomId: string;
-  } | null>(null);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [callPeerPresent, setCallPeerPresent] = useState(false);
   const [signalingRefreshKey, setSignalingRefreshKey] = useState(0);
   const [serversLoaded, setServersLoaded] = useState(false);
@@ -305,6 +326,7 @@ export default function Home() {
   const [members, setMembers] = useState<Member[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
   const [userStatus, setUserStatus] = useState<UserStatus>(readUserStatus);
+  const notificationsEnabled = userStatus !== "dnd";
   const [userStatuses, setUserStatuses] = useState<Record<string, UserStatus>>(
     {},
   );
@@ -376,6 +398,7 @@ export default function Home() {
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [messageMenu, setMessageMenu] = useState<{
     message: ChatMessage;
+    conversationUserId?: string;
     x: number;
     y: number;
   } | null>(null);
@@ -447,6 +470,18 @@ export default function Home() {
   const [voiceJoinKey, setVoiceJoinKey] = useState(0);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
+  const directSoundSpeaking = useRef(false);
+  const directMicSpeaking = useRef(false);
+  const soundboard = useSoundboard(activeVoiceChannelId, {
+    outputVolume,
+    outputId,
+    deafened,
+    onSpeakingChange: (speaking) => {
+      directSoundSpeaking.current = speaking;
+      updateDirectSpeaking();
+    },
+  });
+  const soundPlayerRef = soundboard.player;
   const activeVoiceChannelRef = useRef("");
   activeVoiceChannelRef.current = activeVoiceChannelId;
   const [connectedGroupChannelId, setConnectedGroupChannelId] = useState("");
@@ -533,6 +568,32 @@ export default function Home() {
   const stopSpeechMonitor = useRef<(() => void) | null>(null);
   const stopRemoteSpeechMonitor = useRef<(() => void) | null>(null);
   const stopDirectStats = useRef<(() => void) | null>(null);
+  const workspaceActivity = useWorkspaceActivity(
+    authStatus === "authenticated" ? session?.user.id : undefined,
+    servers
+      .map((server) => server.id)
+      .sort()
+      .join(","),
+    !friendsView &&
+      !callViewOpen &&
+      !accountMenuOpen &&
+      !serverSettingsOpen &&
+      !legalDocument &&
+      channelHistoryLoaded === selectedChannelId &&
+      readableHistoryChannel === selectedChannelId
+      ? selectedChannelId
+      : "",
+  );
+  const workspaceActivityRef = useRef(workspaceActivity);
+  useEffect(() => {
+    workspaceActivityRef.current = workspaceActivity;
+  });
+  const unreadServerIds = new Set(
+    workspaceActivity.channels
+      .filter(() => notificationsEnabled)
+      .filter((channel) => workspaceActivity.unread[channel.id])
+      .map((channel) => channel.serverId),
+  );
 
   useEffect(() => {
     if (localVideo.current)
@@ -559,6 +620,24 @@ export default function Home() {
       );
     return () => setMicrophoneDeafened(false);
   }, [deafened, outputVolume, outputId, remoteAudio]);
+  useEffect(() => {
+    if (remoteSoundboardAudio.current)
+      void applyCallOutput(
+        remoteSoundboardAudio.current,
+        (outputVolume * soundboard.volume) / 100,
+        deafened || soundboard.muted,
+        outputId,
+      ).catch(() =>
+        setErrorMessage("The selected audio output could not be opened."),
+      );
+  }, [
+    remoteSoundboardAudio,
+    outputVolume,
+    soundboard.volume,
+    soundboard.muted,
+    deafened,
+    outputId,
+  ]);
   useEffect(() => {
     if (remoteScreenAudio.current)
       void applyCallOutput(
@@ -719,14 +798,19 @@ export default function Home() {
     (total, count) => total + count,
     0,
   );
-  const notificationCount = incomingFriendRequestCount + unreadMessageCount;
+  const notificationCount = notificationsEnabled
+    ? incomingFriendRequestCount + unreadMessageCount
+    : 0;
 
   useEffect(() => {
-    document.title = unreadMessageCount ? `(${unreadMessageCount}) LC` : "LC";
+    document.title =
+      notificationsEnabled && unreadMessageCount
+        ? `(${unreadMessageCount}) LC`
+        : "LC";
     return () => {
       document.title = "LC";
     };
-  }, [unreadMessageCount]);
+  }, [unreadMessageCount, notificationsEnabled]);
 
   useEffect(() => {
     if (!noticeMessage) return;
@@ -742,16 +826,17 @@ export default function Home() {
 
   useEffect(() => {
     if (!incomingCall) return;
-    prepareVoiceSounds();
-    if (userStatus !== "dnd") playVoiceSound("ring");
-    const interval =
-      userStatus !== "dnd"
-        ? window.setInterval(() => playVoiceSound("ring"), 1600)
-        : undefined;
     const timeout = window.setTimeout(() => setIncomingCall(null), 20_000);
+    return () => window.clearTimeout(timeout);
+  }, [incomingCall]);
+
+  useEffect(() => {
+    if (!incomingCall || userStatus === "dnd") return;
+    prepareVoiceSounds();
+    playVoiceSound("ring");
+    const interval = window.setInterval(() => playVoiceSound("ring"), 1600);
     return () => {
       window.clearInterval(interval);
-      window.clearTimeout(timeout);
     };
   }, [incomingCall, userStatus]);
 
@@ -839,7 +924,6 @@ export default function Home() {
   }
 
   function openFriendsHome() {
-    setSelectedFriend(null);
     setCallViewOpen(false);
     setFriendsView(true);
   }
@@ -929,7 +1013,7 @@ export default function Home() {
     }
     friendCallPartnerId.current = friend.id;
     selectVoiceChannel({
-      id: `friend:${[session!.user.id, friend.id].sort().join(":")}`,
+      id: friendCallRoom(session!.user.id, friend.id),
       name: friend.name,
       type: "voice_direct",
     });
@@ -1252,6 +1336,7 @@ export default function Home() {
     void Promise.resolve().then(() => {
       if (generation !== channelHistoryGeneration.current) return;
       setChannelHistoryLoaded("");
+      setReadableHistoryChannel("");
       setMessages([]);
       setNextMessageCursor(null);
       setLoadingMoreMessages(false);
@@ -1269,6 +1354,7 @@ export default function Home() {
         );
         setNextMessageCursor(page.nextCursor);
         setChannelHistoryLoaded(selectedChannelId);
+        setReadableHistoryChannel(selectedChannelId);
       })
       .catch((error) => {
         if (generation === channelHistoryGeneration.current) {
@@ -1404,14 +1490,17 @@ export default function Home() {
       textSocket.current?.close();
       connection.current?.close();
       stopScreenAudioSlot.current?.();
+      soundPlayerRef.current?.stop();
       remoteAudio.current?.pause();
       if (remoteAudio.current) remoteAudio.current.srcObject = null;
       if (remoteScreenAudio.current) remoteScreenAudio.current.srcObject = null;
+      if (remoteSoundboardAudio.current)
+        remoteSoundboardAudio.current.srcObject = null;
       screenStream.current?.getTracks().forEach((track) => track.stop());
       stream.current?.getTracks().forEach((track) => track.stop());
       microphoneCapture.current?.stop();
     },
-    [remoteAudio, remoteScreenAudio],
+    [remoteAudio, remoteScreenAudio, remoteSoundboardAudio, soundPlayerRef],
   );
 
   useEffect(() => {
@@ -1423,6 +1512,8 @@ export default function Home() {
       },
       onOpen: (openedSocket) => {
         openedSocket.send(JSON.stringify({ type: "get-user-status" }));
+        openedSocket.send(JSON.stringify({ type: "subscribe-workspace" }));
+        void workspaceActivityRef.current.refresh();
         openedSocket.send(JSON.stringify({ type: "subscribe-user-presence" }));
         openedSocket.send(
           JSON.stringify({
@@ -1445,6 +1536,7 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        workspaceActivityRef.current.handle(message);
         if (message.type === "user-status" && isUserStatus(message.status)) {
           localStorage.setItem("lc.userStatus", message.status);
           setUserStatus(message.status);
@@ -1467,6 +1559,8 @@ export default function Home() {
           return;
         }
         if (message.type === "server-updated" && message.serverId) {
+          invalidateSignalingToken();
+          setSignalingRefreshKey((current) => current + 1);
           void Promise.all([
             fetch("/api/servers").then((response) => response.json()),
             fetch(`/api/servers/${message.serverId}/channels`).then(
@@ -1573,7 +1667,7 @@ export default function Home() {
           message.fromUserId &&
           message.fromName &&
           message.roomId &&
-          !directRoomId.current
+          !isFriendCall(directRoomId.current)
         ) {
           setIncomingCall({
             fromUserId: message.fromUserId,
@@ -1584,12 +1678,16 @@ export default function Home() {
         if (
           message.type === "call-decline" &&
           message.fromName &&
-          directRoomId.current
+          isFriendCall(directRoomId.current) &&
+          message.roomId === directRoomId.current
         ) {
           recordCallOutcomeRef.current("call-declined");
           closeCallViewRef.current();
         }
-        if (message.type === "call-cancel") setIncomingCall(null);
+        if (message.type === "call-cancel")
+          setIncomingCall((current) =>
+            incomingCallMatches(current, message) ? null : current,
+          );
       },
       // Presence reconnects automatically; a brief interruption does not need
       // a user-facing error because the participant list repairs itself.
@@ -1645,7 +1743,11 @@ export default function Home() {
       socket.current.send(
         JSON.stringify(
           signal.type === "media-state"
-            ? { ...signal, deafened: deafenedRef.current }
+            ? {
+                ...signal,
+                speaking: signal.speaking || directSoundSpeaking.current,
+                deafened: deafenedRef.current,
+              }
             : signal,
         ),
       );
@@ -1664,6 +1766,8 @@ export default function Home() {
       if (audio.srcObject) await audio.play();
       if (remoteScreenAudio.current?.srcObject)
         await remoteScreenAudio.current.play();
+      if (remoteSoundboardAudio.current?.srcObject)
+        await remoteSoundboardAudio.current.play();
       setAudioPlaybackBlocked(false);
     } catch {
       setAudioPlaybackBlocked(true);
@@ -1675,15 +1779,21 @@ export default function Home() {
     const audioTrack = stream.current?.getAudioTracks()[0];
     if (!audioTrack) return;
     stopSpeechMonitor.current = monitorVoiceActivity(audioTrack, (speaking) => {
-      setDirectLocalSpeaking(speaking);
-      setDirectParticipantSpeaking(session?.user.id, speaking);
-      send({
-        type: "media-state",
-        muted: !audioTrack.enabled,
-        camera: Boolean(stream.current?.getVideoTracks()[0]?.enabled),
-        screen: screenSharing,
-        speaking,
-      });
+      directMicSpeaking.current = speaking;
+      updateDirectSpeaking();
+    });
+  }
+
+  function updateDirectSpeaking() {
+    const speaking = directMicSpeaking.current || directSoundSpeaking.current;
+    setDirectLocalSpeaking(speaking);
+    setDirectParticipantSpeaking(session?.user.id, speaking);
+    send({
+      type: "media-state",
+      muted: effectiveMutedRef.current,
+      camera: Boolean(stream.current?.getVideoTracks()[0]?.enabled),
+      screen: screenSharing,
+      speaking,
     });
   }
 
@@ -1750,9 +1860,13 @@ export default function Home() {
       screenStream.current,
       audioContext,
     );
+    soundPlayerRef.current?.stop();
+    const soundTransceiver = reserveScreenAudio(peer, null, audioContext);
+    soundboardSender.current = soundTransceiver.sender;
     stopScreenAudioSlot.current = () => {
       silentMicrophone?.stop();
       screenTransceiver.stop();
+      soundTransceiver.stop();
     };
     screenAudioSender.current = screenTransceiver.sender;
 
@@ -1770,6 +1884,14 @@ export default function Home() {
     peer.ontrack = (event) => {
       if (connection.current !== peer) return;
       if (event.track.kind === "audio") {
+        if (event.transceiver === soundTransceiver.transceiver) {
+          const audio = remoteSoundboardAudio.current;
+          if (audio) {
+            audio.srcObject = new MediaStream([event.track]);
+            void audio.play().catch(() => setAudioPlaybackBlocked(true));
+          }
+          return;
+        }
         if (event.transceiver === screenTransceiver.transceiver) {
           const audio = remoteScreenAudio.current;
           if (audio) {
@@ -1928,6 +2050,10 @@ export default function Home() {
     if (message.type === "peer-left" || message.type === "hangup") {
       playVoiceSound("leave");
       if (!directRoomId.current.startsWith("friend:")) {
+        soundPlayerRef.current?.stop();
+        soundboardSender.current = null;
+        if (remoteSoundboardAudio.current)
+          remoteSoundboardAudio.current.srcObject = null;
         peerGeneration.current += 1;
         creatingConnection.current = null;
         connection.current?.close();
@@ -2081,6 +2207,7 @@ export default function Home() {
         .find(
           (candidate) =>
             candidate !== screenAudioSender.current &&
+            candidate !== soundboardSender.current &&
             candidate.track?.kind === "audio",
         );
       if (sender) {
@@ -2316,6 +2443,13 @@ export default function Home() {
   }
 
   function leaveRoom() {
+    directMicSpeaking.current = false;
+    soundPlayerRef.current?.stop();
+    soundboard.preview.current?.stop();
+    soundboard.setOpen(false);
+    soundboardSender.current = null;
+    if (remoteSoundboardAudio.current)
+      remoteSoundboardAudio.current.srcObject = null;
     stopScreenAudioSlot.current?.();
     stopScreenAudioSlot.current = null;
     screenAudioSender.current = null;
@@ -2384,12 +2518,15 @@ export default function Home() {
     if (deafened) return;
     const track = stream.current?.getAudioTracks()[0];
     if (!track) {
-      setMuted((current) => !current);
+      const nextMuted = !microphoneMuted;
+      setMuted(nextMuted);
+      playVoiceSound(nextMuted ? "mute" : "unmute");
       return;
     }
     if (track) {
       track.enabled = !track.enabled;
       setMuted(!track.enabled);
+      playVoiceSound(track.enabled ? "unmute" : "mute");
       send({
         type: "media-state",
         muted: !track.enabled,
@@ -2425,6 +2562,7 @@ export default function Home() {
       screen: screenSharing,
       speaking: false,
     });
+    playVoiceSound(next ? "deafen" : "undeafen");
   }
 
   async function toggleVideo() {
@@ -2432,6 +2570,7 @@ export default function Home() {
     if (track) {
       track.enabled = !track.enabled;
       setCameraOff(!track.enabled);
+      playVoiceSound(track.enabled ? "camera-on" : "camera-off");
       send({ type: "camera-state", enabled: track.enabled });
       send({
         type: "media-state",
@@ -2467,6 +2606,7 @@ export default function Home() {
         await createOffer();
       }
       setCameraOff(false);
+      playVoiceSound("camera-on");
       send({ type: "camera-state", enabled: true });
       send({
         type: "media-state",
@@ -2528,7 +2668,7 @@ export default function Home() {
           height: { ideal: quality.height, max: quality.height },
           frameRate: { ideal: 30, max: 30 },
         },
-        audio: true,
+        audio: sharedAudioCapture,
       });
       if (generation !== peerGeneration.current) {
         display.getTracks().forEach((track) => track.stop());
@@ -2542,6 +2682,10 @@ export default function Home() {
         await screenAudioSender.current.replaceTrack(
           display.getAudioTracks()[0] ?? null,
         );
+      if (display.getAudioTracks()[0])
+        display.getAudioTracks()[0].contentHint = "music";
+      if (screenAudioSender.current)
+        await preferSharedAudio(screenAudioSender.current);
       screenTrack.addEventListener("ended", () => void stopScreenShare(), {
         once: true,
       });
@@ -3155,7 +3299,17 @@ export default function Home() {
     prepareVoiceSounds();
     leaveRoom();
     setActiveVoiceChannelId(channel.id);
-    setActiveVoiceChannelSnapshot(channel);
+    setActiveVoiceChannelSnapshot({
+      ...channel,
+      serverId: channel.id.startsWith("friend:")
+        ? undefined
+        : (channel.serverId ?? selectedServerId),
+      serverName: channel.id.startsWith("friend:")
+        ? undefined
+        : servers.find(
+            (server) => server.id === (channel.serverId ?? selectedServerId),
+          )?.name,
+    });
     setCallViewOpen(false);
     setVoiceJoinTarget(channel.id);
     setVoiceJoinKey((current) => current + 1);
@@ -3179,6 +3333,12 @@ export default function Home() {
     (member) => !onlineUserIds.includes(member.id),
   );
   const activeVoiceChannel = activeVoiceChannelSnapshot;
+  const conversationCallActive = conversationHasCall(
+    activeVoiceChannel?.id,
+    session?.user.id,
+    selectedFriend?.id,
+  );
+  const showFriendsCallMedia = conversationCallActive || callViewOpen;
   const selectedChannel = channels.find(
     (channel) => channel.id === selectedChannelId,
   );
@@ -3273,19 +3433,18 @@ export default function Home() {
     });
   };
 
-  const incomingCallOverlay = incomingCall && (
-    <div className="incomingCall" role="dialog" aria-live="assertive">
-      <div>
-        <small>Incoming call</small>
-        <strong>{incomingCall.fromName}</strong>
-      </div>
-      <button type="button" className="danger" onClick={declineIncomingCall}>
-        Decline
-      </button>
-      <button type="button" className="primary" onClick={answerIncomingCall}>
-        Answer
-      </button>
-    </div>
+  const incomingCallOverlay = (
+    <IncomingCallNotice
+      call={incomingCall}
+      status={userStatus}
+      conversationUserId={
+        friendsView && (!callViewOpen || conversationCallActive)
+          ? selectedFriend?.id
+          : undefined
+      }
+      onAnswer={answerIncomingCall}
+      onDecline={declineIncomingCall}
+    />
   );
 
   const voiceReady = Boolean(
@@ -3963,6 +4122,13 @@ export default function Home() {
                 />
               </>
             )}
+            {serverSettingsSection === "soundboard" && (
+              <SoundManager
+                key={selectedServerId}
+                serverId={selectedServerId}
+                output={{ outputVolume, outputId, deafened }}
+              />
+            )}
             {serverSettingsSection === "members" && (
               <SettingsMembers
                 members={members}
@@ -4202,10 +4368,32 @@ export default function Home() {
     </div>
   );
 
+  const directSoundboard = (
+    <SoundboardButton
+      board={soundboard}
+      serverId={activeVoiceChannel?.serverId}
+      serverName={activeVoiceChannel?.serverName}
+      disabled={!voiceReady}
+      publish={async (track) => {
+        const sender = soundboardSender.current;
+        if (!sender || !connection.current)
+          throw new Error("Call is not connected");
+        await sender.replaceTrack(track);
+        await preferSharedAudio(sender);
+        return () => {
+          if (sender.track === track)
+            void sender.replaceTrack(null).catch(() => {});
+        };
+      }}
+    />
+  );
+
   const groupCall = session && activeVoiceChannel?.type === "voice_group" && (
     <GroupCall
       key={`${activeVoiceChannel.id}-${voiceJoinKey}`}
       channelId={activeVoiceChannel.id}
+      serverId={activeVoiceChannel.serverId}
+      serverName={activeVoiceChannel.serverName}
       currentUserName={session.user.name ?? "You"}
       cameraResolution={cameraResolution}
       onCameraResolutionChange={(value) => void changeCameraResolution(value)}
@@ -4264,6 +4452,47 @@ export default function Home() {
     );
   }
 
+  const messageContextDropdown = messageMenu && (
+    <div
+      className="messageContextMenu"
+      ref={messageContextMenu}
+      role="menu"
+      style={{ left: messageMenu.x, top: messageMenu.y }}
+    >
+      {!messageMenu.conversationUserId && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            setReplyingTo(messageMenu.message);
+            setMessageMenu(null);
+          }}
+        >
+          Reply
+        </button>
+      )}
+      {messageMenu.message.authorId === session.user.id && (
+        <button
+          className="danger"
+          type="button"
+          role="menuitem"
+          onClick={() =>
+            requestMessageDeletion(
+              messageMenu.message.id,
+              messageMenu.message.text,
+              messageMenu.conversationUserId,
+              messageMenu.message.deleted,
+            )
+          }
+        >
+          {messageMenu.message.deleted
+            ? "Delete permanently"
+            : "Delete message"}
+        </button>
+      )}
+    </div>
+  );
+
   if (friendsView) {
     const acceptedFriends = friends.filter(
       (friend) => friend.status === "accepted",
@@ -4307,42 +4536,34 @@ export default function Home() {
             style={{ height: Math.max(0, servers.length * 60 - 6) }}
           >
             {servers.map((server) => (
-              <div
-                className="serverButtonWrap"
+              <ServerNavButton
                 key={server.id}
-                onPointerEnter={(event) =>
-                  event.currentTarget.style.setProperty(
-                    "--server-tooltip-top",
-                    `${event.currentTarget.getBoundingClientRect().top + 23}px`,
-                  )
-                }
-              >
-                <button
-                  className="workspaceButton"
-                  aria-label={server.name}
-                  title={server.name}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setServerContext({
-                      server,
-                      x: Math.min(event.clientX, window.innerWidth - 200),
-                      y: Math.min(event.clientY, window.innerHeight - 64),
-                    });
-                  }}
-                  onClick={() => {
-                    if (server.id === selectedServerId) {
-                      setFriendsView(false);
-                      return;
-                    }
-                    void switchServer(server.id).then(() =>
-                      setFriendsView(false),
-                    );
-                  }}
-                >
-                  {server.name[0]?.toUpperCase()}
-                </button>
-                <span className="serverTooltip">{server.name}</span>
-              </div>
+                server={server}
+                active={false}
+                unread={unreadServerIds.has(server.id)}
+                voiceUsers={serverVoiceUsers(
+                  server.id,
+                  workspaceActivity.channels,
+                  voicePresence,
+                )}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setServerContext({
+                    server,
+                    x: Math.min(event.clientX, window.innerWidth - 200),
+                    y: Math.min(event.clientY, window.innerHeight - 64),
+                  });
+                }}
+                onClick={() => {
+                  if (server.id === selectedServerId) {
+                    setFriendsView(false);
+                    return;
+                  }
+                  void switchServer(server.id).then(() =>
+                    setFriendsView(false),
+                  );
+                }}
+              />
             ))}
           </nav>
           {session.user.role !== "demo" && (
@@ -4377,7 +4598,10 @@ export default function Home() {
               className={`friendsHomeButton ${!selectedFriend ? "active" : ""}`}
               type="button"
               aria-current={!selectedFriend ? "page" : undefined}
-              onClick={openFriendsHome}
+              onClick={() => {
+                setSelectedFriend(null);
+                openFriendsHome();
+              }}
             >
               Friends
             </button>
@@ -4385,7 +4609,7 @@ export default function Home() {
           <nav>
             {recentFriends.map((friend) => (
               <button
-                className={`channel ${selectedFriend?.id === friend.id ? "active" : ""} ${(unreadDirectMessages[friend.id] ?? 0) > 0 ? "unread" : ""}`}
+                className={`channel ${selectedFriend?.id === friend.id ? "active" : ""} ${notificationsEnabled && (unreadDirectMessages[friend.id] ?? 0) > 0 ? "unread" : ""}`}
                 key={friend.id}
                 onClick={() => openFriend(friend)}
               >
@@ -4415,11 +4639,12 @@ export default function Home() {
                     {friend.lastMessage.text}
                   </small>
                 )}
-                {(unreadDirectMessages[friend.id] ?? 0) > 0 && (
-                  <span className="conversationUnreadBadge">
-                    {unreadDirectMessages[friend.id]}
-                  </span>
-                )}
+                {notificationsEnabled &&
+                  (unreadDirectMessages[friend.id] ?? 0) > 0 && (
+                    <span className="conversationUnreadBadge">
+                      {unreadDirectMessages[friend.id]}
+                    </span>
+                  )}
               </button>
             ))}
           </nav>
@@ -4592,10 +4817,18 @@ export default function Home() {
               )}
             </div>
           )}
-          {selectedFriend && (
+          {selectedFriend && (!callViewOpen || conversationCallActive) && (
             <section
-              className={`chat directMessages ${activeVoiceChannel?.type === "voice_direct" ? "callActive" : ""}`}
+              className={`chat directMessages ${conversationCallActive ? "callActive" : ""} ${incomingCall?.fromUserId === selectedFriend.id ? "hasIncomingCall" : ""}`}
             >
+              <IncomingCallNotice
+                call={incomingCall}
+                status={userStatus}
+                conversationUserId={selectedFriend.id}
+                inline
+                onAnswer={answerIncomingCall}
+                onDecline={declineIncomingCall}
+              />
               <ChatHistory
                 key={selectedFriend.id}
                 threadId={selectedFriend.id}
@@ -4618,6 +4851,25 @@ export default function Home() {
                     className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.kind === "call" ? "callHistory" : ""} ${message.deleted ? "deletedMessage" : ""}`}
                     key={message.id}
                     data-message-id={message.id}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      if (message.authorId !== session.user.id) {
+                        setMessageMenu(null);
+                        return;
+                      }
+                      setMessageMenu({
+                        message,
+                        conversationUserId: selectedFriend.id,
+                        x: Math.max(
+                          0,
+                          Math.min(event.clientX, window.innerWidth - 190),
+                        ),
+                        y: Math.max(
+                          0,
+                          Math.min(event.clientY, window.innerHeight - 110),
+                        ),
+                      });
+                    }}
                   >
                     {message.kind === "call" && !message.deleted ? (
                       <p>
@@ -4644,32 +4896,6 @@ export default function Home() {
                         <p>{message.text}</p>
                       </>
                     )}
-                    {message.authorId === session.user.id && (
-                      <button
-                        type="button"
-                        className="directMessageDelete"
-                        aria-label={
-                          message.deleted
-                            ? "Delete permanently"
-                            : "Delete message"
-                        }
-                        title={
-                          message.deleted
-                            ? "Delete permanently"
-                            : "Delete message"
-                        }
-                        onClick={() =>
-                          requestMessageDeletion(
-                            message.id,
-                            message.text,
-                            selectedFriend.id,
-                            message.deleted,
-                          )
-                        }
-                      >
-                        {message.deleted ? "Remove" : "Delete"}
-                      </button>
-                    )}
                   </article>
                 ))}
               </ChatHistory>
@@ -4694,17 +4920,37 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void startFriendCall(selectedFriend)}
+                  data-chat-jump-target
+                  onClick={() =>
+                    conversationCallActive
+                      ? endFriendCall()
+                      : incomingCall?.fromUserId === selectedFriend.id
+                        ? answerIncomingCall()
+                        : void startFriendCall(selectedFriend)
+                  }
                 >
-                  Call
+                  {conversationCallActive
+                    ? "End call"
+                    : incomingCall?.fromUserId === selectedFriend.id
+                      ? "Answer"
+                      : "Call"}
                 </button>
               </form>
             </section>
           )}
           {activeVoiceChannel?.type === "voice_direct" && (
-            <section className="friendsCallPanel" aria-live="polite">
+            <section
+              className={`friendsCallPanel ${showFriendsCallMedia ? "" : "controlsOnly"}`}
+              aria-live="polite"
+            >
               <div className="friendsCallIdentity">
-                <small>{joined ? "Direct call" : "Calling"}</small>
+                <small>
+                  {isFriendCall(activeVoiceChannel.id)
+                    ? joined
+                      ? "Direct call"
+                      : "Calling"
+                    : "Server voice"}
+                </small>
                 <strong className={directRemoteSpeaking ? "speaking" : ""}>
                   {activeVoiceChannel.name}
                 </strong>
@@ -4828,13 +5074,7 @@ export default function Home() {
                 >
                   {screenSharing ? "Stop sharing" : "Share screen"}
                 </button>
-                <button
-                  className="soundboardPlaceholder"
-                  disabled
-                  title="Soundboard — coming soon"
-                >
-                  Soundboard
-                </button>
+                {directSoundboard}
               </div>
             </section>
           )}
@@ -4881,6 +5121,7 @@ export default function Home() {
             />
           )}
         {serverContextMenu}
+        {messageContextDropdown}
         {directDeletionDialog}
       </WorkspaceShell>
     );
@@ -4956,39 +5197,29 @@ export default function Home() {
           style={{ height: Math.max(0, servers.length * 60 - 6) }}
         >
           {servers.map((server) => (
-            <div
-              className="serverButtonWrap"
+            <ServerNavButton
               key={server.id}
-              onPointerEnter={(event) =>
-                event.currentTarget.style.setProperty(
-                  "--server-tooltip-top",
-                  `${event.currentTarget.getBoundingClientRect().top + 23}px`,
-                )
-              }
-            >
-              <button
-                className={`workspaceButton ${server.id === selectedServerId ? "active" : ""}`}
-                aria-label={server.name}
-                title={server.name}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setServerContext({
-                    server,
-                    x: Math.min(event.clientX, window.innerWidth - 200),
-                    y: Math.min(event.clientY, window.innerHeight - 64),
-                  });
-                }}
-                onClick={() => {
-                  if (server.id === selectedServerId) return;
+              server={server}
+              active={server.id === selectedServerId}
+              unread={unreadServerIds.has(server.id)}
+              voiceUsers={serverVoiceUsers(
+                server.id,
+                workspaceActivity.channels,
+                voicePresence,
+              )}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setServerContext({
+                  server,
+                  x: Math.min(event.clientX, window.innerWidth - 200),
+                  y: Math.min(event.clientY, window.innerHeight - 64),
+                });
+              }}
+              onClick={() => {
+                if (server.id !== selectedServerId)
                   void switchServer(server.id);
-                }}
-              >
-                {server.name[0]?.toUpperCase()}
-              </button>
-              <span className="serverTooltip" role="tooltip">
-                {server.name}
-              </span>
-            </div>
+              }}
+            />
           ))}
         </nav>
         {session.user.role !== "demo" && (
@@ -5090,7 +5321,18 @@ export default function Home() {
                     setSelectedChannelId(channel.id);
                   }}
                 >
-                  {channel.name}
+                  <span
+                    className={`channelName ${notificationsEnabled && workspaceActivity.unread[channel.id] ? "channelUnread" : ""}`}
+                  >
+                    {channel.name}
+                  </span>
+                  {notificationsEnabled &&
+                    workspaceActivity.unread[channel.id] && (
+                      <span
+                        className="channelUnreadDot"
+                        aria-label="Unread messages"
+                      />
+                    )}
                 </button>
               </div>
             ))}
@@ -5393,13 +5635,7 @@ export default function Home() {
               >
                 {screenSharing ? "Stop sharing" : "Share screen"}
               </button>
-              <button
-                className="soundboardPlaceholder"
-                disabled
-                title="Soundboard — coming soon"
-              >
-                Soundboard
-              </button>
+              {directSoundboard}
             </div>
             {mediaNotice && <p className="mediaNotice">{mediaNotice}</p>}
           </section>
@@ -5638,44 +5874,7 @@ export default function Home() {
           </button>
         </div>
       )}
-      {messageMenu && (
-        <div
-          className="messageContextMenu"
-          ref={messageContextMenu}
-          role="menu"
-          style={{ left: messageMenu.x, top: messageMenu.y }}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setReplyingTo(messageMenu.message);
-              setMessageMenu(null);
-            }}
-          >
-            Reply
-          </button>
-          {messageMenu.message.authorId === session.user.id && (
-            <button
-              className="danger"
-              type="button"
-              role="menuitem"
-              onClick={() =>
-                requestMessageDeletion(
-                  messageMenu.message.id,
-                  messageMenu.message.text,
-                  undefined,
-                  messageMenu.message.deleted,
-                )
-              }
-            >
-              {messageMenu.message.deleted
-                ? "Delete permanently"
-                : "Delete message"}
-            </button>
-          )}
-        </div>
-      )}
+      {messageContextDropdown}
       {deleteServerOpen && (
         <div className="modalBackdrop deletionConfirmationBackdrop">
           <section className="modalCard deletionConfirmationModal">

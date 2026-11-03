@@ -39,12 +39,800 @@ import { DeviceSelection } from "./device-selection.js";
 import { AudioDeviceOptions } from "./audio-device-options.js";
 import { UserStatusMenu } from "./user-status-menu.js";
 import { CallMediaProvider, useCallAudio } from "./call-media.js";
+import { SoundboardButton, useSoundboard } from "./soundboard.js";
+import { SoundManager } from "./sound-manager.js";
+import { ServerNavButton } from "./server-nav-button.js";
+import { useWorkspaceActivity } from "./use-workspace-activity.js";
+import { IncomingCallNotice } from "./incoming-call-notice.js";
+import { friendCallRoom, conversationHasCall } from "./call-context.js";
+import { soundWave } from "./soundboard-catalog.js";
+import { RemoteAudioTrack } from "livekit-client";
+import { applyRemoteAudioVolume } from "./remote-audio-volume.js";
 
 const h = React.createElement;
 const wait = () => new Promise((resolve) => setTimeout(resolve, 60));
 const check = (value, message) => {
   if (!value) throw new Error(message);
 };
+window.verifyCallContext = async () => {
+  const container = document.createElement("div");
+  container.className = "workspace";
+  container.style.cssText = "position:fixed;inset:0;z-index:80";
+  document.body.append(container);
+  const root = createRoot(container);
+  const callAudio = window.workspaceAudio.element;
+  let answers = 0,
+    declines = 0;
+  const call = {
+    fromUserId: "alice",
+    fromName: "Alice",
+    roomId: friendCallRoom("me", "alice"),
+  };
+  function Fixture({ status, selected, activeRoom }) {
+    const active = conversationHasCall(activeRoom, "me", selected);
+    return h(
+      React.Fragment,
+      null,
+      h(IncomingCallNotice, {
+        call,
+        status,
+        conversationUserId: selected,
+        onAnswer: () => answers++,
+        onDecline: () => declines++,
+      }),
+      h(
+        "section",
+        { className: `chat directMessages ${active ? "callActive" : ""}` },
+        h(IncomingCallNotice, {
+          call,
+          status,
+          conversationUserId: selected,
+          inline: true,
+          onAnswer: () => answers++,
+          onDecline: () => declines++,
+        }),
+      ),
+      h(
+        "section",
+        { className: `friendsCallPanel ${active ? "" : "controlsOnly"}` },
+        h("div", { className: "friendsCallIdentity" }, "Active call"),
+        h("div", { className: "videoGrid" }),
+        h("div", { className: "voiceDock" }, "Call controls"),
+      ),
+    );
+  }
+  const render = async (props) => {
+    root.render(h(Fixture, props));
+    await wait();
+  };
+  try {
+    await render({
+      status: "dnd",
+      selected: "bob",
+      activeRoom: "server-channel",
+    });
+    check(
+      !container.querySelector(".incomingCall"),
+      "DND must not display an incoming-call popup in another conversation",
+    );
+    check(
+      !container.querySelector(".callActive") &&
+        getComputedStyle(container.querySelector(".friendsCallIdentity"))
+          .display === "none",
+      "A server voice room must not appear as an active DM call",
+    );
+    check(
+      getComputedStyle(container.querySelector(".voiceDock")).display !==
+        "none",
+      "Server call controls must remain available in Friends",
+    );
+    await render({
+      status: "dnd",
+      selected: "alice",
+      activeRoom: "server-channel",
+    });
+    const inline = container.querySelector(".incomingCallInline");
+    check(
+      inline && !container.querySelector('[role="dialog"]'),
+      "The caller's DM must show an inline invitation while DND suppresses popups",
+    );
+    inline.querySelector(".primary").click();
+    inline.querySelector(".danger").click();
+    check(
+      answers === 1 && declines === 1,
+      "Inline Answer and Decline must remain usable",
+    );
+    await render({
+      status: "online",
+      selected: "bob",
+      activeRoom: friendCallRoom("me", "alice"),
+    });
+    check(
+      container.querySelector('[role="dialog"]') &&
+        !container.querySelector(".callActive"),
+      "A call with Alice must not activate Bob's DM",
+    );
+    await render({
+      status: "online",
+      selected: "alice",
+      activeRoom: friendCallRoom("me", "alice"),
+    });
+    check(
+      container.querySelector(".callActive") &&
+        !container.querySelector(".friendsCallPanel.controlsOnly"),
+      "Only the matching DM must show the active friend call",
+    );
+    check(
+      callAudio.isConnected &&
+        !callAudio.paused &&
+        window.workspaceAudio.element === callAudio,
+      "Call presentation changes must preserve persistent call audio",
+    );
+  } finally {
+    root.unmount();
+    container.remove();
+  }
+};
+window.mountServerTooltipTest = async () => {
+  const container = document.createElement("div");
+  container.className = "workspace serverListToggled";
+  container.style.cssText = "position:fixed;inset:0;z-index:100";
+  document.body.append(container);
+  const root = createRoot(container);
+  root.render(
+    h(
+      "aside",
+      { className: "workspaceRail" },
+      h(ServerNavButton, {
+        server: { id: "tooltip", name: "Tooltip server" },
+        voiceUsers: [],
+        onClick() {},
+        onContextMenu() {},
+      }),
+    ),
+  );
+  await wait();
+  const button = container.querySelector("button");
+  const rect = button.getBoundingClientRect();
+  window.readServerTooltipTest = () => ({
+    focused: document.activeElement === button,
+    opacity: getComputedStyle(container.querySelector('[role="tooltip"]'))
+      .opacity,
+  });
+  window.cleanupServerTooltipTest = () => {
+    root.unmount();
+    container.remove();
+  };
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+};
+window.verifyWorkspaceActivity = async () => {
+  const originalFetch = window.fetch;
+  const originalVisibility = Object.getOwnPropertyDescriptor(
+    document,
+    "visibilityState",
+  );
+  // Headless targets can be backgrounded independently of the simulated UI.
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value: "visible",
+  });
+  const userId = `activity-browser-${Math.random()}`;
+  const rows = [
+    {
+      id: "text",
+      serverId: "one",
+      type: "text",
+      latestMessageId: "old",
+      latestMessageAt: "2026-11-03T12:00:00Z",
+    },
+    {
+      id: "voice",
+      serverId: "one",
+      type: "voice_group",
+      latestMessageId: null,
+      latestMessageAt: null,
+    },
+    {
+      id: "other",
+      serverId: "two",
+      type: "text",
+      latestMessageId: null,
+      latestMessageAt: null,
+    },
+  ];
+  window.fetch = async (url) => {
+    check(
+      url === "/api/workspace-activity",
+      "Activity must use the authorized snapshot route",
+    );
+    return Response.json(rows);
+  };
+  const container = document.createElement("div");
+  container.className = `workspace ${innerWidth <= 650 ? "serverListToggled" : ""}`;
+  container.style.cssText = "position:fixed;inset:0;z-index:80";
+  document.body.append(container);
+  const root = createRoot(container);
+  let activity;
+  let updateVoiceUsers;
+  function ActivityFixture() {
+    const [selected, setSelected] = useState("");
+    const [voiceUsers, setVoiceUsers] = useState([
+      { userId: "person", name: "Grace" },
+    ]);
+    const current = useWorkspaceActivity(userId, "one,two", selected);
+    useEffect(() => {
+      activity = current;
+      updateVoiceUsers = setVoiceUsers;
+    }, [current]);
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "aside",
+        { className: "workspaceRail" },
+        h(
+          "nav",
+          { className: "serverScroller" },
+          ...["one", "two"].map((id) =>
+            h(ServerNavButton, {
+              key: id,
+              server: {
+                id,
+                name: id === "one" ? "First server" : "Other server",
+              },
+              unread: current.channels.some(
+                (channel) =>
+                  channel.serverId === id && current.unread[channel.id],
+              ),
+              voiceUsers: id === "one" ? voiceUsers : [],
+              onClick() {},
+              onContextMenu(event) {
+                event.preventDefault();
+              },
+            }),
+          ),
+        ),
+      ),
+      h(
+        "button",
+        {
+          className: "channel",
+          style: { position: "fixed", left: 120, top: 160 },
+          onClick: () => setSelected("text"),
+        },
+        "General",
+        current.unread.text &&
+          h("span", {
+            className: "channelUnreadDot",
+            "aria-label": "Unread messages",
+          }),
+      ),
+    );
+  }
+  try {
+    root.render(h(ActivityFixture));
+    await wait();
+    check(
+      !container.querySelector(".serverUnreadDot"),
+      "Existing history must not start unread on first visit",
+    );
+    activity.handle({
+      type: "channel-activity",
+      channelId: "text",
+      messageId: "new",
+      createdAt: "2026-11-03T12:01:00Z",
+      authorId: "other",
+    });
+    await wait();
+    check(
+      container.querySelectorAll(".serverUnreadDot").length === 1 &&
+        container.querySelector(".channelUnreadDot"),
+      "New activity must badge the server and channel",
+    );
+    const first = container.querySelector(".workspaceButton");
+    first.focus();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    const tooltip = container.querySelector('[role="tooltip"]');
+    check(
+      getComputedStyle(tooltip).opacity === "1" &&
+        tooltip.textContent.includes("Grace"),
+      "Keyboard focus must show voice participant names",
+    );
+    check(
+      tooltip.querySelector(".serverTooltipPerson").getBoundingClientRect()
+        .top > tooltip.querySelector("strong").getBoundingClientRect().top &&
+        container.querySelector(".serverVoiceBadge"),
+      "Voice badge and names below server title must be visible",
+    );
+    updateVoiceUsers([
+      { userId: "person", name: "Grace" },
+      { userId: "second", name: "Ada" },
+    ]);
+    await wait();
+    check(
+      container.querySelector(".serverVoiceBadge").textContent === "2" &&
+        tooltip.textContent.includes("Ada"),
+      "A live join updates the count and tooltip without server navigation",
+    );
+    updateVoiceUsers([]);
+    await wait();
+    check(
+      !container.querySelector(".serverVoiceBadge") &&
+        !tooltip.querySelector(".serverTooltipPerson"),
+      "The final departure clears the voice badge and tooltip occupants",
+    );
+    container.querySelector(".channel").click();
+    await wait();
+    check(
+      !container.querySelector(".serverUnreadDot") &&
+        !container.querySelector(".channelUnreadDot"),
+      "Reading the visible channel must clear its notifications",
+    );
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    activity.handle({
+      type: "channel-activity",
+      channelId: "text",
+      messageId: "hidden",
+      createdAt: "2026-11-03T12:02:00Z",
+      authorId: "other",
+    });
+    await wait();
+    check(
+      container.querySelector(".serverUnreadDot"),
+      "A hidden tab must retain unread activity in its selected channel",
+    );
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await wait();
+    check(
+      !container.querySelector(".serverUnreadDot"),
+      "Returning to the visible channel must clear unread activity",
+    );
+    check(
+      localStorage.getItem(`lc.channelReads.${userId}`).includes("hidden"),
+      "Read markers must persist per account",
+    );
+  } finally {
+    if (originalVisibility)
+      Object.defineProperty(document, "visibilityState", originalVisibility);
+    else delete document.visibilityState;
+    root.unmount();
+    container.remove();
+    window.fetch = originalFetch;
+    localStorage.removeItem(`lc.channelReads.${userId}`);
+  }
+};
+async function verifySoundboard() {
+  const originalFetch = window.fetch;
+  let publications = 0,
+    previewTrack,
+    publishedTrack;
+  const speaking = [];
+  const soundList = [
+    { id: "celebrate-v1", name: "Celebrate", serverId: "call-server" },
+    ...Array.from({ length: 7 }, (_, i) => ({
+      id: `clip-${i}`,
+      name: `Sound ${i + 2}`,
+      serverId: "call-server",
+    })),
+  ];
+  let uploads = 0,
+    removals = 0;
+  window.fetch = async (url, options = {}) => {
+    check(
+      String(url).startsWith("/api/servers/call-server/soundboard"),
+      "The board must use the active call's server",
+    );
+    if (String(url).includes("/soundboard/play?"))
+      return Response.json({ allowed: true });
+    if (options.method === "POST") {
+      check(
+        options.body instanceof File && options.body.size > 44,
+        "Custom uploads must send the chosen file",
+      );
+      uploads++;
+      const uploaded = {
+        id: "custom-test",
+        name: "Uploaded",
+        serverId: "call-server",
+        custom: true,
+      };
+      soundList.push(uploaded);
+      return Response.json({
+        id: "custom-test",
+        name: "Uploaded",
+        serverId: "call-server",
+        custom: true,
+      });
+    }
+    if (options.method === "DELETE") {
+      removals++;
+      soundList.splice(
+        soundList.findIndex((sound) => sound.id === "custom-test"),
+        1,
+      );
+      return Response.json({ id: "custom-test" });
+    }
+    return String(url).includes("?clip=")
+      ? new Response(soundWave("celebrate-v1"))
+      : Response.json({
+          canManage: true,
+          sounds: soundList,
+        });
+  };
+  const container = document.createElement("div");
+  container.className = "workspace";
+  container.style.setProperty("--sidebar-width", "360px");
+  document.body.append(container);
+  const root = createRoot(container);
+  const publish = async (track) => {
+    publications++;
+    publishedTrack = track;
+    return () => {};
+  };
+  function Board() {
+    const board = useSoundboard("call", {
+      onSpeakingChange: (value) => speaking.push(value),
+    });
+    return h(
+      "div",
+      { className: "controls voiceDock" },
+      h("button", null, "Camera"),
+      h("button", null, "Share screen"),
+      h(SoundboardButton, {
+        board,
+        serverId: "call-server",
+        serverName: "Call server",
+        disabled: false,
+        publish,
+      }),
+    );
+  }
+  try {
+    root.render(h(Board));
+    await wait();
+    const trigger = container.querySelector(".soundboardButton");
+    trigger.click();
+    await wait();
+    const panel = container.querySelector(".soundboardDropup");
+    check(
+      panel && !document.querySelector("dialog[open]"),
+      "Soundboard must be a dropup, not a modal",
+    );
+    const panelBounds = panel.getBoundingClientRect(),
+      dockBounds = container
+        .querySelector(".voiceDock")
+        .getBoundingClientRect();
+    check(
+      Math.abs(panelBounds.width - dockBounds.width) < 3 &&
+        panelBounds.bottom <= dockBounds.top,
+      "Dropup must match the call footer width and sit above its controls",
+    );
+    check(
+      !panel.textContent.includes("Stop my sound"),
+      "The stop control must be removed",
+    );
+    const grid = panel.querySelector(".soundboardClips");
+    const tiles = [...grid.querySelectorAll(".soundboardClip")].map((tile) =>
+      tile.getBoundingClientRect(),
+    );
+    check(
+      tiles[0].top === tiles[1].top && tiles[2].top > tiles[0].top,
+      "Soundboard must display two sounds per row",
+    );
+    check(
+      grid.clientHeight === 208 &&
+        grid.scrollHeight > grid.clientHeight &&
+        getComputedStyle(grid).overflowY === "auto",
+      "Exactly three sound rows must be visible with vertical scrolling",
+    );
+    check(
+      getComputedStyle(grid).scrollbarColor ===
+        getComputedStyle(document.body).scrollbarColor,
+      "Soundboard must inherit the app scrollbar style",
+    );
+    check(
+      getComputedStyle(panel.querySelector(".soundboardPlay")).textAlign ===
+        "center",
+      "Sound names must stay centered",
+    );
+    const search = panel.querySelector('[aria-label="Search sounds"]');
+    const inputValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set;
+    inputValue.call(search, "no such sound");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    check(
+      panel.querySelectorAll(".soundboardClip").length === 0 &&
+        panel.textContent.includes("No sounds match"),
+      "Search must filter the displayed sounds",
+    );
+    inputValue.call(search, "");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    const preview = panel.querySelector('[aria-label="Preview Celebrate"]');
+    check(
+      preview.querySelector("svg") &&
+        !panel.querySelector(".soundboardPlay svg"),
+      "Sounds must play from their centered name and use an icon Preview action",
+    );
+    const mute = panel
+      .querySelector(".soundboardVolume > button")
+      .getBoundingClientRect();
+    const icon = panel
+      .querySelector(".soundboardVolume svg")
+      .getBoundingClientRect();
+    check(
+      Math.abs(mute.left + mute.width / 2 - icon.left - icon.width / 2) < 1 &&
+        Math.abs(mute.top + mute.height / 2 - icon.top - icon.height / 2) < 1,
+      "The mute icon must be centered horizontally and vertically",
+    );
+    preview.focus();
+    const previewBounds = preview.getBoundingClientRect();
+    const previewIcon = preview.querySelector("svg").getBoundingClientRect();
+    check(
+      Math.abs(
+        previewBounds.left +
+          previewBounds.width / 2 -
+          previewIcon.left -
+          previewIcon.width / 2,
+      ) < 1 &&
+        Math.abs(
+          previewBounds.top +
+            previewBounds.height / 2 -
+            previewIcon.top -
+            previewIcon.height / 2,
+        ) < 1,
+      "Preview icon must be centered in its button",
+    );
+    const nameButton = panel.querySelector(".soundboardPlay");
+    const nameBounds = nameButton.getBoundingClientRect();
+    const nameRange = document.createRange();
+    nameRange.selectNodeContents(nameButton);
+    const textBounds = nameRange.getBoundingClientRect();
+    check(
+      Math.abs(
+        nameBounds.left +
+          nameBounds.width / 2 -
+          textBounds.left -
+          textBounds.width / 2,
+      ) < 1 &&
+        Math.abs(
+          nameBounds.top +
+            nameBounds.height / 2 -
+            textBounds.top -
+            textBounds.height / 2,
+        ) < 1,
+      "Sound name must be centered horizontally and vertically",
+    );
+    check(
+      getComputedStyle(preview.parentElement).opacity === "1",
+      "Clip actions must be available on keyboard focus",
+    );
+    preview.click();
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    check(
+      publications === 0 && !speaking.includes(true),
+      "Preview must stay local and must not announce speaking",
+    );
+    const previewAudio = document.querySelector(
+      '[data-lc-soundboard-local="preview"]',
+    );
+    previewTrack = previewAudio.srcObject?.getAudioTracks()[0];
+    check(
+      previewTrack?.readyState === "live",
+      "Preview must play through its local audio track",
+    );
+    panel.querySelector('[aria-label="Mute soundboard"]').click();
+    await wait();
+    check(previewAudio.muted, "Soundboard mute must also mute local previews");
+    panel.querySelector('[aria-label="Play Celebrate for everyone"]').click();
+    await wait();
+    const playButton = panel.querySelector(
+      '[aria-label="Play Celebrate for everyone"]',
+    );
+    check(
+      playButton.disabled && playButton.title === "One sound per second",
+      "Call playback must show a one-second cooldown",
+    );
+    playButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    check(
+      publications === 1 && speaking.includes(true),
+      "Published sound must light speaking while the microphone is unused",
+    );
+    check(
+      document.querySelector('[data-lc-soundboard-local="playback"]').muted,
+      "Mute must silence the sender's local playback without muting publication",
+    );
+    check(
+      !panel.querySelector('[aria-label^="Remove "]'),
+      "Removal must not appear on call tiles",
+    );
+    panel.querySelector(".soundboardAdd").click();
+    await wait();
+    const uploadDialog = document.querySelector(
+      "dialog.soundUploadModal[open]",
+    );
+    check(uploadDialog, "Adding a sound must open a separate modal");
+    const fileInput = uploadDialog.querySelector('[aria-label="Sound file"]');
+    const selection = new DataTransfer();
+    selection.items.add(
+      new File([soundWave("celebrate-v1")], "Uploaded.wav", {
+        type: "audio/wav",
+      }),
+    );
+    fileInput.files = selection.files;
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait();
+    uploadDialog.querySelector('button[type="submit"]').click();
+    await wait();
+    check(
+      uploads === 1 &&
+        panel.querySelector('[aria-label="Play Uploaded for everyone"]'),
+      "The upload dialog must add the returned custom sound",
+    );
+    const uploadedPreview = uploadDialog.querySelector("audio");
+    check(
+      uploadedPreview?.controls && uploadedPreview.src.startsWith("blob:"),
+      "Uploaded sounds must have local preview controls",
+    );
+    await uploadedPreview.play();
+    check(publications === 1, "Upload preview must not publish to the call");
+    uploadDialog.querySelector('.modalActions button[type="button"]').click();
+    await wait();
+    check(
+      uploadedPreview.paused && !uploadedPreview.getAttribute("src"),
+      "Closing the upload dialog must stop and release its preview",
+    );
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await wait();
+    check(
+      !container.querySelector(".soundboardDropup") &&
+        document.activeElement === trigger,
+      "Escape must close the dropup and restore trigger focus",
+    );
+    const managerHost = document.createElement("div");
+    document.body.append(managerHost);
+    const managerRoot = createRoot(managerHost);
+    const callAudio = document.querySelector(
+      '[data-lc-soundboard-local="playback"]',
+    );
+    try {
+      managerRoot.render(
+        h(
+          SettingsModal,
+          {
+            title: "Server settings",
+            onClose() {},
+            navigation: h(SettingsNavigation, {
+              account: false,
+              selected: "soundboard",
+              onSelect() {},
+            }),
+          },
+          h(SoundManager, { serverId: "call-server" }),
+        ),
+      );
+      await wait();
+      const manager = document.querySelector(".soundManager");
+      check(
+        manager &&
+          document.querySelector('.settingsNavigation [aria-current="page"]')
+            .textContent === "Soundboard",
+        "Server settings must expose a Soundboard section",
+      );
+      manager.querySelector('[aria-label="Preview Uploaded"]').click();
+      await wait();
+      const managedPreview = manager.querySelector("audio");
+      await managedPreview.play();
+      manager.querySelector('[aria-label="Remove Uploaded"]').click();
+      await wait();
+      check(
+        removals === 1 &&
+          !manager.querySelector('[aria-label="Remove Uploaded"]'),
+        "Settings must remove custom sounds",
+      );
+      check(
+        managedPreview.paused && !managedPreview.getAttribute("src"),
+        "Removing a sound must stop its management preview",
+      );
+      [...manager.querySelectorAll("button")]
+        .find((button) => button.textContent === "Add custom sound")
+        .click();
+      await wait();
+      const nested = document.querySelector("dialog.soundUploadModal[open]");
+      check(
+        nested && nested.querySelector('[aria-label="Sound file"]'),
+        "Settings must reuse the upload dialog",
+      );
+      nested.querySelector('.modalActions button[type="button"]').click();
+      await wait();
+      check(
+        !document.querySelector("dialog.soundUploadModal[open]") &&
+          document.querySelector("dialog.settingsWorkspace[open]"),
+        "Closing upload must preserve the settings modal",
+      );
+      check(
+        callAudio.isConnected &&
+          document.querySelector('[data-lc-soundboard-local="playback"]') ===
+            callAudio,
+        "Managing sounds must preserve the call's audio owner",
+      );
+    } finally {
+      managerRoot.unmount();
+      managerHost.remove();
+    }
+  } finally {
+    root.unmount();
+    container.remove();
+    window.fetch = originalFetch;
+  }
+  check(
+    previewTrack.readyState === "ended" &&
+      publishedTrack.readyState === "ended",
+    "Leaving must stop local and published sound tracks",
+  );
+}
+window.verifySoundboard = verifySoundboard;
+
+async function verifyLiveKitImmediateMute() {
+  const context = new AudioContext();
+  await context.resume();
+  const tone = context.createOscillator();
+  const destination = context.createMediaStreamDestination();
+  tone.connect(destination);
+  tone.start();
+  const track = new RemoteAudioTrack(
+    destination.stream.getAudioTracks()[0],
+    "test-audio",
+    {},
+    context,
+  );
+  const audio = document.createElement("audio");
+  document.body.append(audio);
+  try {
+    applyRemoteAudioVolume(track, 0);
+    track.attach(audio);
+    const analyser = context.createAnalyser();
+    track.setWebAudioPlugins([analyser]);
+    const values = new Float32Array(analyser.fftSize);
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    analyser.getFloatTimeDomainData(values);
+    check(
+      values.every((value) => Math.abs(value) < 0.0001),
+      "A newly attached muted LiveKit clip must be silent before its gain fade completes",
+    );
+    applyRemoteAudioVolume(track, 0.4);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    analyser.getFloatTimeDomainData(values);
+    check(
+      values.some((value) => Math.abs(value) > 0.01),
+      "Unmuting must restore audio on the same track",
+    );
+    applyRemoteAudioVolume(track, 0);
+    check(
+      !track.mediaStreamTrack.enabled,
+      "Muting an attached track must close the receiver gate immediately",
+    );
+  } finally {
+    track.detach(audio);
+    track.stop();
+    audio.remove();
+    tone.stop();
+    await context.close();
+  }
+}
 async function verifyMessageCooldown() {
   const container = document.createElement("div");
   document.body.append(container);
@@ -116,8 +904,12 @@ async function verifyScreenAudioTransport() {
   const context = new AudioContext();
   const microphone = context.createMediaStreamDestination();
   const shared = context.createMediaStreamDestination();
+  const soundboard = context.createMediaStreamDestination();
   const voiceTone = context.createOscillator();
   const streamTone = context.createOscillator();
+  const soundTone = context.createOscillator();
+  soundTone.connect(soundboard);
+  soundTone.start();
   voiceTone.connect(microphone);
   streamTone.connect(shared);
   voiceTone.start();
@@ -134,8 +926,10 @@ async function verifyScreenAudioTransport() {
     await context.resume();
     first.addTrack(microphone.stream.getAudioTracks()[0]);
     const outgoingScreen = reserveScreenAudio(first, null, context);
+    const outgoingSound = reserveScreenAudio(first, null, context);
     const silentMicrophone = reserveScreenAudio(second, null, context);
     const incomingScreen = reserveScreenAudio(second, null, context);
+    const incomingSound = reserveScreenAudio(second, null, context);
     let receivedScreen = null;
     second.ontrack = (event) => {
       if (event.transceiver === incomingScreen.transceiver)
@@ -146,6 +940,10 @@ async function verifyScreenAudioTransport() {
     await second.setLocalDescription(await second.createAnswer());
     await first.setRemoteDescription(second.localDescription);
     await outgoingScreen.sender.replaceTrack(shared.stream.getAudioTracks()[0]);
+    microphone.stream.getAudioTracks()[0].enabled = false;
+    await outgoingSound.sender.replaceTrack(
+      soundboard.stream.getAudioTracks()[0],
+    );
     let delivered = false;
     for (let attempt = 0; attempt < 30 && !delivered; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -162,8 +960,43 @@ async function verifyScreenAudioTransport() {
     check(
       second
         .getReceivers()
-        .filter((receiver) => receiver.track.kind === "audio").length === 2,
-      "Screen audio must remain separate from microphone audio",
+        .filter((receiver) => receiver.track.kind === "audio").length === 3,
+      "Soundboard, screen and microphone must have distinct audio tracks",
+    );
+    let soundDelivered = false;
+    const playback = document.createElement("audio");
+    playback.srcObject = new MediaStream([incomingSound.receiver.track]);
+    document.body.append(playback);
+    await playback.play();
+    const receivedSound = context.createMediaStreamSource(
+      new MediaStream([incomingSound.receiver.track]),
+    );
+    const analyser = context.createAnalyser();
+    const silentOutput = context.createGain();
+    silentOutput.gain.value = 0;
+    receivedSound.connect(analyser);
+    analyser.connect(silentOutput);
+    silentOutput.connect(context.destination);
+    const samples = new Float32Array(analyser.fftSize);
+    for (let attempt = 0; attempt < 30 && !soundDelivered; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      analyser.getFloatTimeDomainData(samples);
+      soundDelivered = samples.some((value) => Math.abs(value) > 0.001);
+    }
+    check(
+      soundDelivered,
+      "Soundboard must deliver audible audio while microphone is muted",
+    );
+    receivedSound.disconnect();
+    analyser.disconnect();
+    silentOutput.disconnect();
+    playback.pause();
+    playback.srcObject = null;
+    playback.remove();
+    await outgoingSound.sender.replaceTrack(null);
+    check(
+      outgoingScreen.sender.track === shared.stream.getAudioTracks()[0],
+      "Stopping soundboard must retain screen audio",
     );
     await outgoingScreen.sender.replaceTrack(null);
     check(
@@ -173,14 +1006,18 @@ async function verifyScreenAudioTransport() {
     outgoingScreen.stop();
     incomingScreen.stop();
     silentMicrophone.stop();
+    outgoingSound.stop();
+    incomingSound.stop();
   } finally {
     first.getSenders().forEach((sender) => sender.track?.stop());
     second.getSenders().forEach((sender) => sender.track?.stop());
     shared.stream.getTracks().forEach((track) => track.stop());
+    soundboard.stream.getTracks().forEach((track) => track.stop());
     first.close();
     second.close();
     voiceTone.stop();
     streamTone.stop();
+    soundTone.stop();
     await context.close();
   }
 }
@@ -287,6 +1124,8 @@ window.verifyVideoFullscreen = async () => {
   root.unmount();
   container.remove();
   await verifyScreenAudioTransport();
+  await verifyLiveKitImmediateMute();
+  await verifySoundboard();
   return {
     selectedTileOnly: true,
     fullResolution: true,
@@ -1914,6 +2753,7 @@ function HistoryFixture() {
       { onSubmit: (event) => event.preventDefault() },
       h("input", { "aria-label": "Message" }),
       h("button", { "data-chat-send": true, type: "submit" }, "Send"),
+      h("button", { "data-chat-jump-target": true, type: "button" }, "Call"),
     ),
   );
 }
@@ -1966,13 +2806,13 @@ window.verifyChatHistory = async () => {
     "Scrolling away from the latest message did not show the jump arrow",
   );
   const send = container
-    .querySelector("[data-chat-send]")
+    .querySelector("[data-chat-jump-target]")
     .getBoundingClientRect();
   const arrow = jump.getBoundingClientRect();
   check(
     arrow.bottom <= send.top &&
       Math.abs(arrow.left + arrow.width / 2 - send.left - send.width / 2) < 2,
-    "Jump arrow is not above the Send button",
+    "DM jump arrow is not above the Call button",
   );
   jump.click();
   if (matchMedia("(prefers-reduced-motion: reduce)").matches)

@@ -2,6 +2,20 @@
 
 let audioContext: AudioContext | null = null;
 
+const toneFrequencies = {
+  join: [440, 660],
+  leave: [550, 330],
+  ring: [660, 880],
+  share: [523, 659, 784],
+  "share-stop": [784, 659, 523],
+  mute: [520, 390],
+  unmute: [390, 520],
+  deafen: [390, 310, 230],
+  undeafen: [230, 310, 390],
+  "camera-on": [620, 830],
+  "camera-off": [830, 620],
+};
+
 function getAudioContext() {
   const AudioContextClass =
     window.AudioContext ??
@@ -18,24 +32,13 @@ export function prepareVoiceSounds() {
   if (context) void context.resume();
 }
 
-export function playVoiceSound(
-  type: "join" | "leave" | "ring" | "share" | "share-stop",
-) {
+export function playVoiceSound(type: keyof typeof toneFrequencies) {
   const context = getAudioContext();
   if (!context) return;
 
   void context.resume();
   const start = context.currentTime;
-  const frequencies =
-    type === "share-stop"
-      ? [784, 659, 523]
-      : type === "share"
-        ? [523, 659, 784]
-        : type === "join"
-          ? [440, 660]
-          : type === "ring"
-            ? [660, 880]
-            : [550, 330];
+  const frequencies = toneFrequencies[type];
 
   frequencies.forEach((frequency, index) => {
     const oscillator = context.createOscillator();

@@ -28,6 +28,7 @@ export function SettingsNavigation({
           items: [
             ["overview", "Overview"],
             ["channels", "Channels"],
+            ["soundboard", "Soundboard"],
           ],
         },
         { label: "People", items: [["members", "Members"]] },

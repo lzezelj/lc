@@ -1,10 +1,80 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import "dotenv/config";
 import pg from "pg";
 
 const { Client } = pg;
+
+test("custom sound migration enforces storage bounds and cascades without touching application data", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  const schema = `lc_sound_test_${randomUUID().replaceAll("-", "")}`;
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE SCHEMA "${schema}"`);
+    await client.query(`SET LOCAL search_path TO "${schema}"`);
+    await client.query("CREATE TABLE servers (id uuid PRIMARY KEY)");
+    const migration = await readFile(
+      new URL("../db/migrations/0011_server_sounds.sql", import.meta.url),
+      "utf8",
+    );
+    await client.query(migration);
+    const server = randomUUID();
+    await client.query("INSERT INTO servers (id) VALUES ($1)", [server]);
+    const audio = Buffer.alloc(44);
+    const insert = await client.query(
+      "INSERT INTO server_sounds (server_id, name, audio, duration_ms) VALUES ($1, 'Clip', $2, 600) RETURNING id, audio",
+      [server, audio],
+    );
+    assert.deepEqual(insert.rows[0].audio, audio);
+    await client.query(
+      await readFile(
+        new URL("../db/migrations/0012_sound_limits.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    await client.query(
+      "INSERT INTO server_sounds (server_id, name, audio, duration_ms) VALUES ($1, 'Ten seconds', $2, 10000)",
+      [server, Buffer.alloc(1920044)],
+    );
+    assert.equal(
+      (
+        await client.query(
+          "SELECT duration_ms FROM server_sounds WHERE id = $1",
+          [insert.rows[0].id],
+        )
+      ).rows[0].duration_ms,
+      600,
+      "The limit migration must preserve existing clips",
+    );
+    for (const [name, bytes, duration] of [
+      [" ", audio, 600],
+      ["Clip", Buffer.alloc(2097153), 600],
+      ["Clip", audio, 10001],
+    ]) {
+      await client.query("SAVEPOINT invalid_sound");
+      await assert.rejects(
+        client.query(
+          "INSERT INTO server_sounds (server_id, name, audio, duration_ms) VALUES ($1, $2, $3, $4)",
+          [server, name, bytes, duration],
+        ),
+        (error) => error.code === "23514",
+      );
+      await client.query("ROLLBACK TO SAVEPOINT invalid_sound");
+    }
+    await client.query("DELETE FROM servers WHERE id = $1", [server]);
+    assert.equal(
+      (await client.query("SELECT count(*)::int AS count FROM server_sounds"))
+        .rows[0].count,
+      0,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
 
 test("deleting a server cascades to its channels, memberships, and messages", async () => {
   assert.ok(process.env.DATABASE_URL, "DATABASE_URL must be configured");

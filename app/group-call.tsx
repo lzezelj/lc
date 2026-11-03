@@ -14,6 +14,9 @@ import {
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { StreamInfo, fullscreenVideoTile } from "./stream-info";
 import { StreamVolume } from "./stream-volume";
+import { SoundboardButton, useSoundboard } from "./soundboard";
+import { applyRemoteAudioVolume } from "./remote-audio-volume";
+import { sharedAudioCapture, sharedAudioPublish } from "./shared-audio";
 import {
   CameraResolutionSelection,
   cameraResolutions,
@@ -50,6 +53,7 @@ type RemoteMedia = {
   participantName: string;
   track: RemoteTrack;
   isScreen: boolean;
+  isSoundboard?: boolean;
 };
 
 type GroupCallDiagnostics = {
@@ -67,6 +71,8 @@ type GroupCallDiagnostics = {
 };
 
 type GroupCallProps = {
+  serverId?: string;
+  serverName?: string;
   cameraResolution?: CameraResolution;
   onCameraResolutionChange?: (resolution: CameraResolution) => void;
   currentUserId?: string;
@@ -140,7 +146,8 @@ function RemoteTrackView({
     const mediaElement = element.current;
     if (!mediaElement) return;
     if (media.track.kind === Track.Kind.Audio)
-      (media.track as import("livekit-client").RemoteAudioTrack).setVolume(
+      applyRemoteAudioVolume(
+        media.track as import("livekit-client").RemoteAudioTrack,
         volumeRef.current,
       );
     media.track.attach(mediaElement);
@@ -158,7 +165,8 @@ function RemoteTrackView({
 
   useEffect(() => {
     if (media.track.kind === Track.Kind.Audio)
-      (media.track as import("livekit-client").RemoteAudioTrack).setVolume(
+      applyRemoteAudioVolume(
+        media.track as import("livekit-client").RemoteAudioTrack,
         volume,
       );
   }, [media.track, volume]);
@@ -208,6 +216,8 @@ function RemoteTrackView({
 }
 
 export function GroupCall({
+  serverId,
+  serverName,
   cameraResolution = "720",
   onCameraResolutionChange,
   currentUserId,
@@ -229,12 +239,28 @@ export function GroupCall({
   onMicrophoneChange,
   onCameraChange,
   onConnectionChange,
-  onMediaStateChange,
+  onMediaStateChange: reportMediaState,
   onPingChange,
   onDiagnosticsChange,
   onLeave,
   onError,
 }: GroupCallProps) {
+  const soundboard = useSoundboard(channelId, {
+    outputVolume: outputVolume * 100,
+    outputId,
+    deafened,
+    onSpeakingChange: (speaking) => {
+      soundSpeaking.current = speaking;
+      if (roomRef.current)
+        onMediaStateChange({
+          muted: mutedRef.current,
+          camera: !cameraOffRef.current,
+          screen: screenSharing,
+          speaking: localSpeaking.current,
+        });
+    },
+  });
+  const soundPlayerRef = soundboard.player;
   const [joined, setJoined] = useState(false);
   const [joinAttempted, setJoinAttempted] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -278,6 +304,7 @@ export function GroupCall({
   const stopSpeakingMonitor = useRef<(() => void) | null>(null);
   const speakingReleaseTimer = useRef<number | null>(null);
   const localSpeaking = useRef(false);
+  const soundSpeaking = useRef(false);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const audioCallbacks = useRef({
     onError,
@@ -285,6 +312,14 @@ export function GroupCall({
     setMicrophoneEnabled,
     startSpeakingMonitor,
   });
+  function onMediaStateChange(
+    state: Parameters<GroupCallProps["onMediaStateChange"]>[0],
+  ) {
+    reportMediaState({
+      ...state,
+      speaking: state.speaking || soundSpeaking.current,
+    });
+  }
   useEffect(() => {
     deafenedRef.current = deafened;
     audioCallbacks.current = {
@@ -496,9 +531,11 @@ export function GroupCall({
   }
 
   function clearRoom() {
+    roomRef.current = null;
+    soundPlayerRef.current?.stop();
+    soundboard.preview.current?.stop();
     if (localVideo.current) localVideo.current.srcObject = null;
     if (localScreen.current) localScreen.current.srcObject = null;
-    roomRef.current = null;
     setRemoteMedia([]);
     setParticipants([]);
     setJoined(false);
@@ -537,7 +574,9 @@ export function GroupCall({
     const autoJoinTimer = autoJoin
       ? window.setTimeout(() => joinButton.current?.click(), 0)
       : undefined;
+    const soundPlayer = soundPlayerRef.current;
     return () => {
+      soundPlayer?.stop();
       joinGeneration.current += 1;
       if (autoJoinTimer !== undefined) window.clearTimeout(autoJoinTimer);
       const room = roomRef.current;
@@ -556,7 +595,7 @@ export function GroupCall({
         releaseRoom(room);
       }
     };
-  }, [channelId, autoJoin]);
+  }, [channelId, autoJoin, soundPlayerRef]);
 
   async function join() {
     if (joining || joined || roomRef.current) return;
@@ -632,6 +671,7 @@ export function GroupCall({
               participantId: participant.identity,
               participantName: participant.name || "Guest",
               track,
+              isSoundboard: publication.trackName === "lc-soundboard",
               isScreen:
                 publication.source === Track.Source.ScreenShare ||
                 publication.source === Track.Source.ScreenShareAudio,
@@ -778,6 +818,8 @@ export function GroupCall({
         if (roomRef.current !== room) return;
         await setMicrophoneEnabled(room, !mutedRef.current);
         if (roomRef.current !== room) return;
+        if (nextMuted === mutedRef.current)
+          playVoiceSound(nextMuted ? "mute" : "unmute");
         startSpeakingMonitor(room);
         onMediaStateChange({
           muted: mutedRef.current,
@@ -842,6 +884,7 @@ export function GroupCall({
         setFocusedVideo((current) => (current === "local" ? null : current));
       }
       setCameraOff((current) => !current);
+      playVoiceSound(cameraOff ? "camera-on" : "camera-off");
       cameraOffRef.current = !cameraOff;
       onMediaStateChange({
         muted,
@@ -868,10 +911,11 @@ export function GroupCall({
         resolution
           ? {
               resolution: screenShareResolutions[resolution],
-              audio: true,
+              audio: sharedAudioCapture,
               contentHint: "detail",
             }
           : undefined,
+        sharedAudioPublish,
       );
       if (roomRef.current !== room) {
         releaseRoom(room);
@@ -1135,7 +1179,11 @@ export function GroupCall({
                 : outputVolume *
                   (media.isScreen
                     ? (streamVolumes[media.participantId] ?? 100) / 100
-                    : 1)
+                    : media.isSoundboard
+                      ? soundboard.muted
+                        ? 0
+                        : soundboard.volume / 100
+                      : 1)
             }
             streamVolume={streamVolumes[media.participantId] ?? 100}
             onStreamVolumeChange={
@@ -1235,13 +1283,25 @@ export function GroupCall({
         >
           {screenSharing ? "Stop sharing" : "Share screen"}
         </button>
-        <button
-          className="soundboardPlaceholder"
-          disabled
-          title="Soundboard — coming soon"
-        >
-          Soundboard
-        </button>
+        <SoundboardButton
+          board={soundboard}
+          serverId={serverId}
+          serverName={serverName}
+          disabled={!joined || joining}
+          publish={async (track) => {
+            const room = roomRef.current;
+            if (!room || !joined) throw new Error("Call is not connected");
+            const local = new LocalAudioTrack(track);
+            await room.localParticipant.publishTrack(local, {
+              name: "lc-soundboard",
+              source: Track.Source.Unknown,
+              ...sharedAudioPublish,
+            });
+            return () => {
+              void room.localParticipant.unpublishTrack(local).catch(() => {});
+            };
+          }}
+        />
       </div>
       {screenShareOptionsOpen && joined && !joining && (
         <ScreenShareOptions

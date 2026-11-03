@@ -4,6 +4,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { applyCallOutput } from "../app/audio-output.ts";
+import { applyRemoteAudioVolume } from "../app/remote-audio-volume.ts";
 
 test("remote audio stays attached through callback-only rerenders", async () => {
   // Exercise the actual component with a minimal hook lifecycle host. No
@@ -56,6 +57,7 @@ test("remote audio stays attached through callback-only rerenders", async () => 
   let statsMonitors = 0;
   const track = (name) => ({
     kind: "audio",
+    mediaStreamTrack: { enabled: true },
     setVolume: (volume) => volumes.push(volume),
     attach: (target) => {
       assert.equal(target, element);
@@ -72,6 +74,7 @@ test("remote audio stays attached through callback-only rerenders", async () => 
     useEffect,
     React: { createElement: (type, props) => ({ type, props }) },
     Track: { Kind: { Audio: "audio", Video: "video" } },
+    applyRemoteAudioVolume,
     monitorTrackVideo: () => {
       statsMonitors++;
       return () => {};
@@ -97,6 +100,17 @@ test("remote audio stays attached through callback-only rerenders", async () => 
   assert.equal(volumes.at(-1), 0.35);
   render(first, false, 0);
   assert.equal(volumes.at(-1), 0, "deafen silences an existing LiveKit track");
+  assert.equal(
+    first.mediaStreamTrack.enabled,
+    false,
+    "zero gain also closes the immediate receiver gate",
+  );
+  render(first, false, 0.35);
+  assert.equal(
+    first.mediaStreamTrack.enabled,
+    true,
+    "unmuting restores the same receiver track",
+  );
   assert.deepEqual(
     events,
     ["attach first"],
