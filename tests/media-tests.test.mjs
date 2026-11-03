@@ -45,6 +45,14 @@ test("settings previews release captures on stop, device change, close, and late
   };
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
+    "./settings-reveal": { revealSettingsSection() {} },
+    "./camera-resolution": {
+      cameraCaptureConstraints: (deviceId) => ({
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      }),
+    },
     react: hooks,
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "./voice-activity": {

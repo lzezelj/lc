@@ -68,7 +68,34 @@ peer. For group calls, each browser publishes media to LiveKit and subscribes
 to tracks selected by LiveKit.
 
 Screen capture is requested only after a participant selects Share screen in a
-connected call. In direct calls it temporarily replaces that participant's
+connected call. A shared setup dialog offers 720p, 1080p (default), 1440p and 4K
+at 30 fps before the browser's source picker. Direct capture requests the chosen
+resolution, and its help tooltip explains that selecting 4K cannot add pixels
+to a lower-resolution source. Audio capture is requested alongside screen video;
+the browser picker and OS determine whether tab, window or system audio is
+available and enabled. Direct calls reserve a second audio transceiver for
+screen audio, separate from the microphone, and play it through a second stable
+audio element in CallMediaProvider. Silent placeholders added with addTrack keep
+the slots reusable while answering offers, including microphone permission
+fallback; replacing or stopping a screen track preserves the microphone slot.
+Group calls publish LiveKit ScreenShareAudio
+and distinguish that source from microphone audio. Each viewer has a per-stream
+volume/mute control at the bottom right, revealed on hover or keyboard focus;
+its gain multiplies the main output volume and Deafen silences both sources.
+Screen audio is audible only while its video is visible in the opened media
+panel: Watch focuses that stream, and opening the joined voice channel shows
+the grid. Closing the panel, hiding the tile or focusing a different video
+silences that screen without stopping voice audio or capture/publication.
+Local previews remain muted. Starting a share plays a short notification tone
+for the sharer and connected listeners; stopping sharing plays a descending tone.
+Participant camera and bordered Watch shortcuts
+open the media panel, reveal and focus that participant's matching tile.
+Direct calls expose the camera shortcut only while the outgoing video is a
+camera; while sharing, their single video sender carries the screen instead.
+Direct capture requests the chosen
+maximum dimensions; group calls pass the resolution to LiveKit. Actual quality
+depends on browser support, the source and available bandwidth. In direct calls
+screen sharing replaces the participant's
 outgoing camera track on the existing peer connection, then restores the camera
 when sharing ends; the authenticated signaling socket relays any required
 renegotiation and screen-presence state, but never the captured media. In group
@@ -92,7 +119,18 @@ Each call tile can be hidden locally and restored individually from Hidden
 windows. Hiding changes only rendering: media elements remain mounted, audio
 continues, and publishing/presence and other participants' views are unaffected.
 Tile visibility lasts for the call and uses separate camera/screen identifiers.
+The Hidden windows menu and Show/Hide yourself control are hidden while a single video is focused and return
+when the grid is restored.
+Video overlays show actual pixel dimensions without a duplicate height label,
+with transfer rate, FPS and ping below. Fullscreen targets the selected video
+tile, retaining its media element and audio connection. Names, grid controls and
+other overlays are hidden there; a small information button reveals stream
+identity, dimensions and available network statistics on hover or keyboard focus.
 
+The client keeps the camera resolution preference in browser storage (720p by default). Camera menus
+and Voice/video settings expose the same 480p–4K choice, requesting up to that
+size at 30 fps. Direct calls apply constraints to active capture; LiveKit
+restarts only the camera track. Camera previews use that same preference.
 Voice membership is independent from navigation. The client keeps the active
 direct peer connection or LiveKit room mounted while the user visits another
 server or text channel, and disconnects only when the user leaves or joins a
@@ -126,9 +164,20 @@ calls during the current app session. Direct capture disables the track before
 publishing; a muted group join keeps microphone capture off until unmuted.
 The headphones control deafens both call playback and microphone transmission,
 preserving the user's independent mute preference when undeafened. Deafen is
+included in authenticated voice-presence updates for direct and group channels,
+so participants see a headphones indicator alongside the muted microphone.
+The viewer's own row derives mute/deafen from local controls immediately,
+independently of signaling echo. The authorized LiveKit fallback snapshot
+includes user IDs so this also works before signaling arrives; fallback results
+cannot replace an authoritative channel snapshot already received by WebSocket.
+All four participant indicators share one bordered style and centered alignment.
+It is a local audio preference and does not deafen other participants. Deafen is
 session-local and also closes the shared microphone gain gate, including when
-capture finishes after the toggle. Group microphone updates are serialized and
-remote-track volume updates do not detach audio playback. Device choices are
+capture finishes after the toggle. Group microphone updates are serialized, and
+mute intent is committed before awaiting LiveKit; callback-only renders cannot
+restore an older mute value. The red microphone button, processed track enable
+state and published voice presence follow that same intent, including unmute.
+Remote-track volume updates do not detach audio playback. Device choices are
 grouped in dropdown sections, with saved input/output volume (0–100%) and output
 selection. Input volume scales the gated outgoing track without changing the
 voice threshold. Direct playback uses the persistent audio element's volume and
@@ -357,6 +406,14 @@ the user from the authenticated session and verify the relevant server or
 channel membership before reading or modifying data. Server creators receive a
 server-owner membership and may administer only those servers; the global owner
 retains demo-account administration.
+The server owner can transfer ownership to an existing active non-demo member
+through Members settings, with explicit confirmation. The transfer locks both
+accounts in stable order and the server, verifies the current owner's membership
+and ownership record, enforces the recipient's three-server limit (global owner
+exempt), and changes servers.createdBy plus both membership roles in one
+transaction. The former owner stays as a member. Global account roles are not
+changed, and calls are not disconnected. Server updates refresh role displays
+for connected clients. Concurrent member removal cannot delete a promoted owner.
 
 Users may inspect and delete messages authored by their own account. The owner
 may do the same only for demo accounts that the owner created. Ordinary message
@@ -465,6 +522,17 @@ the existing history reload. Deletions are rate limited per authenticated user.
 Both workspaces have controls to toggle the server rail, channel/conversation
 sidebar, and user/profile sidebar. These controls remain visible on desktop and
 mobile. The server cog sits to the right of the hide-channels control.
+Server owners have an Invite to server shortcut between these buttons, opening
+Invite friends settings. Invite friends lists accepted friends alphabetically
+with local search; Invite people follows it and requires at least three search
+characters before showing up to 20 matching active non-demo accounts not already
+in the server. Both actions require server ownership in the backend. The default
+membership POST mode retains the accepted-friend requirement; explicit people
+mode permits active non-friends. Demo assignments remain in demo management.
+These actions add existing accounts directly and do not create public invite links.
+In Friends, the sidebar
+control is labeled Show or hide messages and occupies the server-cog position.
+Empty friend tabs and message histories use explanatory placeholder cards.
 On narrow mobile screens the rail and user
 list start hidden while channels and chat remain visible; the channel sidebar
 can also be hidden to give chat the full width. The user list opens as a drawer
@@ -475,8 +543,35 @@ User and server settings open native modal dialogs above the workspace and call
 controls without replacing the workspace or disconnecting media. Each dialog
 has sidebar navigation and an independently scrolling content pane (horizontal
 navigation on small screens). Account, media setup, personal messages, server
-overview, channel creation and friend assignment render inside those panes,
-using the existing authenticated APIs. Personal message deletion confirms inline.
+overview, channel creation and friend assignment render inside those panes
+using authenticated APIs, with separate Invite friends and Invite people
+sections grouped together under Invitations, friends first. Server navigation
+also groups Server, People and Administration; user navigation groups Account,
+Communication, Privacy and Session. Opening camera or
+microphone previews and expanding settings details scrolls the dialog's content
+pane toward the newly opened section's top, clamped to the available scroll range;
+the workspace behind the modal does not scroll.
+Personal message deletion confirms inline.
+My messages lists searchable server and direct-message destinations, with the
+current server first. Selecting one opens a separate settings window containing
+only that account's sent messages, a content/channel search and confirmed
+permanent individual or bulk removal. The self-only message-history API scopes
+every read and deletion to the session author/sender and selected destination;
+it also includes soft-deleted placeholders for permanent removal. Existing chat
+history pagination remains independent. Channel creation precedes the searchable
+channel list; member management includes search and alternating row colors.
+
+Account deletion is a confirmed self-service operation requiring the literal
+DELETE and an explicit message-retention choice. A transaction locks the account,
+rejects accounts that still own servers, removes OAuth links, sessions,
+friendships and memberships, and clears profile identifiers while disabling the
+remaining anonymous user row. That row retains incoming messages and other
+users' foreign-key references. The optional erase choice permanently removes
+only messages sent/authored by this account, including DMs; other senders'
+messages survive. After commit, signaling and LiveKit connections are revoked,
+affected peers receive deletion/presence updates, and the client signs out.
+Existing JWTs fail the normal disabled-account check. This does not edit the
+deployment allowlist: a still-allowlisted person can later register a new account.
 The Channels section supports inline renaming and confirmed deletion as well as
 creation. Deletion verifies server ownership, scopes the SQL delete to that server,
 and cascades channel messages. An authenticated internal channel-deleted event
@@ -485,7 +580,7 @@ closes direct peers in that channel; group deletion also removes its LiveKit roo
 Clients clear only a matching active call and refresh the server's channel list.
 Stale 60-second signaling tokens are blocked for 65 seconds after deletion while
 the signaling service stays running. Media cleanup is best effort if a service
-is unavailable. Personal messages include server IDs and are grouped by server,
+is unavailable. The owner's demo-account message manager retains per-server groups,
 with the currently viewed server first and expanded. Other groups expand on demand.
 Each group offers confirmed deletion of that account's messages in its server.
 The account-message DELETE API accepts an optional server ID and restricts the

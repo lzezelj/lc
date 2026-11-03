@@ -10,6 +10,9 @@ servers; route and component tests use controlled dependencies.
 | `rate-limit.test.mjs` | Rate-limit windows and isolation |
 | `demo-extension.test.mjs`, `direct-message-deletion.test.mjs`, `server-leave.test.mjs` | Current API handlers, authorization, persistence calls, and notifications with mocked dependencies |
 | `friend-requests.test.mjs` | Profile requests by user ID, handle compatibility, authentication, demo restrictions, and invalid/duplicate requests |
+| `server-invites.test.mjs` | Owner-only invitation/search, active-account checks, friend-only default and explicit people mode |
+| `account-privacy.test.mjs` | Confirmed account deletion, ownership blockers, credential removal, retention choices and author/sender-scoped message deletion |
+| `server-ownership.test.mjs` | Confirmed owner-only transfer, membership/ownership consistency, active recipient and server-limit rules |
 | `channel-management.test.mjs` | Server-scoped channel deletion, ownership, rate limits, cleanup ordering, and message grouping by stable server ID |
 | `server-message-deletion.test.mjs` | Account authorization, per-server message deletion, invalid-filter rejection, all-server compatibility, and deletion broadcasts |
 | `workspace-location.test.mjs` | Reload restoration through the app's startup effects, server/channel/friend validation, fresh-visit defaults, and account-scoped storage |
@@ -32,6 +35,7 @@ npm.cmd run test:webrtc-browser
 npm.cmd run test:webrtc-browser -- --microphone
 npm.cmd run test:webrtc-browser -- --navigation
 npm.cmd run test:webrtc-browser -- --workspace-controls
+npm.cmd run test:webrtc-browser -- --workspace-controls --media-options-only
 ```
 
 - Default: real browser peer connections and generated audio over local ICE.
@@ -43,9 +47,15 @@ npm.cmd run test:webrtc-browser -- --workspace-controls
   and message actions, and hover behavior in a workspace fixture using app
   components and styles. Also checks chat's initial bottom position, older-page
   loading and anchor preservation, incoming-message scrolling, and thread changes.
+  Also covers selected-video fullscreen, stream volume controls, resolution help,
+  and separate screen-audio RTP delivery through real local peer connections,
+  including silent microphone fallback and stopping screen audio independently.
 
 The navigation and workspace fixtures are supporting files, not independent
-test suites. They do not launch the authenticated application or a real SFU.
+test suites. The `--media-options-only` filter limits workspace checks to native
+video fullscreen, separate screen audio, and desktop/mobile media setup controls,
+without rerunning chat-history and unrelated workspace checks. The fixtures
+do not launch the authenticated application or a real SFU.
 The local browser checks do not exercise physical microphones/cameras, screen
 capture permissions, or multiple authenticated users.
 

@@ -18,14 +18,24 @@ export function prepareVoiceSounds() {
   if (context) void context.resume();
 }
 
-export function playVoiceSound(type: "join" | "leave" | "ring") {
+export function playVoiceSound(
+  type: "join" | "leave" | "ring" | "share" | "share-stop",
+) {
   const context = getAudioContext();
   if (!context) return;
 
   void context.resume();
   const start = context.currentTime;
   const frequencies =
-    type === "join" ? [440, 660] : type === "ring" ? [660, 880] : [550, 330];
+    type === "share-stop"
+      ? [784, 659, 523]
+      : type === "share"
+        ? [523, 659, 784]
+        : type === "join"
+          ? [440, 660]
+          : type === "ring"
+            ? [660, 880]
+            : [550, 330];
 
   frequencies.forEach((frequency, index) => {
     const oscillator = context.createOscillator();

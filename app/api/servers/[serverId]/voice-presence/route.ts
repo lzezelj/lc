@@ -62,6 +62,7 @@ export async function GET(
           return [
             channel.id,
             participants.map((participant) => ({
+              userId: participant.identity.split(":")[0],
               name: participant.name || "Guest",
               muted: false,
               camera: false,

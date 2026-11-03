@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
@@ -116,13 +116,20 @@ export async function DELETE(
     .where(
       and(eq(channels.serverId, serverId), eq(channels.type, "voice_group")),
     );
-  await db
+  const [removed] = await db
     .delete(serverMembers)
     .where(
       and(
         eq(serverMembers.serverId, serverId),
         eq(serverMembers.userId, body.userId),
+        eq(serverMembers.role, "member"),
       ),
+    )
+    .returning({ userId: serverMembers.userId });
+  if (!removed)
+    return NextResponse.json(
+      { error: "The member's role changed. Refresh and try again." },
+      { status: 409 },
     );
   await disconnectUserEverywhere(
     body.userId,
@@ -136,14 +143,34 @@ export async function POST(
   { params }: { params: Promise<{ serverId: string }> },
 ) {
   const session = await auth();
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { serverId } = await params;
   const body = (await request.json()) as {
     userId?: string;
     userIds?: string[];
     handle?: string;
+    mode?: "friends" | "people";
   };
   if (!session || (!body.userId && !body.userIds?.length && !body.handle))
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  if (
+    body.mode !== undefined &&
+    body.mode !== "friends" &&
+    body.mode !== "people"
+  )
+    return NextResponse.json(
+      { error: "Invalid invitation mode" },
+      { status: 400 },
+    );
+  if (
+    body.userIds &&
+    (!Array.isArray(body.userIds) || body.userIds.length > 50)
+  )
+    return NextResponse.json(
+      { error: "Choose up to 50 people" },
+      { status: 400 },
+    );
   const handleUserId = body.handle
     ? (
         await db
@@ -172,37 +199,68 @@ export async function POST(
     );
   if (owner?.role !== "owner")
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  const friendRows = await db
-    .select({
-      requesterId: friendships.requesterId,
-      recipientId: friendships.recipientId,
-    })
-    .from(friendships)
+  if (
+    userIds.some(
+      (id) =>
+        typeof id !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          id,
+        ),
+    )
+  )
+    return NextResponse.json({ error: "Invalid user" }, { status: 400 });
+  const activeUsers = await db
+    .select({ id: users.id })
+    .from(users)
     .where(
       and(
-        eq(friendships.status, "accepted"),
-        or(
-          and(
-            eq(friendships.requesterId, session.user.id),
-            inArray(friendships.recipientId, userIds),
-          ),
-          and(
-            inArray(friendships.requesterId, userIds),
-            eq(friendships.recipientId, session.user.id),
-          ),
-        ),
+        inArray(users.id, userIds),
+        ne(users.role, "demo"),
+        isNull(users.disabledAt),
+        or(isNull(users.expiresAt), gt(users.expiresAt, new Date())),
       ),
     );
-  const friendIds = new Set(
-    friendRows.map((row) =>
-      row.requesterId === session.user.id ? row.recipientId : row.requesterId,
-    ),
-  );
-  if (userIds.some((userId) => !friendIds.has(userId)))
+  if (activeUsers.length !== userIds.length)
     return NextResponse.json(
-      { error: "Only accepted friends can be added" },
-      { status: 403 },
+      {
+        error:
+          "Only active accounts can be invited. Manage demo access through demo account settings.",
+      },
+      { status: 400 },
     );
+  if (body.mode !== "people") {
+    const friendRows = await db
+      .select({
+        requesterId: friendships.requesterId,
+        recipientId: friendships.recipientId,
+      })
+      .from(friendships)
+      .where(
+        and(
+          eq(friendships.status, "accepted"),
+          or(
+            and(
+              eq(friendships.requesterId, session.user.id),
+              inArray(friendships.recipientId, userIds),
+            ),
+            and(
+              inArray(friendships.requesterId, userIds),
+              eq(friendships.recipientId, session.user.id),
+            ),
+          ),
+        ),
+      );
+    const friendIds = new Set(
+      friendRows.map((row) =>
+        row.requesterId === session.user.id ? row.recipientId : row.requesterId,
+      ),
+    );
+    if (userIds.some((userId) => !friendIds.has(userId)))
+      return NextResponse.json(
+        { error: "Only accepted friends can be added" },
+        { status: 403 },
+      );
+  }
   const added = await db
     .insert(serverMembers)
     .values(userIds.map((userId) => ({ serverId, userId })))

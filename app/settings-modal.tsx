@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { revealSettingsSection } from "./settings-reveal";
 
 export function SettingsIcon() {
   return (
@@ -41,7 +42,17 @@ export function SettingsModal({
     const element = dialog.current;
     const previousFocus = document.activeElement;
     element?.showModal();
+    const reveal = (event: Event) => {
+      if (
+        event.target instanceof HTMLDetailsElement &&
+        event.target.open &&
+        event.target.contains(document.activeElement)
+      )
+        revealSettingsSection(event.target);
+    };
+    element?.addEventListener("toggle", reveal, true);
     return () => {
+      element?.removeEventListener("toggle", reveal, true);
       element?.close();
       if (
         previousFocus instanceof HTMLElement &&

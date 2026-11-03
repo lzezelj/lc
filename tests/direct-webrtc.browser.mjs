@@ -15,15 +15,19 @@ const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
 const workspaceControls = process.argv.includes("--workspace-controls");
+const mediaOptionsOnly = process.argv.includes("--media-options-only");
 const supportedFlags = new Set([
   "--turn",
   "--direct-ip",
   "--navigation",
   "--microphone",
   "--workspace-controls",
+  "--media-options-only",
 ]);
 if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
   throw new Error("Unsupported browser test option");
+if (mediaOptionsOnly && !workspaceControls)
+  throw new Error("--media-options-only requires --workspace-controls");
 if ([navigation, microphone, workspaceControls].filter(Boolean).length > 1)
   throw new Error("Choose only one browser test mode");
 if (useTurn && (navigation || microphone || workspaceControls))
@@ -153,14 +157,28 @@ if (navigation || workspaceControls) {
     );
     for (const name of [
       "settings-modal",
+      "settings-navigation",
+      "personal-messages",
+      "account-deletion",
+      "settings-members",
+      "settings-reveal",
+      "server-invites",
       "channel-manager",
       "message-delete-action",
       "chat-history",
+      "stream-info",
+      "stream-volume",
+      "screen-audio",
+      "screen-share-options",
+      "camera-resolution",
+      "empty-state",
       "use-message-cooldown",
       "message-header",
       "user-profile",
       "sidebar-resizer",
       "device-menu",
+      "participant-media-indicators",
+      "panel-toggle",
       "device-selection",
       "audio-device-options",
       "user-status-menu",
@@ -482,97 +500,137 @@ try {
       },
       sessionId,
     );
-    const checked = await call(
+    const fullscreenCheck = await call(
       "Runtime.evaluate",
       {
-        expression: "window.verifyWorkspaceControlsTest()",
+        expression: "window.verifyVideoFullscreen()",
         awaitPromise: true,
         userGesture: true,
         returnByValue: true,
       },
       sessionId,
     );
-    if (checked.exceptionDetails)
-      throw new Error(JSON.stringify(checked.exceptionDetails));
+    if (fullscreenCheck.exceptionDetails)
+      throw new Error(JSON.stringify(fullscreenCheck.exceptionDetails));
     console.log(
-      "Workspace controls browser check passed:",
-      JSON.stringify(checked.result.value),
+      "Selected video fullscreen check passed:",
+      JSON.stringify(fullscreenCheck.result.value),
     );
-    for (const selector of [
-      ".voiceDock > .deviceControl:first-of-type > .mediaToggle",
-      ".voiceDock > .deviceControl:nth-of-type(2) > .mediaToggle",
-      ".voiceDock > button:not(.soundboardPlaceholder)",
-      ".soundboardPlaceholder",
-    ]) {
-      const target = await call(
+    if (mediaOptionsOnly) {
+      for (const mobile of [false, true]) {
+        if (mobile)
+          await call(
+            "Emulation.setDeviceMetricsOverride",
+            { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
+            sessionId,
+          );
+        const optionsCheck = await call(
+          "Runtime.evaluate",
+          {
+            expression: "window.verifyWorkspaceAdditions()",
+            awaitPromise: true,
+            userGesture: true,
+            returnByValue: true,
+          },
+          sessionId,
+        );
+        if (optionsCheck.exceptionDetails)
+          throw new Error(JSON.stringify(optionsCheck.exceptionDetails));
+      }
+      console.log("Media options desktop/mobile checks passed");
+    } else {
+      const checked = await call(
         "Runtime.evaluate",
         {
-          expression: `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+          expression: "window.verifyWorkspaceControlsTest()",
+          awaitPromise: true,
+          userGesture: true,
           returnByValue: true,
         },
         sessionId,
       );
+      if (checked.exceptionDetails)
+        throw new Error(JSON.stringify(checked.exceptionDetails));
+      console.log(
+        "Workspace controls browser check passed:",
+        JSON.stringify(checked.result.value),
+      );
+      for (const selector of [
+        ".voiceDock > .deviceControl:first-of-type > .mediaToggle",
+        ".voiceDock > .deviceControl:nth-of-type(2) > .mediaToggle",
+        ".voiceDock > button:not(.soundboardPlaceholder)",
+        ".soundboardPlaceholder",
+      ]) {
+        const target = await call(
+          "Runtime.evaluate",
+          {
+            expression: `(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+            returnByValue: true,
+          },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          { type: "mouseMoved", ...target.result.value },
+          sessionId,
+        );
+        const hovered = await call(
+          "Runtime.evaluate",
+          {
+            expression: `(async () => { await new Promise(resolve => setTimeout(resolve, 180)); const element = document.querySelector(${JSON.stringify(selector)}); return { translate: getComputedStyle(element).translate }; })()`,
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          sessionId,
+        );
+        assert.ok(
+          Math.abs(
+            parseFloat(hovered.result.value.translate.split(/\s+/)[1]) + 2,
+          ) < 0.05,
+          `${selector} ${JSON.stringify(hovered.result.value)}`,
+        );
+      }
+      console.log(
+        "Microphone, camera, sharing and soundboard hover checks passed",
+      );
       await call(
-        "Input.dispatchMouseEvent",
-        { type: "mouseMoved", ...target.result.value },
+        "Emulation.setDeviceMetricsOverride",
+        { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
         sessionId,
       );
-      const hovered = await call(
+      const mobile = await call(
         "Runtime.evaluate",
         {
-          expression: `(async () => { await new Promise(resolve => setTimeout(resolve, 180)); const element = document.querySelector(${JSON.stringify(selector)}); return { translate: getComputedStyle(element).translate }; })()`,
+          expression:
+            "({ resizerHidden: getComputedStyle(document.querySelector('.sidebarResizer')).display === 'none', noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth })",
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      assert.equal(mobile.result.value.resizerHidden, true);
+      assert.equal(mobile.result.value.noHorizontalOverflow, true);
+      await call(
+        "Emulation.setEmulatedMedia",
+        { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+        sessionId,
+      );
+      const mobileMicrophone = await call(
+        "Runtime.evaluate",
+        {
+          expression:
+            "(async () => { await window.verifySettingsAndProfileLayout(); await window.verifyChatHistory(); await window.verifyWorkspaceAdditions(); return window.verifyMicrophonePosition(); })()",
           awaitPromise: true,
           returnByValue: true,
         },
         sessionId,
       );
-      assert.ok(
-        Math.abs(
-          parseFloat(hovered.result.value.translate.split(/\s+/)[1]) + 2,
-        ) < 0.05,
-        `${selector} ${JSON.stringify(hovered.result.value)}`,
+      if (mobileMicrophone.exceptionDetails)
+        throw new Error(JSON.stringify(mobileMicrophone.exceptionDetails));
+      console.log(
+        "Mobile workspace bounds passed:",
+        JSON.stringify(mobile.result.value),
       );
     }
-    console.log(
-      "Microphone, camera, sharing and soundboard hover checks passed",
-    );
-    await call(
-      "Emulation.setDeviceMetricsOverride",
-      { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
-      sessionId,
-    );
-    const mobile = await call(
-      "Runtime.evaluate",
-      {
-        expression:
-          "({ resizerHidden: getComputedStyle(document.querySelector('.sidebarResizer')).display === 'none', noHorizontalOverflow: document.documentElement.scrollWidth <= innerWidth })",
-        returnByValue: true,
-      },
-      sessionId,
-    );
-    assert.equal(mobile.result.value.resizerHidden, true);
-    assert.equal(mobile.result.value.noHorizontalOverflow, true);
-    await call(
-      "Emulation.setEmulatedMedia",
-      { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
-      sessionId,
-    );
-    const mobileMicrophone = await call(
-      "Runtime.evaluate",
-      {
-        expression:
-          "(async () => { await window.verifySettingsAndProfileLayout(); await window.verifyChatHistory(); return window.verifyMicrophonePosition(); })()",
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      sessionId,
-    );
-    if (mobileMicrophone.exceptionDetails)
-      throw new Error(JSON.stringify(mobileMicrophone.exceptionDetails));
-    console.log(
-      "Mobile workspace bounds passed:",
-      JSON.stringify(mobile.result.value),
-    );
   } else if (microphone) {
     assert.ok(
       data.quiet < 0.000001,

@@ -714,6 +714,7 @@ test("presence observers see occupants without joining the call", async () => {
         userId: "test-Ada",
         name: "Ada",
         muted: false,
+        deafened: false,
         camera: false,
         screen: false,
         speaking: false,
@@ -738,6 +739,7 @@ test("presence observers see occupants without joining the call", async () => {
         userId: "test-Ada",
         name: "Ada",
         muted: true,
+        deafened: false,
         camera: true,
         screen: false,
         speaking: false,
@@ -745,6 +747,19 @@ test("presence observers see occupants without joining the call", async () => {
     ],
   });
 
+  for (const deafened of [true, false]) {
+    const changed = nextMessage(observer);
+    caller.send(
+      JSON.stringify({ type: "media-state", muted: false, deafened }),
+    );
+    const presence = await changed;
+    assert.equal(presence.participants[0].deafened, deafened);
+    assert.equal(
+      presence.participants[0].muted,
+      deafened,
+      "Deafening must also announce a muted microphone",
+    );
+  }
   const emptyAgain = nextMessage(observer);
   caller.close();
   assert.deepEqual(await emptyAgain, {
@@ -782,6 +797,7 @@ test("group presence is broadcast immediately on join and leave", async () => {
         userId: "test-Grace",
         name: "Grace",
         muted: false,
+        deafened: false,
         camera: false,
         screen: false,
         speaking: false,
@@ -789,6 +805,21 @@ test("group presence is broadcast immediately on join and leave", async () => {
     ],
   });
 
+  for (const deafened of [true, false]) {
+    const changed = nextMessage(observer);
+    participant.send(
+      JSON.stringify({
+        type: "set-group-presence",
+        roomId: "group-room",
+        present: true,
+        muted: false,
+        deafened,
+      }),
+    );
+    const presence = await changed;
+    assert.equal(presence.participants[0].deafened, deafened);
+    assert.equal(presence.participants[0].muted, deafened);
+  }
   const left = nextMessage(observer);
   participant.send(
     JSON.stringify({

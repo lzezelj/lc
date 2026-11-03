@@ -12,6 +12,18 @@ import {
   TrackEvent,
 } from "livekit-client";
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
+import { StreamInfo, fullscreenVideoTile } from "./stream-info";
+import { StreamVolume } from "./stream-volume";
+import {
+  CameraResolutionSelection,
+  cameraResolutions,
+  type CameraResolution,
+} from "./camera-resolution";
+import {
+  ScreenShareOptions,
+  screenShareResolutions,
+  type ScreenShareResolution,
+} from "./screen-share-options";
 import {
   HideTileButton,
   HiddenTilesMenu,
@@ -55,6 +67,14 @@ type GroupCallDiagnostics = {
 };
 
 type GroupCallProps = {
+  cameraResolution?: CameraResolution;
+  onCameraResolutionChange?: (resolution: CameraResolution) => void;
+  currentUserId?: string;
+  focusTarget?: {
+    userId: string;
+    kind: "camera" | "screen";
+    requestId: number;
+  } | null;
   channelId: string;
   currentUserName: string;
   microphoneId: string;
@@ -91,6 +111,8 @@ function RemoteTrackView({
   onPingChange,
   onHide,
   volume = 1,
+  streamVolume = 100,
+  onStreamVolumeChange,
 }: {
   media: RemoteMedia;
   hidden: boolean;
@@ -98,6 +120,8 @@ function RemoteTrackView({
   onPingChange: (ping: number) => void;
   onHide?: () => void;
   volume?: number;
+  streamVolume?: number;
+  onStreamVolumeChange?: (volume: number) => void;
 }) {
   const element = useRef<HTMLMediaElement>(null);
   const [quality, setQuality] = useState("");
@@ -147,6 +171,7 @@ function RemoteTrackView({
     <div
       className={`videoCard remote ${media.track.isMuted ? "nameOnly" : media.isScreen ? "screenShare" : ""} ${hidden ? "videoHidden" : ""}`}
       onClick={onFocus}
+      onDoubleClick={(event) => fullscreenVideoTile(event.currentTarget)}
     >
       <video
         ref={element as RefObject<HTMLVideoElement>}
@@ -168,17 +193,25 @@ function RemoteTrackView({
           onHide={onHide}
         />
       )}
-      {quality && !media.track.isMuted && (
-        <small className="qualityBadge">{quality}</small>
+      {!media.track.isMuted && (
+        <StreamInfo
+          quality={quality}
+          stats={networkStats}
+          name={`${media.participantName}${media.isScreen ? " — screen" : " — camera"}`}
+        />
       )}
-      {networkStats && !media.track.isMuted && (
-        <small className="networkBadge">{networkStats}</small>
+      {media.isScreen && onStreamVolumeChange && (
+        <StreamVolume volume={streamVolume} onChange={onStreamVolumeChange} />
       )}
     </div>
   );
 }
 
 export function GroupCall({
+  cameraResolution = "720",
+  onCameraResolutionChange,
+  currentUserId,
+  focusTarget,
   channelId,
   currentUserName,
   microphoneId,
@@ -209,19 +242,28 @@ export function GroupCall({
   const muted = userMuted || deafened;
   const [cameraOff, setCameraOff] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
+  const [screenShareOptionsOpen, setScreenShareOptionsOpen] = useState(false);
   const [participants, setParticipants] = useState<
     { id: string; name: string }[]
   >([]);
   const [remoteMedia, setRemoteMedia] = useState<RemoteMedia[]>([]);
   const [status, setStatus] = useState("Not connected");
   const [focusedVideo, setFocusedVideo] = useState<string | null>(null);
+  const [streamVolumes, setStreamVolumes] = useState<Record<string, number>>(
+    {},
+  );
   const [hiddenTiles, setHiddenTiles] = useState<string[]>([
     "local",
     "local-screen",
   ]);
   const [localVideoQuality, setLocalVideoQuality] = useState("");
   const [localVideoStats, setLocalVideoStats] = useState("");
+  const [localScreenQuality, setLocalScreenQuality] = useState("");
+  const [localScreenStats, setLocalScreenStats] = useState("");
   const roomRef = useRef<Room | null>(null);
+  const deafenedRef = useRef(deafened);
+  const audibleShares = useRef(new Set<string>());
+  const focusedRequest = useRef<number | null>(null);
   const joinGeneration = useRef(0);
   const localVideo = useRef<HTMLVideoElement>(null);
   const localScreen = useRef<HTMLVideoElement>(null);
@@ -244,7 +286,7 @@ export function GroupCall({
     startSpeakingMonitor,
   });
   useEffect(() => {
-    mutedRef.current = muted;
+    deafenedRef.current = deafened;
     audioCallbacks.current = {
       onError,
       onMediaStateChange,
@@ -252,6 +294,9 @@ export function GroupCall({
       startSpeakingMonitor,
     };
   });
+  useEffect(() => {
+    mutedRef.current = muted;
+  }, [muted]);
 
   useEffect(() => {
     onConnectionChangeRef.current = onConnectionChange;
@@ -335,6 +380,54 @@ export function GroupCall({
   }, [microphoneId, joined]);
 
   useEffect(() => {
+    if (!focusTarget || focusedRequest.current === focusTarget.requestId)
+      return;
+    const local = focusTarget.userId === currentUserId;
+    const media = remoteMedia.find(
+      (item) =>
+        item.track.kind === Track.Kind.Video &&
+        item.participantId.split(":")[0] === focusTarget.userId &&
+        item.isScreen === (focusTarget.kind === "screen"),
+    );
+    const id = local
+      ? focusTarget.kind === "screen"
+        ? "local-screen"
+        : "local"
+      : media?.id;
+    if (!id) return;
+    focusedRequest.current = focusTarget.requestId;
+    const tileId = local
+      ? id
+      : `${media!.participantId}:${media!.isScreen ? "screen" : "camera"}`;
+    void Promise.resolve().then(() => {
+      setHiddenTiles((current) =>
+        current.filter((hidden) => hidden !== tileId),
+      );
+      setFocusedVideo(id);
+    });
+  }, [focusTarget, currentUserId, remoteMedia]);
+
+  useEffect(() => {
+    const room = roomRef.current;
+    const track = room?.localParticipant.getTrackPublication(
+      Track.Source.Camera,
+    )?.videoTrack;
+    if (!track || cameraOffRef.current) return;
+    void track
+      .restartTrack({
+        ...(cameraId ? { deviceId: cameraId } : {}),
+        resolution: cameraResolutions[cameraResolution],
+        frameRate: 30,
+      })
+      .catch(() => {
+        if (roomRef.current === room)
+          audioCallbacks.current.onError(
+            "The selected camera resolution could not be applied.",
+          );
+      });
+  }, [cameraResolution, cameraId]);
+
+  useEffect(() => {
     if (!screenSharing) return;
     const track = roomRef.current?.localParticipant.getTrackPublication(
       Track.Source.ScreenShare,
@@ -342,7 +435,13 @@ export function GroupCall({
     const element = localScreen.current;
     if (!track || !element) return;
     track.attach(element);
+    const stopStats = monitorTrackVideo(
+      track as import("livekit-client").LocalVideoTrack,
+      setLocalScreenStats,
+      () => {},
+    );
     return () => {
+      stopStats();
       track.detach(element);
     };
   }, [screenSharing]);
@@ -518,6 +617,14 @@ export function GroupCall({
           publication: RemoteTrackPublication,
           participant: RemoteParticipant,
         ) => {
+          if (roomRef.current !== room) return;
+          if (
+            publication.source === Track.Source.ScreenShare &&
+            !audibleShares.current.has(participant.identity)
+          ) {
+            audibleShares.current.add(participant.identity);
+            if (!deafenedRef.current) playVoiceSound("share");
+          }
           setRemoteMedia((current) => [
             ...current.filter((media) => media.id !== publication.trackSid),
             {
@@ -525,12 +632,21 @@ export function GroupCall({
               participantId: participant.identity,
               participantName: participant.name || "Guest",
               track,
-              isScreen: publication.source === Track.Source.ScreenShare,
+              isScreen:
+                publication.source === Track.Source.ScreenShare ||
+                publication.source === Track.Source.ScreenShareAudio,
             },
           ]);
         },
       )
-      .on(RoomEvent.TrackUnsubscribed, (_track, publication) => {
+      .on(RoomEvent.TrackUnsubscribed, (_track, publication, participant) => {
+        if (
+          publication.source === Track.Source.ScreenShare &&
+          audibleShares.current.delete(participant.identity) &&
+          !deafenedRef.current &&
+          roomRef.current === room
+        )
+          playVoiceSound("share-stop");
         setRemoteMedia((current) =>
           current.filter((media) => media.id !== publication.trackSid),
         );
@@ -541,6 +657,7 @@ export function GroupCall({
       .on(RoomEvent.LocalTrackUnpublished, (publication) => {
         if (roomRef.current !== room) return;
         if (publication.source !== Track.Source.ScreenShare) return;
+        if (!deafenedRef.current) playVoiceSound("share-stop");
         setScreenSharing(false);
         setFocusedVideo((current) =>
           current === "local-screen" ? null : current,
@@ -645,23 +762,48 @@ export function GroupCall({
     if (deafened) return;
     const room = roomRef.current;
     if (!room) return;
-    const nextMuted = !muted;
+    const previousMuted = mutedRef.current;
+    const nextMuted = !previousMuted;
     mutedRef.current = nextMuted;
-    try {
-      await setMicrophoneEnabled(room, !nextMuted);
-      if (roomRef.current !== room) return;
-      setMuted(nextMuted);
-      startSpeakingMonitor(room);
-      onMediaStateChange({
-        muted: mutedRef.current,
-        camera: !cameraOff,
-        screen: screenSharing,
-        speaking: false,
-      });
-    } catch {
-      mutedRef.current = muted;
-      onError("The microphone could not be changed. Check browser permission.");
+    setMuted(nextMuted);
+    if (nextMuted) {
+      const track = room.localParticipant.getTrackPublication(
+        Track.Source.Microphone,
+      )?.track;
+      if (track) track.mediaStreamTrack.enabled = false;
     }
+    microphoneOperations.current = microphoneOperations.current
+      .catch(() => {})
+      .then(async () => {
+        if (roomRef.current !== room) return;
+        await setMicrophoneEnabled(room, !mutedRef.current);
+        if (roomRef.current !== room) return;
+        startSpeakingMonitor(room);
+        onMediaStateChange({
+          muted: mutedRef.current,
+          camera: !cameraOffRef.current,
+          screen: Boolean(
+            room.localParticipant.getTrackPublication(Track.Source.ScreenShare)
+              ?.track,
+          ),
+          speaking: false,
+        });
+      })
+      .catch(() => {
+        if (roomRef.current !== room) return;
+        if (mutedRef.current === nextMuted) {
+          mutedRef.current = previousMuted;
+          setMuted(previousMuted);
+          const track = room.localParticipant.getTrackPublication(
+            Track.Source.Microphone,
+          )?.track;
+          if (track) track.mediaStreamTrack.enabled = !previousMuted;
+        }
+        onError(
+          "The microphone could not be changed. Check browser permission.",
+        );
+      });
+    await microphoneOperations.current;
   }
 
   async function toggleVideo() {
@@ -670,7 +812,7 @@ export function GroupCall({
     try {
       await room.localParticipant.setCameraEnabled(cameraOff, {
         ...(cameraId ? { deviceId: cameraId } : {}),
-        resolution: { width: 1280, height: 720, frameRate: 30 },
+        resolution: cameraResolutions[cameraResolution],
         frameRate: 30,
       });
       if (roomRef.current !== room) {
@@ -712,16 +854,31 @@ export function GroupCall({
     }
   }
 
-  async function toggleScreenShare() {
+  async function toggleScreenShare(resolution?: ScreenShareResolution) {
     const room = roomRef.current;
     if (!room) return;
+    if (!screenSharing && !resolution) {
+      setScreenShareOptionsOpen(true);
+      return;
+    }
+    setScreenShareOptionsOpen(false);
     try {
-      await room.localParticipant.setScreenShareEnabled(!screenSharing);
+      await room.localParticipant.setScreenShareEnabled(
+        !screenSharing,
+        resolution
+          ? {
+              resolution: screenShareResolutions[resolution],
+              audio: true,
+              contentHint: "detail",
+            }
+          : undefined,
+      );
       if (roomRef.current !== room) {
         releaseRoom(room);
         return;
       }
       const next = !screenSharing;
+      if (next && !deafened) playVoiceSound("share");
       setScreenSharing(next);
       if (next) onOpenView();
       onMediaStateChange({
@@ -781,9 +938,13 @@ export function GroupCall({
         track.stop();
         return;
       }
+      track.mediaStreamTrack.enabled = !mutedRef.current;
+      if (mutedRef.current) await track.mute();
       await room.localParticipant.publishTrack(track, {
         source: Track.Source.Microphone,
       });
+      track.mediaStreamTrack.enabled = !mutedRef.current;
+      if (mutedRef.current && !track.isMuted) await track.mute();
     } catch (error) {
       track.stop();
       throw error;
@@ -827,6 +988,7 @@ export function GroupCall({
     );
     setFocusedVideo(null);
   };
+
   const tiles = [
     { id: "local", label: currentUserName },
     ...(screenSharing
@@ -856,6 +1018,7 @@ export function GroupCall({
       >
         <div
           className={`videoCard ${cameraOff ? "nameOnly" : ""} ${hiddenTiles.includes("local") || (focusedVideo && focusedVideo !== "local") ? "videoHidden" : ""}`}
+          onDoubleClick={(event) => fullscreenVideoTile(event.currentTarget)}
           onClick={() =>
             setFocusedVideo((current) => (current === "local" ? null : "local"))
           }
@@ -877,23 +1040,41 @@ export function GroupCall({
             label={currentUserName}
             onHide={() => hideTile("local")}
           />
-          {localVideoQuality && !cameraOff && (
-            <small className="qualityBadge">{localVideoQuality}</small>
-          )}
-          {localVideoStats && !cameraOff && (
-            <small className="networkBadge">{localVideoStats}</small>
+          {!cameraOff && (
+            <StreamInfo
+              quality={localVideoQuality}
+              stats={localVideoStats}
+              name={`${currentUserName} — camera`}
+            />
           )}
         </div>
         {screenSharing && (
           <div
             className={`videoCard screenShare ${hiddenTiles.includes("local-screen") || (focusedVideo && focusedVideo !== "local-screen") ? "videoHidden" : ""}`}
+            onDoubleClick={(event) => fullscreenVideoTile(event.currentTarget)}
             onClick={() =>
               setFocusedVideo((current) =>
                 current === "local-screen" ? null : "local-screen",
               )
             }
           >
-            <video ref={localScreen} autoPlay muted playsInline />
+            <video
+              ref={localScreen}
+              autoPlay
+              muted
+              playsInline
+              onLoadedMetadata={(event) =>
+                setLocalScreenQuality(videoQuality(event.currentTarget))
+              }
+              onResize={(event) =>
+                setLocalScreenQuality(videoQuality(event.currentTarget))
+              }
+            />
+            <StreamInfo
+              quality={localScreenQuality}
+              stats={localScreenStats}
+              name={`${currentUserName} — screen`}
+            />
             <span>{currentUserName} — screen</span>
             <HideTileButton
               label={`${currentUserName} — screen`}
@@ -937,7 +1118,35 @@ export function GroupCall({
               )
             }
             onPingChange={onPingChange}
-            volume={deafened ? 0 : outputVolume}
+            volume={
+              deafened ||
+              (media.isScreen &&
+                (!viewOpen ||
+                  hiddenTiles.includes(remoteTileId(media)) ||
+                  (focusedVideo !== null &&
+                    !remoteMedia.some(
+                      (item) =>
+                        item.participantId === media.participantId &&
+                        item.track.kind === Track.Kind.Video &&
+                        item.isScreen &&
+                        item.id === focusedVideo,
+                    ))))
+                ? 0
+                : outputVolume *
+                  (media.isScreen
+                    ? (streamVolumes[media.participantId] ?? 100) / 100
+                    : 1)
+            }
+            streamVolume={streamVolumes[media.participantId] ?? 100}
+            onStreamVolumeChange={
+              media.isScreen
+                ? (value) =>
+                    setStreamVolumes((current) => ({
+                      ...current,
+                      [media.participantId]: value,
+                    }))
+                : undefined
+            }
             key={media.id}
           />
         ))}
@@ -974,7 +1183,7 @@ export function GroupCall({
         {focusedVideo && (
           <div className="focusActions">
             <button onClick={() => setFocusedVideo(null)}>Show grid</button>
-            <button onClick={() => void videoGrid.current?.requestFullscreen()}>
+            <button onClick={() => fullscreenVideoTile(videoGrid.current)}>
               Fullscreen
             </button>
           </div>
@@ -1004,6 +1213,14 @@ export function GroupCall({
         />
         <DeviceMenu
           kind="camera"
+          extraOptions={
+            onCameraResolutionChange ? (
+              <CameraResolutionSelection
+                resolution={cameraResolution}
+                onChange={onCameraResolutionChange}
+              />
+            ) : undefined
+          }
           unavailable={!joined || joining}
           disabled={cameraOff}
           devices={cameras}
@@ -1026,6 +1243,12 @@ export function GroupCall({
           Soundboard
         </button>
       </div>
+      {screenShareOptionsOpen && joined && !joining && (
+        <ScreenShareOptions
+          onClose={() => setScreenShareOptionsOpen(false)}
+          onShare={(resolution) => void toggleScreenShare(resolution)}
+        />
+      )}
       <p className="mediaNotice">
         {status}
         {joined &&
@@ -1046,7 +1269,7 @@ function voiceCaptureOptions(deviceId: string) {
 
 function videoQuality(video: HTMLVideoElement) {
   if (!video.videoWidth || !video.videoHeight) return "";
-  return `${video.videoWidth}×${video.videoHeight} · ${video.videoHeight}p`;
+  return `${video.videoWidth}×${video.videoHeight}`;
 }
 
 function monitorTrackVideo(
@@ -1096,10 +1319,11 @@ function monitorTrackVideo(
             const kbps = Math.round(
               ((bytes - previous.bytes) * 8) / seconds / 1000,
             );
-            const fps = stat.framesPerSecond
-              ? ` · ${Math.round(stat.framesPerSecond)} fps`
-              : "";
-            next = `${kbps} kbps${fps}`;
+            const fps =
+              stat.framesPerSecond !== undefined
+                ? ` · ${Math.round(stat.framesPerSecond)} fps`
+                : "";
+            next = `${stat.type === "inbound-rtp" ? "down" : "up"} ${kbps} kbps${fps}`;
           }
         }
         previous = { bytes, timestamp: stat.timestamp };

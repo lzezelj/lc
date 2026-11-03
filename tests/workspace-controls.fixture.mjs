@@ -9,6 +9,27 @@ import { UserProfile } from "./user-profile.js";
 import { ChannelManager } from "./channel-manager.js";
 import { MessageDeleteAction } from "./message-delete-action.js";
 import { ChatHistory } from "./chat-history.js";
+import { ParticipantMediaIndicators } from "./participant-media-indicators.js";
+import { PanelToggle } from "./panel-toggle.js";
+import { ServerInvites } from "./server-invites.js";
+import { SettingsNavigation } from "./settings-navigation.js";
+import { PersonalMessages } from "./personal-messages.js";
+import { AccountDeletion } from "./account-deletion.js";
+import { SettingsMembers } from "./settings-members.js";
+import { revealSettingsSection } from "./settings-reveal.js";
+import { StreamVolume } from "./stream-volume.js";
+import {
+  CameraResolutionSelection,
+  cameraCaptureConstraints,
+} from "./camera-resolution.js";
+import { reserveScreenAudio } from "./screen-audio.js";
+import {
+  StreamInfo,
+  fullscreenVideoTile,
+  directionalStreamStats,
+} from "./stream-info.js";
+import { ScreenShareOptions } from "./screen-share-options.js";
+import { EmptyState } from "./empty-state.js";
 import { useMessageCooldown } from "./use-message-cooldown.js";
 import { MessageHeader } from "./message-header.js";
 import { SidebarResizer } from "./sidebar-resizer.js";
@@ -91,6 +112,839 @@ async function verifyMessageCooldown() {
   container.remove();
 }
 let callAudio;
+async function verifyScreenAudioTransport() {
+  const context = new AudioContext();
+  const microphone = context.createMediaStreamDestination();
+  const shared = context.createMediaStreamDestination();
+  const voiceTone = context.createOscillator();
+  const streamTone = context.createOscillator();
+  voiceTone.connect(microphone);
+  streamTone.connect(shared);
+  voiceTone.start();
+  streamTone.start();
+  const first = new RTCPeerConnection();
+  const second = new RTCPeerConnection();
+  first.onicecandidate = (event) => {
+    if (event.candidate) void second.addIceCandidate(event.candidate);
+  };
+  second.onicecandidate = (event) => {
+    if (event.candidate) void first.addIceCandidate(event.candidate);
+  };
+  try {
+    await context.resume();
+    first.addTrack(microphone.stream.getAudioTracks()[0]);
+    const outgoingScreen = reserveScreenAudio(first, null, context);
+    const silentMicrophone = reserveScreenAudio(second, null, context);
+    const incomingScreen = reserveScreenAudio(second, null, context);
+    let receivedScreen = null;
+    second.ontrack = (event) => {
+      if (event.transceiver === incomingScreen.transceiver)
+        receivedScreen = event.track;
+    };
+    await first.setLocalDescription(await first.createOffer());
+    await second.setRemoteDescription(first.localDescription);
+    await second.setLocalDescription(await second.createAnswer());
+    await first.setRemoteDescription(second.localDescription);
+    await outgoingScreen.sender.replaceTrack(shared.stream.getAudioTracks()[0]);
+    let delivered = false;
+    for (let attempt = 0; attempt < 30 && !delivered; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const stats = await incomingScreen.receiver.getStats();
+      stats.forEach((stat) => {
+        if (stat.type === "inbound-rtp" && stat.bytesReceived > 0)
+          delivered = true;
+      });
+    }
+    check(
+      delivered && receivedScreen === incomingScreen.receiver.track,
+      "Reserved screen audio must deliver RTP on its own receiving track",
+    );
+    check(
+      second
+        .getReceivers()
+        .filter((receiver) => receiver.track.kind === "audio").length === 2,
+      "Screen audio must remain separate from microphone audio",
+    );
+    await outgoingScreen.sender.replaceTrack(null);
+    check(
+      first.getSenders()[0].track === microphone.stream.getAudioTracks()[0],
+      "Stopping screen audio must retain the microphone",
+    );
+    outgoingScreen.stop();
+    incomingScreen.stop();
+    silentMicrophone.stop();
+  } finally {
+    first.getSenders().forEach((sender) => sender.track?.stop());
+    second.getSenders().forEach((sender) => sender.track?.stop());
+    shared.stream.getTracks().forEach((track) => track.stop());
+    first.close();
+    second.close();
+    voiceTone.stop();
+    streamTone.stop();
+    await context.close();
+  }
+}
+window.verifyVideoFullscreen = async () => {
+  const container = document.createElement("div");
+  container.className = "videoGrid focused";
+  document.body.append(container);
+  const root = createRoot(container);
+  root.render(
+    h(
+      React.Fragment,
+      null,
+      h("div", { className: "videoCard videoHidden" }, h("video")),
+      h(
+        "div",
+        { className: "videoCard remote" },
+        h("video"),
+        h("span", null, "Sender"),
+        h("button", { className: "tileHide" }, "Hide"),
+        h(StreamInfo, {
+          name: "Sender — screen",
+          quality: "3840×2160",
+          stats: "down 8000 kbps · 30 fps · 12 ms ping",
+        }),
+        h(StreamVolume, {
+          volume: 50,
+          onChange: (value) => {
+            window.testStreamVolume = value;
+          },
+        }),
+      ),
+      h("div", { className: "focusActions" }, "Grid controls"),
+      h("button", { className: "selfViewToggle" }, "Show yourself"),
+      h(
+        "details",
+        { className: "hiddenTilesMenu" },
+        h("summary", null, "Hidden windows"),
+      ),
+    ),
+  );
+  await wait();
+  const tile = container.querySelector(".videoCard.remote");
+  check(
+    getComputedStyle(container.querySelector(".hiddenTilesMenu")).display ===
+      "none",
+    "Focused media must hide the Hidden windows menu",
+  );
+  check(
+    getComputedStyle(container.querySelector(".selfViewToggle")).display ===
+      "none",
+    "Focused media must hide Show yourself",
+  );
+  const summary = tile.querySelector(".streamSummary");
+  check(
+    summary.querySelector(".networkBadge").getBoundingClientRect().top >
+      summary.querySelector(".qualityBadge").getBoundingClientRect().bottom,
+    "Stream statistics must sit below the full resolution",
+  );
+  check(
+    directionalStreamStats(
+      "up 100 kbps · 20 fps · down 200 kbps · 30 fps · 12 ms ping",
+      "down",
+    ) === "down 200 kbps · 30 fps · 12 ms ping",
+    "Remote statistics must use download traffic and its own FPS",
+  );
+  await fullscreenVideoTile(container);
+  check(
+    document.fullscreenElement === tile,
+    "Fullscreen must target only the selected video tile",
+  );
+  check(
+    getComputedStyle(tile.querySelector("video")).objectFit === "contain",
+    "Fullscreen must preserve the entire video",
+  );
+  check(
+    getComputedStyle(summary).display === "none" &&
+      getComputedStyle(tile.querySelector("span")).display === "none" &&
+      getComputedStyle(tile.querySelector(".tileHide")).display === "none",
+    "Fullscreen must hide names, badges and tile controls",
+  );
+  const trigger = tile.querySelector(".streamInfoTrigger");
+  check(
+    getComputedStyle(trigger).display !== "none",
+    "Fullscreen must retain the information icon",
+  );
+  trigger.focus();
+  check(
+    getComputedStyle(tile.querySelector('[role="tooltip"]')).display === "grid",
+    "Focusing the info icon must reveal stream details",
+  );
+  await document.exitFullscreen();
+  const volumeButton = tile.querySelector(".streamVolume button");
+  volumeButton.focus();
+  check(
+    getComputedStyle(tile.querySelector(".streamVolume label")).display ===
+      "block",
+    "Stream volume slider must reveal on focus",
+  );
+  volumeButton.click();
+  check(
+    window.testStreamVolume === 0,
+    "Stream mute must affect only its volume callback",
+  );
+  root.unmount();
+  container.remove();
+  await verifyScreenAudioTransport();
+  return {
+    selectedTileOnly: true,
+    fullResolution: true,
+    fullscreenInformation: true,
+  };
+};
+function verifyWorkspaceHeaderLayout() {
+  const probe = document.createElement("div");
+  probe.className = "workspace";
+  probe.style.cssText =
+    "position:fixed;inset:0;z-index:1000;pointer-events:none";
+  probe.innerHTML = `<aside class="workspaceRail"></aside><aside class="channelSidebar"><header class="workspaceName"><strong>Test server</strong><button class="serverInviteButton">+</button><div class="serverActions"><button class="accountMenuTrigger">Cog</button></div></header></aside><section class="room"><header class="roomHeader"><nav class="panelControls"><button>Servers</button><button>Channels</button><button>Users</button></nav><strong>General</strong><div class="accountMenu demoAccountsMenu"><button class="accountMenuTrigger">Manage demo accounts</button></div></header><section class="chat"><form><input/><button data-chat-send>Send</button></form></section></section>`;
+  document.body.append(probe);
+  const channel = probe
+    .querySelector(".panelControls > button:nth-child(2)")
+    .getBoundingClientRect();
+  const invite = probe
+    .querySelector(".serverInviteButton")
+    .getBoundingClientRect();
+  const settings = probe
+    .querySelector(".serverActions button")
+    .getBoundingClientRect();
+  check(
+    channel.right < invite.left && invite.right < settings.left,
+    "Invite must sit between hide channels and server settings without overlap",
+  );
+  const menu = probe.querySelector(".demoAccountsMenu").getBoundingClientRect();
+  const send = probe.querySelector("[data-chat-send]").getBoundingClientRect();
+  check(
+    innerWidth <= 920 || Math.abs(menu.right - send.right) < 2,
+    `Demo accounts and Send must share the same right margin (menu ${menu.right}, send ${send.right})`,
+  );
+  const users = probe
+    .querySelector(".panelControls > button:nth-child(3)")
+    .getBoundingClientRect();
+  check(
+    Math.abs(users.right - (innerWidth - 12)) < 2 &&
+      (menu.right <= users.left || users.bottom <= menu.top),
+    "User-list toggle must not overlap demo accounts",
+  );
+  probe.classList.add("friendsScreen");
+  probe.querySelector(".serverInviteButton").remove();
+  const messages = probe
+    .querySelector(".panelControls > button:nth-child(2)")
+    .getBoundingClientRect();
+  check(
+    Math.abs(messages.left - settings.left) < 2,
+    "Friends messages toggle must occupy the server-settings position",
+  );
+  probe.remove();
+}
+window.verifyWorkspaceAdditions = async () => {
+  await verifyPrivacyManagement();
+  await verifySettingsCategories();
+  await verifyInvitesAndReveal();
+  await verifyPanelToggleStates();
+  await verifyParticipantIndicators();
+  await verifyScreenShareOptions();
+  verifyWorkspaceHeaderLayout();
+};
+async function verifyPrivacyManagement() {
+  const container = document.createElement("div");
+  container.className = "settingsContent";
+  container.style.cssText =
+    "position:fixed;inset:0;z-index:1000;background:#151925;overflow:auto";
+  document.body.append(container);
+  const root = createRoot(container),
+    originalFetch = window.fetch;
+  const rows = [
+    {
+      id: "s1",
+      text: "needle message",
+      createdAt: "2026-11-03T10:00:00Z",
+      deletedAt: null,
+      kind: "server",
+      groupId: "server",
+      groupName: "Test server",
+      channelName: "general",
+    },
+    {
+      id: "s2",
+      text: "another message",
+      createdAt: "2026-11-03T11:00:00Z",
+      deletedAt: null,
+      kind: "server",
+      groupId: "server",
+      groupName: "Test server",
+      channelName: "general",
+    },
+    {
+      id: "d1",
+      text: "direct message",
+      createdAt: "2026-11-03T12:00:00Z",
+      deletedAt: null,
+      kind: "direct",
+      groupId: "person",
+      groupName: "Bob",
+    },
+  ];
+  const deletions = [];
+  let accountDeleted = false;
+  window.fetch = async (url, options) => {
+    if (String(url) === "/api/users/me/message-history") {
+      if (options?.method === "DELETE") {
+        const body = JSON.parse(options.body);
+        deletions.push(body);
+        return Response.json({ deletedIds: [body.messageId] });
+      }
+      return Response.json(rows);
+    }
+    if (String(url) === "/api/users/me" && options?.method === "DELETE") {
+      deletions.push(JSON.parse(options.body));
+      return Response.json({ deleted: true });
+    }
+    return originalFetch(url, options);
+  };
+  const type = async (input, value) => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+  };
+  try {
+    root.render(h(PersonalMessages, { currentServerId: "server" }));
+    await wait();
+    check(
+      container.querySelectorAll(".messageDestinationList button").length ===
+        2 && !container.querySelector("article"),
+      "My messages must initially show only server and DM destinations",
+    );
+    container.querySelector(".messageDestinationList button").click();
+    await wait();
+    const dialog = document.querySelector("dialog[open]");
+    check(
+      dialog && dialog.querySelectorAll("article").length === 2,
+      "Opening a server must show its messages in a new window",
+    );
+    await type(dialog.querySelector('input[type="search"]'), "needle");
+    check(
+      dialog.querySelectorAll("article").length === 1,
+      "Message search must filter only the selected destination",
+    );
+    dialog.querySelector("article .messageBulkDelete > button").click();
+    await wait();
+    dialog.querySelector("article .settingsDangerZone button.danger").click();
+    await wait();
+    check(
+      deletions[0].messageId === "s1" && deletions[0].groupId === "server",
+      "Message deletion must target the selected row and server",
+    );
+    dialog.querySelector(".settingsClose").click();
+    await wait();
+    await type(container.querySelector('input[type="search"]'), "Bob");
+    check(
+      container.querySelectorAll(".messageDestinationList button").length === 1,
+      "Destination search must filter servers and people",
+    );
+    root.render(
+      h(AccountDeletion, {
+        onDeleted: () => {
+          accountDeleted = true;
+        },
+      }),
+    );
+    await wait();
+    container.querySelector("button.danger").click();
+    await wait();
+    const checkbox = container.querySelector('input[type="checkbox"]');
+    check(
+      !checkbox.checked &&
+        container.querySelectorAll("button.danger")[0].disabled,
+      "Account deletion must require explicit confirmation and default to retaining messages",
+    );
+    checkbox.click();
+    await type(
+      container.querySelector('input:not([type="checkbox"])'),
+      "DELETE",
+    );
+    container.querySelector("button.danger").click();
+    await wait();
+    check(
+      accountDeleted &&
+        deletions.at(-1).deleteMessages === true &&
+        deletions.at(-1).confirm === "DELETE",
+      "Account deletion must send the chosen message-retention option",
+    );
+    root.render(
+      h(SettingsMembers, {
+        members: [
+          { id: "a", name: "Alice", role: "member" },
+          { id: "b", name: "Bob", role: "member" },
+        ],
+        onTransfer: async (member) => {
+          window.testTransferredOwner = member.id;
+        },
+      }),
+    );
+    await wait();
+    const memberRows = [...container.querySelectorAll(".settingsMemberRow")];
+    check(
+      getComputedStyle(memberRows[0]).backgroundColor !==
+        getComputedStyle(memberRows[1]).backgroundColor,
+      "Member rows must alternate colors",
+    );
+    await type(container.querySelector('input[type="search"]'), "Bob");
+    check(
+      container.querySelectorAll(".settingsMemberRow").length === 1,
+      "Member search must filter the settings list",
+    );
+    container.querySelector(".transferOwnershipButton").click();
+    await wait();
+    check(
+      !window.testTransferredOwner &&
+        container
+          .querySelector(".ownershipConfirmation")
+          .textContent.includes("lose owner controls"),
+      "Promoting a member must require a clear ownership-transfer confirmation",
+    );
+    container.querySelector(".ownershipConfirmation button.danger").click();
+    await wait();
+    check(
+      window.testTransferredOwner === "b",
+      "Ownership transfer must target the selected member",
+    );
+    delete window.testTransferredOwner;
+  } finally {
+    root.unmount();
+    container.remove();
+    window.fetch = originalFetch;
+  }
+}
+async function verifySettingsCategories() {
+  const container = document.createElement("nav");
+  container.className = "settingsNavigation";
+  container.style.cssText = "position:fixed;inset:0;z-index:1000";
+  document.body.append(container);
+  const root = createRoot(container);
+  let selected;
+  root.render(
+    h(SettingsNavigation, {
+      account: false,
+      selected: "invite-friends",
+      onSelect: (id) => {
+        selected = id;
+      },
+    }),
+  );
+  await wait();
+  const group = container.querySelector('[aria-label="Invitations"]');
+  check(
+    [...group.querySelectorAll("button")]
+      .map((button) => button.textContent)
+      .join(",") === "Invite friends,Invite people",
+    "Invitations must group friends before people",
+  );
+  group.querySelectorAll("button")[1].click();
+  check(
+    selected === "invite-people",
+    "Categorized navigation must retain section actions",
+  );
+  check(
+    container.querySelectorAll(".settingsNavCategory").length === 4,
+    "Server navigation must have visible categories",
+  );
+  root.render(
+    h(SettingsNavigation, {
+      account: true,
+      selected: "media",
+      onSelect: (id) => {
+        selected = id;
+      },
+    }),
+  );
+  await wait();
+  check(
+    [...container.querySelectorAll(".settingsNavCategory")]
+      .map((node) => node.textContent)
+      .join(",") === "Account,Communication,Privacy,Session",
+    "User settings must group account, communication, privacy and session actions",
+  );
+  root.unmount();
+  container.remove();
+}
+async function verifyInvitesAndReveal() {
+  const container = document.createElement("div");
+  container.className = "settingsContent";
+  container.style.cssText =
+    "position:fixed;inset:0;z-index:1000;background:#151925;overflow:auto";
+  document.body.append(container);
+  const root = createRoot(container);
+  const originalFetch = window.fetch;
+  const searches = [],
+    invitations = [],
+    added = [];
+  window.fetch = async (url, options) => {
+    if (String(url).includes("/servers/invite-test/invitees")) {
+      searches.push(url);
+      return Response.json([
+        { id: "person", name: "Alex", handle: "alex.1234" },
+      ]);
+    }
+    if (String(url).endsWith("/servers/invite-test/members")) {
+      const body = JSON.parse(options.body);
+      invitations.push(body);
+      return Response.json({ added: body.userIds });
+    }
+    return originalFetch(url, options);
+  };
+  const people = [
+    { id: "z", name: "Zoe", status: "accepted" },
+    { id: "a", name: "Alice", status: "accepted" },
+    { id: "b", name: "bob", status: "accepted" },
+  ];
+  const type = async (value) => {
+    const input = container.querySelector('input[type="search"]');
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+  };
+  try {
+    root.render(
+      h(ServerInvites, {
+        key: "friends",
+        serverId: "invite-test",
+        mode: "friends",
+        friends: people,
+        memberIds: ["z"],
+        onAdded: (value) => added.push(value),
+      }),
+    );
+    await wait();
+    check(
+      [...container.querySelectorAll(".friendPickerRow b")]
+        .map((node) => node.textContent)
+        .join(",") === "Alice,bob,Zoe",
+      "Friends must be listed alphabetically before searching",
+    );
+    const row = container.querySelector(".friendPickerRow");
+    const checkbox = row.querySelector("input").getBoundingClientRect();
+    const avatar = row.querySelector(".inviteAvatar").getBoundingClientRect();
+    const identity = row
+      .querySelector(".invitePersonIdentity")
+      .getBoundingClientRect();
+    check(
+      getComputedStyle(row).display === "grid" &&
+        checkbox.right < avatar.left &&
+        avatar.right < identity.left,
+      "Invite rows must align the checkbox, avatar and identity horizontally inside settings",
+    );
+    check(
+      Math.abs(
+        checkbox.top + checkbox.height / 2 - avatar.top - avatar.height / 2,
+      ) < 2,
+      "Invite checkboxes must center beside the avatar",
+    );
+    check(
+      container.querySelectorAll('input[type="checkbox"]')[2].disabled,
+      "Existing members must be marked and unavailable for reinviting",
+    );
+    await type("ali");
+    check(
+      container.querySelectorAll(".friendPickerRow").length === 1,
+      "Friend search must filter the alphabetical list",
+    );
+    container.querySelector('input[type="checkbox"]').click();
+    await wait();
+    container.querySelector("button.primary").click();
+    await wait();
+    check(
+      invitations[0].mode === "friends" && added[0][0].id === "a",
+      "Friend invitations must use the friend-only API mode",
+    );
+    root.render(
+      h(ServerInvites, {
+        key: "people",
+        serverId: "invite-test",
+        mode: "people",
+        friends: people,
+        memberIds: [],
+        onAdded: (value) => added.push(value),
+      }),
+    );
+    await wait();
+    check(
+      !container.querySelector(".friendPickerRow") && searches.length === 0,
+      "Invite people must require a search before listing accounts",
+    );
+    await type("al");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    check(
+      searches.length === 0,
+      "Remote people searches must wait for three characters",
+    );
+    await type("ale");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    check(
+      searches.length === 1 &&
+        container.querySelector(".friendPickerRow b").textContent === "Alex",
+      "People search must show matching accounts",
+    );
+    container.querySelector('input[type="checkbox"]').click();
+    await wait();
+    container.querySelector("button.primary").click();
+    await wait();
+    check(
+      invitations[1].mode === "people",
+      "People invitations must use explicit people mode",
+    );
+    root.unmount();
+    container.innerHTML =
+      '<div class="settingsContent" style="height:240px;overflow:auto;padding:20px"><div style="height:400px"></div><section id="opened-test"><button>Stop camera test</button><div style="height:300px"></div></section><div style="height:400px"></div></div>';
+    const pane = container.querySelector(".settingsContent"),
+      section = container.querySelector("section");
+    pane.scrollTop = 180;
+    const background = document.scrollingElement.scrollTop;
+    revealSettingsSection(section);
+    check(
+      Math.abs(
+        section.getBoundingClientRect().top -
+          pane.getBoundingClientRect().top -
+          20,
+      ) < 2,
+      "New settings content must align toward the top of its own scroll pane",
+    );
+    check(
+      document.scrollingElement.scrollTop === background,
+      "Revealing settings must not scroll the background workspace",
+    );
+  } finally {
+    window.fetch = originalFetch;
+    container.remove();
+  }
+}
+async function verifyPanelToggleStates() {
+  const container = document.createElement("nav");
+  container.className = "panelControls";
+  document.body.append(container);
+  const root = createRoot(container);
+  function ToggleCase({ label, breakpoint }) {
+    const [toggled, setToggled] = useState(false);
+    return h(
+      PanelToggle,
+      {
+        label,
+        toggled,
+        defaultHiddenBelow: breakpoint,
+        onToggle: () => setToggled((value) => !value),
+      },
+      "Icon",
+    );
+  }
+  const cases = [
+    ["servers", 650],
+    ["channels", 0],
+    ["messages", 0],
+    ["users", 920],
+    ["profile", 920],
+  ];
+  root.render(
+    cases.map(([label, breakpoint]) =>
+      h(ToggleCase, { key: label, label, breakpoint }),
+    ),
+  );
+  await wait();
+  for (const [index, [label, breakpoint]] of cases.entries()) {
+    const button = container.children[index];
+    const open = !matchMedia(`(max-width: ${breakpoint}px)`).matches;
+    check(
+      button.title === `${open ? "Hide" : "Show"} ${label}` &&
+        button.getAttribute("aria-label") === button.title &&
+        button.getAttribute("aria-expanded") === String(open),
+      "Panel action labels must reflect actual desktop/mobile visibility",
+    );
+    const background = getComputedStyle(button).backgroundColor;
+    const borderStyle = getComputedStyle(button).borderStyle;
+    button.click();
+    await wait();
+    check(
+      button.title === `${open ? "Show" : "Hide"} ${label}` &&
+        button.getAttribute("aria-expanded") === String(!open),
+      "Panel action must reverse after toggling",
+    );
+    check(
+      getComputedStyle(button).backgroundColor !== background ||
+        getComputedStyle(button).borderStyle !== borderStyle,
+      "Open and closed panel buttons must have different styling",
+    );
+  }
+  root.unmount();
+  container.remove();
+}
+async function verifyParticipantIndicators() {
+  const container = document.createElement("div");
+  container.style.cssText = "position:fixed;top:60px;left:10px;z-index:1000";
+  document.body.append(container);
+  const root = createRoot(container);
+  let camera = 0,
+    screen = 0;
+  const participant = {
+    name: "Test",
+    muted: false,
+    deafened: false,
+    camera: true,
+    screen: true,
+  };
+  root.render(
+    h(ParticipantMediaIndicators, {
+      participant,
+      selfState: { muted: true, deafened: true },
+      onCamera: () => camera++,
+      onWatch: () => screen++,
+    }),
+  );
+  await wait();
+  check(
+    container.querySelector('[aria-label="Deafened"]'),
+    "Own deafen indicator must show immediately even when signaling says false",
+  );
+  const controls = [...container.querySelector(".voiceIndicators").children];
+  check(
+    controls.length === 4,
+    "Deafen, microphone, camera and Watch must all appear",
+  );
+  const reference = getComputedStyle(controls[0]);
+  const center =
+    controls[0].getBoundingClientRect().top +
+    controls[0].getBoundingClientRect().height / 2;
+  controls.forEach((control) => {
+    const css = getComputedStyle(control),
+      box = control.getBoundingClientRect();
+    check(
+      css.borderStyle === "solid" &&
+        css.borderWidth === "1px" &&
+        css.backgroundColor === reference.backgroundColor &&
+        css.borderRadius === reference.borderRadius &&
+        box.height === 24 &&
+        Math.abs(box.top + box.height / 2 - center) < 1,
+      "All participant indicators must share the same centered, bordered style",
+    );
+  });
+  container.querySelector('[aria-label="Open Test\'s camera"]').click();
+  const preview = container.querySelector(
+    '[aria-label="Preview your shared screen"]',
+  );
+  check(
+    preview?.textContent === "Preview",
+    "Your own shared screen must say Preview",
+  );
+  preview.click();
+  check(
+    camera === 1 && screen === 1,
+    "Matching styles must preserve camera and Watch actions",
+  );
+  root.render(
+    h(ParticipantMediaIndicators, {
+      participant: { ...participant, deafened: true, muted: true },
+      selfState: { muted: false, deafened: false },
+      onCamera() {},
+      onWatch() {},
+    }),
+  );
+  await wait();
+  check(
+    !container.querySelector('[aria-label="Deafened"]') &&
+      !container.querySelector('[aria-label="Muted"]'),
+    "Own undeafen must clear indicators even before the signaling echo catches up",
+  );
+  root.unmount();
+  container.remove();
+}
+async function verifyScreenShareOptions() {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const shared = [];
+  let canceled = false;
+  root.render(
+    h(ScreenShareOptions, {
+      onShare: (value) => shared.push(value),
+      onClose: () => {
+        canceled = true;
+      },
+    }),
+  );
+  await wait();
+  const dialog = document.querySelector("dialog[open]");
+  const select = dialog.querySelector("select");
+  const heading = dialog
+    .querySelector(".resolutionLabel")
+    .getBoundingClientRect();
+  const help = dialog.querySelector(".resolutionHelp").getBoundingClientRect();
+  check(
+    help.top >= heading.top &&
+      help.bottom <= heading.bottom &&
+      help.left > heading.left + 40,
+    "Resolution help must remain inline beside its label",
+  );
+  check(
+    select.value === "1080" && select.options.length === 4,
+    "Screen sharing must offer four resolutions and default to 1080p",
+  );
+  check(shared.length === 0, "Opening screen options must not start capture");
+  select.value = "720";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  await wait();
+  dialog.querySelector('button[type="submit"]').click();
+  check(shared[0] === "720", "Screen sharing must use the chosen resolution");
+  [...dialog.querySelectorAll('button[type="button"]')]
+    .find((button) => button.textContent === "Cancel")
+    .click();
+  check(
+    canceled,
+    "Cancel must dismiss screen options without starting capture",
+  );
+  root.render(
+    h(EmptyState, {
+      title: "No pending invites",
+      description: "Friend requests will appear here.",
+    }),
+  );
+  await wait();
+  check(
+    container.querySelector(".contentEmptyState strong").textContent ===
+      "No pending invites",
+    "Empty states must show explanatory content",
+  );
+  let resolution;
+  root.render(
+    h(CameraResolutionSelection, {
+      resolution: "720",
+      onChange: (value) => {
+        resolution = value;
+      },
+    }),
+  );
+  await wait();
+  const cameraSelect = container.querySelector("select");
+  cameraSelect.value = "1080";
+  cameraSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  check(
+    resolution === "1080",
+    "Camera resolution selector must pass the selected quality",
+  );
+  const constraints = cameraCaptureConstraints("camera-id", resolution);
+  check(
+    constraints.width.max === 1920 &&
+      constraints.height.max === 1080 &&
+      constraints.deviceId.exact === "camera-id",
+    "Camera capture must use the chosen resolution and device",
+  );
+  root.unmount();
+  container.remove();
+}
 function Workspace() {
   const audio = useCallAudio();
   useEffect(() => {
@@ -949,6 +1803,8 @@ window.verifyWorkspaceControlsTest = async () => {
   );
   panelProbe.remove();
   await verifyMessageCooldown();
+  await verifyScreenShareOptions();
+  verifyWorkspaceHeaderLayout();
   const media = window.workspaceAudio;
   check(
     callAudio.current === media.element &&
@@ -1126,13 +1982,13 @@ window.verifyChatHistory = async () => {
     );
   for (
     let frame = 0;
-    frame < 30 && (!atBottom() || container.querySelector(".jumpToPresent"));
+    frame < 80 && (!atBottom() || container.querySelector(".jumpToPresent"));
     frame++
   )
     await wait();
   check(
     atBottom() && !container.querySelector(".jumpToPresent"),
-    "Jump arrow did not return to the latest message and disappear",
+    `Jump arrow did not return to the latest message and disappear (remaining scroll: ${log().scrollHeight - log().clientHeight - log().scrollTop}, arrow visible: ${Boolean(container.querySelector(".jumpToPresent"))})`,
   );
   log().scrollTop = readingPosition;
   log().dispatchEvent(new Event("scroll", { bubbles: true }));

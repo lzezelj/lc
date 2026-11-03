@@ -1,19 +1,26 @@
 "use client";
+import {
+  cameraCaptureConstraints,
+  type CameraResolution,
+} from "./camera-resolution";
 
 import { useEffect, useRef, useState } from "react";
 import { createMicrophoneGate, readVoiceThreshold } from "./microphone-gate";
 import { microphoneProcessing, prepareVoiceActivity } from "./voice-activity";
 import { applyCallOutput } from "./audio-output";
+import { revealSettingsSection } from "./settings-reveal";
 
 export function MediaTests({
   microphoneId,
   cameraId,
+  cameraResolution = "720",
   outputVolume = 100,
   outputId = "",
   deafened = false,
 }: {
   microphoneId: string;
   cameraId: string;
+  cameraResolution?: CameraResolution;
   outputVolume?: number;
   outputId?: string;
   deafened?: boolean;
@@ -27,6 +34,14 @@ export function MediaTests({
   const [error, setError] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
+  const cameraSection = useRef<HTMLElement>(null);
+  const microphoneSection = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (cameraTesting) revealSettingsSection(cameraSection.current);
+  }, [cameraTesting]);
+  useEffect(() => {
+    if (micTesting) revealSettingsSection(microphoneSection.current);
+  }, [micTesting]);
 
   useEffect(() => {
     if (audio.current)
@@ -91,7 +106,7 @@ export function MediaTests({
     const preview = video.current;
     void navigator.mediaDevices
       .getUserMedia({
-        video: cameraId ? { deviceId: { exact: cameraId } } : true,
+        video: cameraCaptureConstraints(cameraId, cameraResolution),
         audio: false,
       })
       .then((stream) => {
@@ -113,7 +128,7 @@ export function MediaTests({
       captured?.getTracks().forEach((track) => track.stop());
       if (preview) preview.srcObject = null;
     };
-  }, [cameraTesting, cameraId]);
+  }, [cameraTesting, cameraId, cameraResolution]);
 
   return (
     <div className="mediaTests">
@@ -143,67 +158,78 @@ export function MediaTests({
         Start the microphone test, stay quiet, then speak normally. Set the
         threshold above the room noise level but below your speaking level.
       </small>
-      <button
-        type="button"
-        onClick={() => {
-          prepareVoiceActivity();
-          setError("");
-          setMicTesting((current) => !current);
-        }}
-      >
-        {micTesting ? "Stop microphone test" : "Test microphone"}
-      </button>
-      {micTesting && (
-        <>
-          <meter
-            aria-label="Microphone input level"
-            min="-80"
-            max="0"
-            value={level}
-          />
-          <span role="status">
-            {Math.round(level)} dB ·{" "}
-            {transmitting ? "Passing audio" : "Blocked by threshold"}
-          </span>
-          <label className="listenTest">
-            <input
-              type="checkbox"
-              checked={listen}
-              onChange={(event) => {
-                setListen(event.target.checked);
-                if (event.target.checked)
-                  void audio.current
-                    ?.play()
-                    .catch(() =>
-                      setError(
-                        "Playback was blocked. Try enabling playback again.",
-                      ),
-                    );
-              }}
-            />{" "}
-            Hear my microphone (use headphones)
-          </label>
-        </>
-      )}
-      <audio ref={audio} autoPlay muted={deafened || !listen || !micTesting} />
-      <button
-        type="button"
-        onClick={() => {
-          setError("");
-          setCameraTesting((current) => !current);
-        }}
-      >
-        {cameraTesting ? "Stop camera test" : "Test camera"}
-      </button>
-      {cameraTesting && (
-        <video
-          className="settingsCameraPreview"
-          ref={video}
+      <section className="mediaTestSection" ref={microphoneSection}>
+        <button
+          type="button"
+          onClick={() => {
+            prepareVoiceActivity();
+            setError("");
+            setMicTesting((current) => !current);
+          }}
+        >
+          {micTesting ? "Stop microphone test" : "Test microphone"}
+        </button>
+        {micTesting && (
+          <>
+            <meter
+              aria-label="Microphone input level"
+              min="-80"
+              max="0"
+              value={level}
+            />
+            <span role="status">
+              {Math.round(level)} dB ·{" "}
+              {transmitting ? "Passing audio" : "Blocked by threshold"}
+            </span>
+            <label className="listenTest">
+              <input
+                type="checkbox"
+                checked={listen}
+                onChange={(event) => {
+                  setListen(event.target.checked);
+                  if (event.target.checked)
+                    void audio.current
+                      ?.play()
+                      .catch(() =>
+                        setError(
+                          "Playback was blocked. Try enabling playback again.",
+                        ),
+                      );
+                }}
+              />{" "}
+              Hear my microphone (use headphones)
+            </label>
+          </>
+        )}
+        <audio
+          ref={audio}
           autoPlay
-          muted
-          playsInline
+          muted={deafened || !listen || !micTesting}
         />
-      )}
+      </section>
+      <section className="mediaTestSection" ref={cameraSection}>
+        <button
+          type="button"
+          onClick={() => {
+            setError("");
+            setCameraTesting((current) => !current);
+          }}
+        >
+          {cameraTesting ? "Stop camera test" : "Test camera"}
+        </button>
+        {cameraTesting && (
+          <video
+            className="settingsCameraPreview"
+            onLoadedMetadata={() =>
+              revealSettingsSection(cameraSection.current)
+            }
+            ref={video}
+            autoPlay
+            muted
+            playsInline
+          />
+        )}
+      </section>
       {error && <p role="alert">{error}</p>}
     </div>
   );

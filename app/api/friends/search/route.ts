@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   const query = normalizeUserHandle(
     new URL(request.url).searchParams.get("q") ?? "",
   );
-  if (!session || !query || query.length < 2) return NextResponse.json([]);
+  if (!session || !query || query.length < 3) return NextResponse.json([]);
   const rows = await db
     .select({ id: users.id, name: users.name, handle: users.handle })
     .from(users)

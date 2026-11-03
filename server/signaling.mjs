@@ -290,6 +290,7 @@ export function createSignalingServer({
       userId: peer.identity.sub,
       name: peer.participantName ?? "Guest",
       muted: Boolean(peer.mediaState?.muted),
+      deafened: Boolean(peer.mediaState?.deafened),
       camera: Boolean(peer.mediaState?.camera),
       screen: Boolean(peer.mediaState?.screen),
       speaking: Boolean(peer.mediaState?.speaking),
@@ -576,7 +577,8 @@ export function createSignalingServer({
           socket.groupPresence.set(message.roomId, {
             userId: socket.identity.sub,
             name,
-            muted: Boolean(message.muted),
+            muted: Boolean(message.muted) || Boolean(message.deafened),
+            deafened: Boolean(message.deafened),
             camera: Boolean(message.camera),
             screen: Boolean(message.screen),
             speaking: Boolean(message.speaking),
@@ -590,7 +592,8 @@ export function createSignalingServer({
 
       if (message.type === "media-state" && joinedRoomId) {
         socket.mediaState = {
-          muted: Boolean(message.muted),
+          muted: Boolean(message.muted) || Boolean(message.deafened),
+          deafened: Boolean(message.deafened),
           camera: Boolean(message.camera),
           screen: Boolean(message.screen),
           speaking: Boolean(message.speaking),

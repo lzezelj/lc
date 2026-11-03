@@ -22,6 +22,20 @@ const code = ts.transpile(declaration.getText(ast).replace(/^export /, ""), {
   target: ts.ScriptTarget.ES2022,
   jsx: ts.JsxEmit.React,
 });
+const qualitySource = await readFile(
+  new URL("../app/screen-share-options.tsx", import.meta.url),
+  "utf8",
+);
+const screenShareResolutions = vm.runInNewContext(
+  `(${qualitySource.match(/export const screenShareResolutions = ([\s\S]*?);/)[1]})`,
+);
+const cameraSource = await readFile(
+  new URL("../app/camera-resolution.tsx", import.meta.url),
+  "utf8",
+);
+const cameraResolutions = vm.runInNewContext(
+  `(${cameraSource.match(/export const cameraResolutions = ([\s\S]*?);/)[1]})`,
+);
 const elements = (node) =>
   Array.isArray(node)
     ? node.flatMap(elements)
@@ -36,6 +50,9 @@ function renderCall(state = {}, options = {}) {
     ...declaration.getText(ast).matchAll(/const \[(\w+),\s*\w+\] = useState/g),
   ].map((match) => match[1]);
   let stateIndex = 0;
+  let refIndex = 0;
+  let effectIndex = 0;
+  const effectDeps = [];
   const refs = [];
   const effects = [];
   const attached = [];
@@ -79,7 +96,8 @@ function renderCall(state = {}, options = {}) {
         source === "mic" && options.microphoneTrack
           ? { track: options.microphoneTrack }
           : (publications.get(source) ?? {}),
-      async setScreenShareEnabled() {
+      async setScreenShareEnabled(enabled, options) {
+        events.push(["screen capture", enabled, options]);
         await options.screenPending;
       },
       async setCameraEnabled() {
@@ -87,6 +105,7 @@ function renderCall(state = {}, options = {}) {
       },
       async setMicrophoneEnabled(enabled) {
         events.push(["microphone", enabled]);
+        await options.onMicrophoneUpdate?.(enabled);
       },
     },
   };
@@ -99,7 +118,12 @@ function renderCall(state = {}, options = {}) {
     },
     useState(initial) {
       const name = stateNames[stateIndex++];
-      const value = name in state ? state[name] : initial;
+      const value =
+        name in stateWrites
+          ? stateWrites[name]
+          : name in state
+            ? state[name]
+            : initial;
       return [
         value,
         (next) => {
@@ -111,13 +135,25 @@ function renderCall(state = {}, options = {}) {
       ];
     },
     useRef(initial) {
+      const index = refIndex++;
+      if (refs[index]) return refs[index];
       const ref = {
         current: refs.length === 0 ? (options.unjoined ? null : room) : initial,
       };
       refs.push(ref);
       return ref;
     },
-    useEffect: (effect) => effects.push(effect),
+    useEffect(effect, deps) {
+      const index = effectIndex++;
+      const previous = effectDeps[index];
+      if (
+        !previous ||
+        !deps ||
+        deps.some((value, i) => !Object.is(value, previous.deps[i]))
+      )
+        effects.push(effect);
+      effectDeps[index] = { deps };
+    },
     Track: {
       Kind: { Video: "video", Audio: "audio" },
       Source: { ScreenShare: "screen", Camera: "camera", Microphone: "mic" },
@@ -144,20 +180,30 @@ function renderCall(state = {}, options = {}) {
       })),
     window: { setInterval: () => 1, clearInterval() {} },
     DeviceMenu: "DeviceMenu",
+    StreamInfo: "StreamInfo",
+    StreamVolume: "StreamVolume",
+    fullscreenVideoTile() {},
+    ScreenShareOptions: "ScreenShareOptions",
+    screenShareResolutions,
+    cameraResolutions,
+    CameraResolutionSelection: "CameraResolutionSelection",
     RemoteTrackView: "RemoteTrackView",
     HideTileButton: "HideTileButton",
     HiddenTilesMenu: "HiddenTilesMenu",
     SelfViewButton: "SelfViewButton",
   });
-  const tree = Component({
+  const props = {
     channelId: "room-1",
     currentUserName: "Local user",
+    cameraResolution: options.cameraResolution,
+    currentUserId: options.currentUserId,
+    focusTarget: options.focusTarget,
     deafened: options.deafened ?? false,
     initialMuted: options.initialMuted ?? false,
     outputVolume: 0.4,
     microphones: [],
     cameras: [],
-    viewOpen: true,
+    viewOpen: options.viewOpen ?? true,
     onConnectionChange: (present) => events.push(["present", present]),
     onPingChange() {},
     onMediaStateChange: (media) => events.push(["media", media]),
@@ -166,7 +212,8 @@ function renderCall(state = {}, options = {}) {
       throw new Error(message);
     },
     onOpenView: () => opened.push(true),
-  });
+  };
+  const tree = Component(props);
   for (const element of elements(tree)) {
     if (element.props?.ref && element.type === "video")
       element.props.ref.current = { preview: true };
@@ -181,6 +228,11 @@ function renderCall(state = {}, options = {}) {
     refs,
     handlers,
     stateWrites,
+    rerender() {
+      stateIndex = refIndex = effectIndex = 0;
+      effects.length = 0;
+      return { tree: Component(props), effects: [...effects] };
+    },
   };
 }
 
@@ -427,6 +479,164 @@ test("unmuting a previously muted group microphone enables its actual capture tr
   );
 });
 
+test("mute button, capture and presence stay aligned through SDK-triggered renders and repeated unmute", async () => {
+  let finishUnmute;
+  const microphoneTrack = {
+    mediaStreamTrack: { enabled: false },
+    on() {},
+    off() {},
+  };
+  const result = renderCall(
+    { joined: true },
+    {
+      initialMuted: true,
+      microphoneTrack,
+      onMicrophoneUpdate: (enabled) =>
+        enabled
+          ? new Promise((resolve) => {
+              finishUnmute = resolve;
+            })
+          : Promise.resolve(),
+    },
+  );
+  result.effects.forEach((effect) => effect());
+  await settle();
+  let tree = result.tree;
+  const microphone = () =>
+    elements(tree).find(
+      (element) =>
+        element.type === "DeviceMenu" && element.props.kind === "microphone",
+    );
+  const render = () => {
+    const next = result.rerender();
+    tree = next.tree;
+    next.effects.forEach((effect) => effect());
+  };
+  for (let cycle = 0; cycle < 3; cycle++) {
+    assert.equal(
+      microphone().props.disabled,
+      true,
+      "Red microphone must mean muted",
+    );
+    microphone().props.onAction();
+    await settle();
+    render();
+    assert.equal(
+      microphone().props.disabled,
+      false,
+      "Unmute intent must update before the SDK completes",
+    );
+    // LiveKit emits track callbacks while unmute is still pending.
+    render();
+    finishUnmute();
+    await settle();
+    assert.equal(microphoneTrack.mediaStreamTrack.enabled, true);
+    assert.equal(
+      result.events.filter((event) => event[0] === "media").at(-1)[1].muted,
+      false,
+    );
+    microphone().props.onAction();
+    render();
+    await settle();
+    assert.equal(microphone().props.disabled, true);
+    assert.equal(microphoneTrack.mediaStreamTrack.enabled, false);
+    assert.equal(
+      result.events.filter((event) => event[0] === "media").at(-1)[1].muted,
+      true,
+    );
+  }
+});
+
+test("screen audio volume is independent from voices and participant shortcuts reveal the matching tile", async () => {
+  const media = [
+    {
+      id: "voice",
+      participantId: "person:session",
+      participantName: "Person",
+      track: { kind: "audio" },
+      isScreen: false,
+    },
+    {
+      id: "screen-audio",
+      participantId: "person:session",
+      participantName: "Person",
+      track: { kind: "audio" },
+      isScreen: true,
+    },
+    {
+      id: "screen-video",
+      participantId: "person:session",
+      participantName: "Person",
+      track: { kind: "video" },
+      isScreen: true,
+    },
+  ];
+  const result = renderCall(
+    {
+      joined: true,
+      remoteMedia: media,
+      streamVolumes: { "person:session": 25 },
+      hiddenTiles: ["person:session:screen"],
+    },
+    { focusTarget: { userId: "person", kind: "screen", requestId: 1 } },
+  );
+  const views = elements(result.tree).filter(
+    (element) => element.type === "RemoteTrackView",
+  );
+  assert.equal(
+    views.find((view) => view.props.media.id === "voice").props.volume,
+    0.4,
+  );
+  assert.equal(
+    views.find((view) => view.props.media.id === "screen-audio").props.volume,
+    0,
+  );
+  result.effects.forEach((effect) => effect());
+  await settle();
+  assert.equal(result.stateWrites.focusedVideo, "screen-video");
+  assert.deepEqual(Array.from(result.stateWrites.hiddenTiles), []);
+  for (const [options, state, expected] of [
+    [{ viewOpen: true }, { focusedVideo: "screen-video" }, 0.1],
+    [{ viewOpen: false }, {}, 0],
+    [{ viewOpen: true }, { focusedVideo: "camera-video" }, 0],
+  ]) {
+    const updated = renderCall(
+      {
+        joined: true,
+        remoteMedia: media,
+        streamVolumes: { "person:session": 25 },
+        ...state,
+      },
+      options,
+    );
+    const updatedViews = elements(updated.tree).filter(
+      (element) => element.type === "RemoteTrackView",
+    );
+    assert.equal(
+      updatedViews.find((view) => view.props.media.id === "screen-audio").props
+        .volume,
+      expected,
+    );
+    assert.equal(
+      updatedViews.find((view) => view.props.media.id === "voice").props.volume,
+      0.4,
+    );
+  }
+  const deafened = renderCall(
+    {
+      joined: true,
+      remoteMedia: media,
+      streamVolumes: { "person:session": 25 },
+    },
+    { deafened: true },
+  );
+  assert.ok(
+    elements(deafened.tree)
+      .filter((element) => element.type === "RemoteTrackView")
+      .every((view) => view.props.volume === 0),
+  );
+});
+
 test("the direct deafen control restores the user's previous mute choice", async () => {
   const page = await readFile(
     new URL("../app/page.tsx", import.meta.url),
@@ -456,6 +666,8 @@ test("the direct deafen control restores the user's previous mute choice", async
         {
           microphoneMuted,
           deafened,
+          deafenedRef: { current: deafened },
+          activeGroupChannelId: { current: "" },
           setMicrophoneDeafened() {},
           setDeafened: (value) => updates.push(value),
           effectiveMutedRef: { current: true },
@@ -593,6 +805,7 @@ test("workspace channel highlights follow the displayed view and connecting labe
       audioPlaybackBlocked: false,
       deafened: false,
       audioDeviceOptions: null,
+      cameraResolutionOptions: null,
       voiceReady: false,
       muted: false,
       microphones: [],
@@ -714,15 +927,31 @@ test("starting screen sharing requests the call grid without forcing self-view o
       element.type === "button" && element.props.children[0] === "Share screen",
   );
   share.props.onClick();
+  assert.equal(result.stateWrites.screenShareOptionsOpen, true);
+  assert.deepEqual(
+    result.opened,
+    [],
+    "Opening resolution options must not start capture",
+  );
+  const selected = renderCall({ joined: true, screenShareOptionsOpen: true });
+  elements(selected.tree)
+    .find((element) => element.type === "ScreenShareOptions")
+    .props.onShare("1440");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(result.opened, [true]);
-  assert.equal(result.stateWrites.hiddenTiles, undefined);
+  assert.deepEqual(selected.opened, [true]);
+  assert.equal(selected.stateWrites.hiddenTiles, undefined);
+  const capture = selected.events.find(
+    (event) => event[0] === "screen capture",
+  );
+  assert.equal(capture[2].resolution.width, 2560);
+  assert.equal(capture[2].resolution.height, 1440);
+  assert.equal(capture[2].audio, true);
 });
 
 test("screen picker completing after leave cannot reopen the call or restore presence", async () => {
   let finishScreen;
   const result = renderCall(
-    { joined: true },
+    { joined: true, screenShareOptionsOpen: true },
     {
       screenPending: new Promise((resolve) => {
         finishScreen = resolve;
@@ -730,7 +959,9 @@ test("screen picker completing after leave cannot reopen the call or restore pre
     },
   );
   const cleanups = result.effects.map((effect) => effect());
-  action(result.tree, "Share screen").props.onClick();
+  elements(result.tree)
+    .find((element) => element.type === "ScreenShareOptions")
+    .props.onShare("1080");
   cleanups.at(-1)();
   finishScreen();
   await settle();
@@ -827,6 +1058,7 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
     `${ts.transpile(select.getText(pageAst))}; selectVoiceChannel`,
     {
       activeVoiceChannelId: "active",
+      setMediaFocusTarget() {},
       setCallViewOpen: (open) => events.push(open),
       leaveRoom: () => events.push("leave"),
       prepareVoiceActivity() {},

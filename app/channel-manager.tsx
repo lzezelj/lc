@@ -21,12 +21,29 @@ export function ChannelManager({
   const [deleting, setDeleting] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const visible = channels.filter((channel) =>
+    `${channel.name} ${channel.type}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
+  );
   return (
     <div className="channelManager">
+      <label>
+        Search channels
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </label>
       {channels.length === 0 && (
-        <p className="empty">No channels yet. Create one below.</p>
+        <p className="empty">No channels yet. Create one above.</p>
       )}
-      {channels.map((channel) => (
+      {!!channels.length && !visible.length && (
+        <p className="empty">No channels match this search.</p>
+      )}
+      {visible.map((channel) => (
         <section className="managedChannel" key={channel.id}>
           <div className="managedChannelHeading">
             <div>
