@@ -9,7 +9,11 @@ import {
   serverMembers,
   users,
 } from "../../../../../db/schema";
-import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../../../server/rate-limit";
 
 const repliedMessages = alias(messages, "replied_messages");
 const repliedAuthors = alias(users, "replied_authors");
@@ -143,7 +147,12 @@ export async function POST(
   );
   if (!rateLimit.allowed)
     return NextResponse.json(
-      { error: "You are sending messages too quickly." },
+      {
+        error: rateLimitMessage(
+          "You are sending messages too quickly.",
+          rateLimit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },

@@ -3,6 +3,7 @@ import {
   checkRateLimit,
   rateLimits,
   requestIp,
+  rateLimitMessage,
 } from "../../../../server/rate-limit";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -16,7 +17,7 @@ function limited(request: Request) {
 
 function rateLimitedResponse(retryAfterSeconds: number) {
   return NextResponse.json(
-    { error: "Too many login attempts. Please try again later." },
+    { error: rateLimitMessage("Too many login attempts.", retryAfterSeconds) },
     { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
   );
 }

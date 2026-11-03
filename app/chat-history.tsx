@@ -1,6 +1,9 @@
 "use client";
 
 import {
+  Children,
+  cloneElement,
+  isValidElement,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -32,6 +35,13 @@ export function ChatHistory({
   const jump = useRef<HTMLButtonElement>(null);
   const [showJump, setShowJump] = useState(false);
   const latestId = messages.at(-1)?.id;
+  const tones = new Map<string, number>();
+  let tone = 0;
+  messages.forEach((message, index) => {
+    if (index > 0 && message.authorId !== messages[index - 1].authorId)
+      tone = 1 - tone;
+    tones.set(message.id, tone);
+  });
   useEffect(() => {
     const node = root.current;
     const latest = node?.querySelectorAll<HTMLElement>("[data-message-id]");
@@ -168,7 +178,21 @@ export function ChatHistory({
           </button>
         )}
         {!ready && <p className="empty">Loading messages…</p>}
-        {ready ? children : null}
+        {ready
+          ? Children.map(children, (child) => {
+              if (
+                !isValidElement<{
+                  "data-message-id"?: string;
+                  "data-message-tone"?: number;
+                }>(child)
+              )
+                return child;
+              const id = child.props["data-message-id"];
+              return id && tones.has(id)
+                ? cloneElement(child, { "data-message-tone": tones.get(id) })
+                : child;
+            })
+          : null}
       </div>
       {ready && messages.length > 0 && showJump && (
         <button

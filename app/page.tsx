@@ -38,6 +38,7 @@ import { ChannelManager } from "./channel-manager";
 import { groupMessagesByServer } from "./message-groups";
 import { MessageDeleteAction } from "./message-delete-action";
 import { ChatHistory } from "./chat-history";
+import { useMessageCooldown } from "./use-message-cooldown";
 import { MessageHeader } from "./message-header";
 import {
   readWorkspaceLocation,
@@ -380,6 +381,7 @@ export default function Home() {
     Record<string, VoiceParticipant[]>
   >({});
   const [errorMessage, setErrorMessage] = useState("");
+  const messageCooldown = useMessageCooldown();
   const [noticeMessage, setNoticeMessage] = useState("");
   const [legalDocument, setLegalDocument] = useState<
     "impressum" | "privacy" | null
@@ -819,6 +821,7 @@ export default function Home() {
 
   async function sendDirectMessage(event: FormEvent) {
     event.preventDefault();
+    if (messageCooldown.blocked()) return;
     const text = draft.trim();
     if (!selectedFriend || !text) return;
     const response = await fetch(`/api/direct-messages/${selectedFriend.id}`, {
@@ -826,6 +829,7 @@ export default function Home() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
+    if (messageCooldown.handleResponse(response)) return;
     const message = await response.json();
     if (!response.ok)
       return setErrorMessage(message.error ?? "Message could not be sent.");
@@ -2412,6 +2416,7 @@ export default function Home() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (messageCooldown.blocked()) return;
     const text = draft.trim();
     if (!text || !selectedChannelId) return;
     const generation = channelHistoryGeneration.current;
@@ -2424,6 +2429,7 @@ export default function Home() {
           body: JSON.stringify({ text, replyToId: replyingTo?.id }),
         },
       );
+      if (messageCooldown.handleResponse(response)) return;
       const message =
         await readJsonResponse<Parameters<typeof toChatMessage>[0]>(response);
       if (!response.ok) throw new Error(apiErrorMessage(message));
@@ -4482,7 +4488,19 @@ export default function Home() {
                   onChange={(event) => setDraft(event.target.value)}
                   placeholder={`Message ${selectedFriend.name}`}
                 />
-                <button data-chat-send>Send</button>
+                <button
+                  data-chat-send
+                  disabled={messageCooldown.seconds > 0}
+                  title={
+                    messageCooldown.seconds
+                      ? "Message limit reached. Please wait before sending again."
+                      : undefined
+                  }
+                >
+                  {messageCooldown.seconds
+                    ? `Wait ${messageCooldown.seconds}s`
+                    : "Send"}
+                </button>
                 <button
                   type="button"
                   onClick={() => void startFriendCall(selectedFriend)}
@@ -5195,8 +5213,18 @@ export default function Home() {
                   }
                 />
               </div>
-              <button data-chat-send disabled={!selectedChannelId}>
-                Send
+              <button
+                data-chat-send
+                disabled={!selectedChannelId || messageCooldown.seconds > 0}
+                title={
+                  messageCooldown.seconds
+                    ? "Message limit reached. Please wait before sending again."
+                    : undefined
+                }
+              >
+                {messageCooldown.seconds
+                  ? `Wait ${messageCooldown.seconds}s`
+                  : "Send"}
               </button>
             </form>
           </section>

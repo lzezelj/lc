@@ -4,7 +4,11 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
 import { channels, serverMembers, servers, users } from "../../../db/schema";
-import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../server/rate-limit";
 import { notifyServer } from "../../../server/notify-server";
 import { disconnectUserEverywhere } from "../../../server/disconnect-user";
 
@@ -39,7 +43,12 @@ export async function POST(request: Request) {
   );
   if (!rateLimit.allowed)
     return NextResponse.json(
-      { error: "Too many server changes. Please try again later." },
+      {
+        error: rateLimitMessage(
+          "Too many server changes.",
+          rateLimit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },

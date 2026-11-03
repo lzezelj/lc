@@ -60,6 +60,7 @@ async function fixture({ actor = sender, allowed = true } = {}) {
         notifications.push({ userId, event }),
     },
     "../../../../../server/rate-limit": {
+      rateLimitMessage,
       checkRateLimit: () => ({ allowed, retryAfterSeconds: 3 }),
       rateLimits: { message: {} },
     },
@@ -162,6 +163,11 @@ test("deletion requires authentication and respects the rate limit", async () =>
   const response = await limited.remove();
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("Retry-After"), "3");
+  assert.equal(
+    (await response.json()).error,
+    "Too many deletions. Please wait 3 seconds before trying again.",
+  );
   assert.equal(limited.rows[0].content, "Private message");
   assert.equal(limited.notifications.length, 0);
 });
+import { rateLimitMessage } from "../server/rate-limit.ts";

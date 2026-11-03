@@ -4,7 +4,11 @@ import { auth } from "../../../../auth";
 import { db } from "../../../../db";
 import { directMessages, friendships, users } from "../../../../db/schema";
 import { areFriends } from "../../../../server/friends";
-import { checkRateLimit, rateLimits } from "../../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../../server/rate-limit";
 import { notifyUser } from "../../../../server/notify-user";
 
 export async function GET(
@@ -99,7 +103,12 @@ export async function POST(
   );
   if (!rateLimit.allowed)
     return NextResponse.json(
-      { error: "You are sending messages too quickly." },
+      {
+        error: rateLimitMessage(
+          "You are sending messages too quickly.",
+          rateLimit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },

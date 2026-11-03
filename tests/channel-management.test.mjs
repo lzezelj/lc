@@ -47,6 +47,7 @@ function fixture({
       },
     },
     "../../../../../server/rate-limit": {
+      rateLimitMessage,
       rateLimits: { serverMutation: {} },
       checkRateLimit: () => ({ allowed, retryAfterSeconds: 5 }),
     },
@@ -122,6 +123,10 @@ test("invalid and rate-limited channel deletions cannot mutate storage", async (
   const response = await limited.remove();
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("Retry-After"), "5");
+  assert.equal(
+    (await response.json()).error,
+    "Too many server changes. Please wait 5 seconds before trying again.",
+  );
   assert.deepEqual(limited.events, []);
 });
 test("message groups prioritize the current server without merging duplicate names or changing message order", () => {
@@ -146,3 +151,4 @@ test("message groups prioritize the current server without merging duplicate nam
     ["a", "b"],
   );
 });
+import { rateLimitMessage } from "../server/rate-limit.ts";

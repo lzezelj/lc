@@ -9,6 +9,7 @@ import { UserProfile } from "./user-profile.js";
 import { ChannelManager } from "./channel-manager.js";
 import { MessageDeleteAction } from "./message-delete-action.js";
 import { ChatHistory } from "./chat-history.js";
+import { useMessageCooldown } from "./use-message-cooldown.js";
 import { MessageHeader } from "./message-header.js";
 import { SidebarResizer } from "./sidebar-resizer.js";
 import { DiagnosticsIndicator } from "./diagnostics.js";
@@ -23,6 +24,72 @@ const wait = () => new Promise((resolve) => setTimeout(resolve, 60));
 const check = (value, message) => {
   if (!value) throw new Error(message);
 };
+async function verifyMessageCooldown() {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  let sends = 0;
+  function Composer() {
+    const cooldown = useMessageCooldown();
+    return h(
+      "form",
+      {
+        onSubmit(event) {
+          event.preventDefault();
+          if (cooldown.blocked()) return;
+          sends++;
+          cooldown.handleResponse(
+            new Response(null, {
+              status: 429,
+              headers: { "Retry-After": "2" },
+            }),
+          );
+        },
+      },
+      h("input", { defaultValue: "Keep this draft" }),
+      ...["channel", "dm"].map((key) =>
+        h(
+          "button",
+          { key, disabled: cooldown.seconds > 0 },
+          cooldown.seconds ? `Wait ${cooldown.seconds}s` : "Send",
+        ),
+      ),
+    );
+  }
+  root.render(h(Composer));
+  await wait();
+  container.querySelector("button").click();
+  await wait();
+  check(
+    [...container.querySelectorAll("button")].every(
+      (button) => button.disabled && button.textContent === "Wait 2s",
+    ),
+    "Rate limiting must disable both send buttons with the server countdown",
+  );
+  container
+    .querySelector("form")
+    .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  check(sends === 1, "Enter must not bypass the message cooldown");
+  check(
+    container.querySelector("input").value === "Keep this draft",
+    "Rate limiting must preserve the draft",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  check(
+    container.querySelector("button").textContent === "Wait 1s",
+    "Countdown must decrease",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  check(
+    [...container.querySelectorAll("button")].every(
+      (button) => !button.disabled && button.textContent === "Send",
+    ),
+    "Send must re-enable when the cooldown expires",
+  );
+  check(sends === 1, "Cooldown expiry must not resend the draft");
+  root.unmount();
+  container.remove();
+}
 let callAudio;
 function Workspace() {
   const audio = useCallAudio();
@@ -863,6 +930,25 @@ window.verifyWorkspaceControlsTest = async () => {
   info.blur();
   await wait();
   await window.verifyChatHistory();
+  const panelProbe = document.createElement("div");
+  panelProbe.className = "workspace";
+  panelProbe.style.cssText =
+    "position:fixed;inset:0;z-index:1000;pointer-events:none";
+  panelProbe.innerHTML =
+    '<nav class="panelControls"><button type="button">Toggle panel</button></nav>';
+  document.body.append(panelProbe);
+  const panelButton = panelProbe.querySelector("button");
+  check(
+    getComputedStyle(panelButton).opacity === "1",
+    "Panel controls must remain visible",
+  );
+  panelButton.focus();
+  check(
+    getComputedStyle(panelButton).opacity === "1",
+    "Keyboard focus must reveal panel controls",
+  );
+  panelProbe.remove();
+  await verifyMessageCooldown();
   const media = window.workspaceAudio;
   check(
     callAudio.current === media.element &&
@@ -1084,6 +1170,14 @@ window.verifyChatHistory = async () => {
   window.historyTestActions.append("actor");
   await wait();
   const outgoing = container.querySelector("article.messageOwn");
+  const incomingRows = [...container.querySelectorAll("article.messageOther")];
+  check(
+    incomingRows.every(
+      (row) => row.dataset.messageTone === incomingRows[0].dataset.messageTone,
+    ) &&
+      outgoing.dataset.messageTone !== incomingRows.at(-1).dataset.messageTone,
+    "Message background must change with the author, rather than with every row",
+  );
   check(
     outgoing &&
       Math.abs(
@@ -1102,6 +1196,13 @@ window.verifyChatHistory = async () => {
   check(
     !container.querySelector(".jumpToPresent"),
     "Sending a message did not hide the jump arrow",
+  );
+  window.historyTestActions.append("actor");
+  await wait();
+  check(
+    container.querySelectorAll("article.messageOwn")[1].dataset.messageTone ===
+      outgoing.dataset.messageTone,
+    "Consecutive own messages must keep the same background",
   );
   window.historyTestActions.switchThread();
   await wait();

@@ -440,6 +440,8 @@ Late history responses from obsolete conversations are discarded and overlapping
 real-time/history rows are deduplicated. Messages use full-width rows in both
 channels and DMs. The viewer's own name, timestamp and message text align right;
 other authors' messages align left. Shared message headers open profiles.
+Subtle row backgrounds alternate when the author changes, keeping consecutive
+messages by the same author visually grouped in both chat views.
 The cursor contains
 the oldest message timestamp and ID, which makes pages stable when timestamps
 are shared and new messages arrive concurrently.
@@ -461,7 +463,9 @@ counting deletion events as new unread messages. Missed events recover through
 the existing history reload. Deletions are rate limited per authenticated user.
 
 Both workspaces have controls to toggle the server rail, channel/conversation
-sidebar, and user/profile sidebar. On narrow mobile screens the rail and user
+sidebar, and user/profile sidebar. These controls remain visible on desktop and
+mobile. The server cog sits to the right of the hide-channels control.
+On narrow mobile screens the rail and user
 list start hidden while channels and chat remain visible; the channel sidebar
 can also be hidden to give chat the full width. The user list opens as a drawer
 on tablet/mobile widths. These controls change CSS visibility only and do not
@@ -745,7 +749,12 @@ issuance is limited to 120 requests per user per minute to accommodate the
 application's independently authenticated persistent, text, and direct-call
 sockets; LiveKit token issuance remains limited to 30 requests per user per
 minute. Rejections use
-HTTP 429 and a `Retry-After` header. This prevents ordinary burst spam but is
+HTTP 429 and a `Retry-After` header. Error bodies also include the remaining wait
+in seconds, using the same reset time, so existing client error notices explain
+when an action can be retried. Chat-send rejections instead disable Send with a
+countdown based on Retry-After, shared across channel and DM composers. Enter
+submissions are also blocked until the deadline. Rejected sends retain the draft
+and are not automatically resent. This prevents ordinary burst spam but is
 not shared across processes; a multi-instance deployment must move counters to
 Redis or an equivalent shared rate-limit store.
 

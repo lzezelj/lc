@@ -156,6 +156,7 @@ if (navigation || workspaceControls) {
       "channel-manager",
       "message-delete-action",
       "chat-history",
+      "use-message-cooldown",
       "message-header",
       "user-profile",
       "sidebar-resizer",

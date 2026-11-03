@@ -3,7 +3,11 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { channels, serverMembers } from "../../../../../db/schema";
-import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../../../server/rate-limit";
 import { notifyServer } from "../../../../../server/notify-server";
 import { removeChannelMedia } from "../../../../../server/remove-channel-media";
 
@@ -48,7 +52,12 @@ export async function POST(
   );
   if (!rateLimit.allowed)
     return NextResponse.json(
-      { error: "Too many server changes. Please try again later." },
+      {
+        error: rateLimitMessage(
+          "Too many server changes.",
+          rateLimit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
@@ -120,7 +129,12 @@ export async function DELETE(
   );
   if (!limit.allowed)
     return NextResponse.json(
-      { error: "Too many server changes. Please try again later." },
+      {
+        error: rateLimitMessage(
+          "Too many server changes.",
+          limit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(limit.retryAfterSeconds) },

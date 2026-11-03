@@ -72,7 +72,7 @@ button {
 .panelControls { display: contents; }
 .panelControls > button { position: fixed; top: 12px; z-index: 45; }
 .panelControls > button:nth-child(1) { left: max(8px, calc((var(--rail-width) - 32px) / 2)); }
-.panelControls > button:nth-child(2) { left: max(44px, calc(var(--rail-width) + var(--channel-width) - 40px)); }
+.panelControls > button:nth-child(2) { left: max(44px, calc(var(--rail-width) + var(--channel-width) - 78px)); }
 .workspace.channelsHidden .panelControls > button:nth-child(2) { left: calc(var(--rail-width) + 20px); }
 .panelControls > button:nth-child(3) { right: 12px; }
 .workspaceRail { padding-top: 58px; }
@@ -475,7 +475,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   padding: 8px 88px 8px 16px;
 }
 .workspace.serverListToggled .workspaceName { padding-left: 52px; }
-.workspaceName .serverActions { position: fixed; top: 12px; left: calc(var(--rail-width) + var(--channel-width) - 78px); z-index: 46; }
+.workspaceName .serverActions { position: fixed; top: 12px; left: calc(var(--rail-width) + var(--channel-width) - 40px); z-index: 46; }
 .workspaceName .serverActions .accountMenuTrigger { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); background: #252b3b; border-radius: 7px; }
 .workspaceName .serverActions .accountMenuDropdown { left: auto; right: 0; top: 38px; }
 .workspaceName > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1493,6 +1493,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   padding: 14px 20px;
 }
 .chatHistory { position: relative; min-width: 0; min-height: 0; }
+.chat [data-chat-send]:disabled { background: #303543; color: #98a1b2; cursor: not-allowed; opacity: 0.7; }
 .chatHistory > .chatLog { height: 100%; }
 .jumpToPresent { position: absolute; z-index: 2; bottom: 12px; left: var(--jump-center, calc(100% - 32px)); margin-left: -20px; display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid #697395; border-radius: 50%; background: #252e45; color: var(--ink); box-shadow: 0 3px 12px #0005; }
 .jumpToPresent:hover { background: #35415e; border-color: #a0afe2; }
@@ -1522,7 +1523,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
     transform 140ms ease;
 }
 
-.chatLog > article:nth-of-type(even) {
+.chatLog > article[data-message-tone="1"] {
   background: #1c2231;
 }
 

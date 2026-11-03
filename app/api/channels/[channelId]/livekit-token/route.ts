@@ -5,7 +5,11 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { channels, serverMembers } from "../../../../../db/schema";
-import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../../../server/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -24,7 +28,12 @@ export async function POST(
   );
   if (!rateLimit.allowed)
     return NextResponse.json(
-      { error: "Too many connection attempts. Please try again later." },
+      {
+        error: rateLimitMessage(
+          "Too many connection attempts.",
+          rateLimit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },

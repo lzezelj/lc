@@ -4,7 +4,11 @@ import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { directMessages } from "../../../../../db/schema";
 import { notifyUser } from "../../../../../server/notify-user";
-import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../../../server/rate-limit";
 
 export async function DELETE(
   request: Request,
@@ -27,7 +31,9 @@ export async function DELETE(
   );
   if (!limit.allowed)
     return NextResponse.json(
-      { error: "Too many deletions. Try again shortly." },
+      {
+        error: rateLimitMessage("Too many deletions.", limit.retryAfterSeconds),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(limit.retryAfterSeconds) },

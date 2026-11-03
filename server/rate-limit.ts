@@ -4,6 +4,11 @@ type RateLimitEntry = { count: number; resetAt: number };
 
 const entries = new Map<string, RateLimitEntry>();
 
+export function rateLimitMessage(reason: string, retryAfterSeconds: number) {
+  const seconds = Math.max(1, Math.ceil(retryAfterSeconds));
+  return `${reason} Please wait ${seconds} ${seconds === 1 ? "second" : "seconds"} before trying again.`;
+}
+
 export const rateLimits = {
   login: { limit: 10, windowMs: 15 * 60 * 1000 },
   message: { limit: 10, windowMs: 10 * 1000 },

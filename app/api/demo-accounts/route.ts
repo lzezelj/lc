@@ -13,7 +13,11 @@ import {
   users,
 } from "../../../db/schema";
 import { disconnectUserEverywhere } from "../../../server/disconnect-user";
-import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../server/rate-limit";
 import {
   extendDemoDeadline,
   parseDemoExtensionHours,
@@ -25,7 +29,7 @@ function adminRateLimit(userId: string) {
 
 function rateLimitedResponse(retryAfterSeconds: number) {
   return NextResponse.json(
-    { error: "Too many account changes. Please try again later." },
+    { error: rateLimitMessage("Too many account changes.", retryAfterSeconds) },
     { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
   );
 }

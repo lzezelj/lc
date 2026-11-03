@@ -4,7 +4,11 @@ import { auth } from "../../../auth";
 import { db } from "../../../db";
 import { channels, friendships, serverMembers } from "../../../db/schema";
 import { createSignalingToken } from "../../../server/signaling-auth.mjs";
-import { checkRateLimit, rateLimits } from "../../../server/rate-limit";
+import {
+  checkRateLimit,
+  rateLimits,
+  rateLimitMessage,
+} from "../../../server/rate-limit";
 
 export async function POST() {
   const session = await auth();
@@ -17,7 +21,12 @@ export async function POST() {
   );
   if (!rateLimit.allowed)
     return NextResponse.json(
-      { error: "Too many connection attempts. Please try again later." },
+      {
+        error: rateLimitMessage(
+          "Too many connection attempts.",
+          rateLimit.retryAfterSeconds,
+        ),
+      },
       {
         status: 429,
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
