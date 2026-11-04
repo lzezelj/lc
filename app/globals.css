@@ -4,7 +4,8 @@
   --line: #252b3b;
   --panel: #151925;
   --deep: #0d1018;
-  --accent: #7c5cff;
+  --accent: #78a4ff;
+  --accent-ink: #0d182b;
   --button-hover-duration: 140ms;
   color-scheme: dark;
 }
@@ -76,7 +77,7 @@ button {
 .workspace.channelsHidden .panelControls > button:nth-child(2) { left: calc(var(--rail-width) + 20px); }
 .panelControls > button:nth-child(3) { right: 12px; }
 .panelControls > .helpTrigger, .noServerPage > .helpTrigger { position: fixed; top: 12px; right: 52px; z-index: 45; display: grid; place-items: center; width: 32px; height: 32px; padding: 5px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: #202638; }
-.helpTrigger:hover { background: #403769; }
+.helpTrigger:hover { background: #2b4369; }
 
 .loadingSkeleton { width: 100%; padding: 14px; pointer-events: none; }
 .skeletonLabel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -94,23 +95,24 @@ button {
 @keyframes skeletonReveal { from { visibility: hidden; } to { visibility: visible; } }
 @media (prefers-reduced-motion: reduce) { .skeletonShape { animation: none; } }
 .settingsModal.helpTour { inset: var(--dialog-top, 72px) auto auto var(--dialog-left, max(12px, calc(100vw - 444px))); margin: 0; width: min(420px, calc(100vw - 24px)); max-height: calc(100dvh - var(--dialog-top, 72px) - 12px); padding: 0; border: 0; }
-.helpTour .settingsModalSurface { position: relative; z-index: 2; padding: 28px; border: 1px solid #3b3d56; border-radius: inherit; background: var(--panel); }
+.helpTour .settingsModalSurface { position: relative; z-index: 2; padding: 28px; border: 1px solid #35445f; border-radius: inherit; background: var(--panel); }
 .helpTour .settingsModalSurface > header { cursor: grab; touch-action: none; user-select: none; }
 .helpTour .settingsModalSurface > header[data-dragging] { cursor: grabbing; }
 .helpTour .settingsModalSurface > header:focus-visible { outline: 2px solid #91a7c4; outline-offset: 5px; border-radius: 5px; }
 .modalDragHint { margin-left: auto; font-size: 10px; color: var(--muted); }
 .helpTour .settingsActions { display: grid; gap: 18px; }
 .helpProgress { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 12px; }
-.helpProgress progress { flex: 1; min-width: 0; height: 6px; accent-color: #a9baff; }
+.helpProgress progress { flex: 1; min-width: 0; height: 6px; accent-color: #78a4ff; }
 .helpStep h3 { margin: 0 0 12px; font-size: 23px; outline: none; }
 .helpStep p { line-height: 1.65; margin: 10px 0 0; }
-.helpStep .helpLocation { color: #a9baff; font-size: 13px; }
+.helpStep .helpLocation { color: #78a4ff; font-size: 13px; }
 .helpPreference { display: flex; gap: 10px; align-items: center; }
-.helpPreference input { width: auto; margin: 0; accent-color: #a9baff; }
+.helpPreference input { width: auto; margin: 0; accent-color: #78a4ff; }
 .helpActions { display: flex; flex-wrap: wrap; gap: 8px; }
 .helpActions button { padding: 10px 16px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: #202638; }
-.helpActions button.primary { background: #5865b8; border-color: #7885d9; }
-.helpActions button:hover { background: #403769; }
+.helpActions button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.helpActions button:hover { background: #2b4369; }
+.helpActions button.primary:hover { background: #91b5ff; }
 .helpTour[data-help-spotlight]::backdrop { background: transparent; backdrop-filter: none; }
 .helpSpotlightCanvas { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
 .helpSpotlight { display: contents; }
@@ -161,10 +163,10 @@ button {
   width: 32px; height: 32px; padding: 0; border: 1px solid var(--line);
   border-radius: 7px; background: #252b3b; color: var(--ink);
 }
-.panelControls button:hover, .panelControls button:focus-visible { background: #403769; }
-.panelControls > button[aria-expanded="true"] { border-color: #71829d; background: #383052; color: #eee8ff; }
+.panelControls button:hover, .panelControls button:focus-visible { background: #2b4369; }
+.panelControls > button[aria-expanded="true"] { border-color: #71829d; background: #263b5b; color: #e7efff; }
 .panelControls > button[aria-expanded="false"] { border-color: #667087; border-style: dashed; background: #141a28; color: #adb8cd; }
-.panelControls > button[aria-expanded]:hover { background: #494061; color: #fff; border-color: #b3c1d4; }
+.panelControls > button[aria-expanded]:hover { background: #345078; color: #fff; border-color: #b3c1d4; }
 .panelControls > button:focus-visible { outline: 2px solid #b3c1d4; outline-offset: 3px; }
 .roomHeader > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace .roomHeader { padding-left: 34px; padding-right: 56px; }
@@ -219,9 +221,10 @@ button {
   position: relative;
   border-radius: 15px;
   background: var(--accent);
+  color: var(--accent-ink);
 }
 
-.workspaceLogo.friendsActive { outline: 2px solid #71829d; outline-offset: 3px; box-shadow: 0 0 18px #7c5cff35; }
+.workspaceLogo.friendsActive { outline: 2px solid #71829d; outline-offset: 3px; box-shadow: 0 0 18px #78a4ff35; }
 
 .workspaceButton.active {
   background: #213e38;
@@ -260,7 +263,7 @@ button {
 
 .friendSearchForm input:focus {
   border-color: #91a7c4;
-  box-shadow: 0 0 0 3px #7c5cff26;
+  box-shadow: 0 0 0 3px #78a4ff26;
 }
 
 .friendSearchForm button,
@@ -268,7 +271,7 @@ button {
   border: 0;
   border-radius: 8px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-ink);
   font-weight: 700;
 }
 
@@ -376,12 +379,12 @@ button {
   transition: background 140ms ease, border-color 140ms ease;
 }
 
-button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; border-color: #91a7c4; outline: none; }
-.friendRow b { color: #c8c0ff; }
+button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; border-color: #91a7c4; outline: none; }
+.friendRow b { color: #78a4ff; }
 .friendRow > span { min-width: 0; gap: 4px; }
 .friendRow b, .friendRow small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.friendRow .friendListAvatar { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border-radius: 12px; color: #d8ceff; background: #342b54; font-weight: 800; }
-.friendRow > button { padding: 7px 10px; border: 1px solid #71829d; border-radius: 6px; background: #302943; color: var(--ink); }
+.friendRow .friendListAvatar { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border-radius: 12px; color: #d4e2ff; background: #233b60; font-weight: 800; }
+.friendRow > button { padding: 7px 10px; border: 1px solid #71829d; border-radius: 6px; background: #23344f; color: var(--ink); }
 
 .friendRow span {
   display: grid;
@@ -421,12 +424,12 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .friendsSidebar .channel.unread > small { color: #d6daea; font-weight: 700; }
 .conversationUnreadBadge { position: absolute; right: 8px; bottom: 8px; display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 999px; background: #ed4245; color: white; font-size: 10px; font-weight: 800; }
 .friendsHomeButton { border: 0; background: transparent; color: var(--ink); font-weight: 800; }
-.friendsHomeButton:hover { color: #c8c0ff; }
+.friendsHomeButton:hover { color: #78a4ff; }
 .workspaceName .friendsHomeButton { border: 1px solid transparent; border-radius: 8px; padding: 8px 12px; text-align: left; }
-.workspaceName .friendsHomeButton.active { background: #302847; border-color: #71829d; color: #e1d8ff; }
+.workspaceName .friendsHomeButton.active { background: #233653; border-color: #71829d; color: #e1ebff; }
 .friendsInfoSidebar { border-left: 1px solid var(--line); }
-.friendProfileCard { display: grid; justify-items: center; gap: 10px; margin: 16px 12px; padding: 28px 16px; overflow: hidden; border: 1px solid #34384f; border-radius: 12px; background: linear-gradient(160deg, #29223f, #171c29 65%); text-align: center; }
-.friendProfileCard .avatar { width: 56px; height: 56px; border-radius: 18px; background: #443368; color: #e5dfff; font-size: 22px; }
+.friendProfileCard { display: grid; justify-items: center; gap: 10px; margin: 16px 12px; padding: 28px 16px; overflow: hidden; border: 1px solid #34384f; border-radius: 12px; background: linear-gradient(160deg, #1e304e, #171c29 65%); text-align: center; }
+.friendProfileCard .avatar { width: 56px; height: 56px; border-radius: 18px; background: #2d4d7b; color: #e5eeff; font-size: 22px; }
 .friendProfileCard strong,
 .friendProfileCard small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .friendProfileCard small { color: var(--muted); }
@@ -545,9 +548,9 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .screenShareOptions { display: grid; gap: 16px; padding: 24px; }
 .screenShareOptions .modalActions { display: flex; justify-content: flex-end; gap: 10px; }
 .screenShareOptions button { padding: 9px 14px; border: 1px solid var(--line); border-radius: 7px; background: #30384d; color: var(--ink); }
-.screenShareOptions button.primary { background: var(--accent); }
+.screenShareOptions button.primary { background: var(--accent); color: var(--accent-ink); }
 .contentEmptyState { display: grid; justify-items: center; align-content: center; gap: 12px; min-height: 200px; max-width: 440px; margin: 24px auto; padding: 28px 24px; text-align: center; color: var(--muted); border: 1px dashed #384158; border-radius: 16px; background: #171c2966; }
-.contentEmptyState svg { color: #aaa1dc; }
+.contentEmptyState svg { color: #78a4ff; }
 .contentEmptyState strong { color: var(--ink); font-size: 17px; }
 .contentEmptyState p { margin: 0; line-height: 1.6; }
 
@@ -804,7 +807,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
   font-style: normal;
 }
 .voiceIndicators > span, .voiceIndicators > button { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 3px 6px; border: 1px solid #59627a; border-radius: 5px; background: #252b3b; color: var(--ink); line-height: 1; flex-shrink: 0; }
-.voiceIndicators > button:hover { background: #403769; border-color: #71829d; }
+.voiceIndicators > button:hover { background: #2b4369; border-color: #71829d; }
 .voiceIndicators svg { display: block; flex-shrink: 0; }
 
 
@@ -979,7 +982,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 }
 
 .avatar.guest {
-  background: #e879f9;
+  background: #78a4ff;
 }
 
 .room {
@@ -1228,14 +1231,14 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 }
 
 .videoCard .tileHide { position: absolute; z-index: 3; top: 10px; right: 10px; padding: 5px 8px; border: 1px solid #59627a; border-radius: 6px; background: #121622e6; color: var(--ink); font-size: 12px; }
-.videoCard .tileHide:hover { background: #342d4d; }
+.videoCard .tileHide:hover { background: #283d5c; }
 .hiddenTilesMenu { position: absolute; z-index: 5; bottom: 10px; right: 10px; max-width: calc(100% - 20px); padding: 8px 10px; border: 1px solid #59627a; border-radius: 8px; background: #121622f5; color: var(--ink); font-size: 12px; }
 .hiddenTilesMenu summary { cursor: pointer; }
 .hiddenTilesMenu > div { display: grid; gap: 6px; max-height: 180px; overflow: auto; margin-top: 8px; }
 .hiddenTilesMenu button { border: 0; border-radius: 5px; padding: 7px 9px; background: #252b3b; color: var(--ink); text-align: left; overflow-wrap: anywhere; }
-.hiddenTilesMenu button:hover { background: #342d4d; }
+.hiddenTilesMenu button:hover { background: #283d5c; }
 .selfViewToggle { position: absolute; z-index: 5; bottom: 10px; left: 10px; padding: 8px 10px; border: 1px solid #59627a; border-radius: 8px; background: #121622f5; color: var(--ink); font-size: 12px; }
-.selfViewToggle:hover { background: #342d4d; }
+.selfViewToggle:hover { background: #283d5c; }
 .callVisibilityControls { position: absolute; z-index: 5; bottom: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px; pointer-events: none; }
 .callVisibilityControls > .selfViewToggle, .callVisibilityControls > .hiddenTilesMenu { position: static; max-width: 100%; pointer-events: auto; }
 
@@ -1327,7 +1330,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .sidebarResizer { position: absolute; top: 58px; right: -4px; bottom: 0; width: 8px; z-index: 47; cursor: col-resize; touch-action: none; user-select: none; }
 .sidebarResizer:focus-visible { outline: 1px dashed var(--muted); outline-offset: -2px; }
 
-.settingsModal { position: fixed; inset: 0; margin: auto; width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid #3b3d56; border-radius: 16px; background: var(--panel); color: var(--ink); box-shadow: 0 24px 80px #0009; }
+.settingsModal { position: fixed; inset: 0; margin: auto; width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid #35445f; border-radius: 16px; background: var(--panel); color: var(--ink); box-shadow: 0 24px 80px #0009; }
 .settingsModal::backdrop { background: #05070cc7; backdrop-filter: blur(3px); }
 .settingsModal > header, .settingsModalSurface > header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
 .settingsModal h2 { margin: 0; font-size: 22px; }
@@ -1335,7 +1338,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .settingsActions { display: grid; gap: 10px; }
 .settingsDescription { margin: 0 0 10px; color: var(--muted); overflow-wrap: anywhere; }
 .settingsActions > button { padding: 14px 16px; border: 1px solid #353c50; border-radius: 8px; background: #202638; color: var(--ink); text-align: left; }
-.settingsActions > button:hover, .settingsClose:hover { background: #342d4d; border-color: #71829d; }
+.settingsActions > button:hover, .settingsClose:hover { background: #283d5c; border-color: #71829d; }
 .settingsActions > button.danger { color: #f2a9b5; }
 .settingsModal button:focus-visible { outline: 2px solid #91a7c4; outline-offset: 2px; }
 
@@ -1404,7 +1407,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .serverInvites .friendPickerList { gap: 8px; padding: 8px; max-height: 380px; background: #111624; }
 .settingsContent .serverInvites .friendPickerRow { display: grid; grid-template-columns: 18px 38px minmax(0, 1fr); align-items: center; gap: 12px; padding: 14px; border: 1px solid #30394d; border-radius: 9px; background: #1b2232; }
 .serverInvites .friendPickerRow:hover { background: #242d41; border-color: #5d6381; }
-.serverInvites .friendPickerRow[data-selected="true"] { border-color: #71829d; background: #302a48; }
+.serverInvites .friendPickerRow[data-selected="true"] { border-color: #71829d; background: #263a58; }
 .serverInvites .friendPickerRow[data-existing="true"] { cursor: default; background: #171d2a; }
 .serverInvites .friendPickerRow > input { width: 18px; height: 18px; margin: 0; accent-color: #91a7c4; }
 .serverInvites .inviteAvatar { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: #35466d; color: #e4ecff; font-size: 17px; font-weight: 700; }
@@ -1414,7 +1417,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .invitePersonIdentity > .inviteMembership { justify-self: start; padding: 2px 7px; border: 1px solid #43566b; border-radius: 5px; background: #26384b; color: #b6cce0; font-size: 10px; }
 .inviteActions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 18px; }
 .inviteActions > span { color: var(--muted); font-size: 12px; }
-.inviteActions > button.primary { padding: 10px 18px; border: 1px solid #71829d; border-radius: 8px; background: #7354df; color: #fff; font-weight: 600; }
+.inviteActions > button.primary { padding: 10px 18px; border: 1px solid #71829d; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .inviteActions > button.primary:disabled { cursor: not-allowed; border-color: #3f485c; background: #283043; color: #949eb2; }
 .serverInvites > [role="alert"] { color: #ff9aaa; }
 .serverInvites > [role="status"] { color: #81d9b5; }
@@ -1428,12 +1431,12 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #25263e; bo
 .settingsDangerZone { border: 1px solid #a44455; padding: 24px; border-radius: 8px; }
 .settingsFeedback { padding: 12px; background: #252d3d; border-radius: 6px; overflow-wrap: anywhere; }
 button.profileLink { display: inline; width: auto; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
-button.profileLink:hover { color: #c0cbff; text-decoration: underline; }
+button.profileLink:hover { color: var(--accent); text-decoration: underline; }
 .memberIdentity .profileLink { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settingsModal.userProfileModal { width: min(440px, calc(100vw - 32px)); padding: 0; overflow-x: hidden; }
 .userProfileModal > header { padding: 20px 24px; margin: 0; }
 .userProfileModal .settingsActions { display: block; }
-.profileBanner { height: 112px; display: flex; align-items: flex-start; justify-content: flex-end; padding: 18px 24px; background: radial-gradient(ellipse at 15% 10%, #779edc66, transparent 65%), linear-gradient(120deg, #273b60, #534363); border-top: 1px solid #ffffff0b; }
+.profileBanner { height: 112px; display: flex; align-items: flex-start; justify-content: flex-end; padding: 18px 24px; background: radial-gradient(ellipse at 15% 10%, #779edc66, transparent 65%), linear-gradient(120deg, #273b60, #2d4665); border-top: 1px solid #ffffff0b; }
 .profileBanner span { font-size: 28px; font-weight: 800; letter-spacing: 3px; color: #ffffff26; }
 .profileDetails { padding: 0 24px 24px; }
 .profileDetails .profileAvatar { position: relative; width: 82px; height: 82px; margin-top: -36px; border: 6px solid var(--panel); box-shadow: 0 4px 18px #0003; font-size: 30px; }
@@ -1446,8 +1449,9 @@ button.profileLink:hover { color: #c0cbff; text-decoration: underline; }
 .profilePresence { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .profileRole { text-transform: capitalize; font-size: 12px; border: 1px solid #ffffff0c; }
 .profileActions { display: grid; gap: 10px; }
-.profileActions > button.primary { background: #6a79cc; border: 1px solid #91a0ee; color: #fff; font-weight: 600; }
-.profileActions > button.primary:hover { background: #7b8bdc; }
+.profileRole + .profileActions { margin-top: 16px; }
+.profileActions > button.primary { background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 600; }
+.profileActions > button.primary:hover { background: #91b5ff; }
 .profileActions > button:disabled { opacity: .65; background: #293142; color: var(--muted); border: 1px solid var(--line); }
 .profileActions small { color: var(--muted); }
 .profileActions [role="alert"] { color: #ffabb8; font-size: 13px; }
@@ -1474,7 +1478,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 .diagnosticsAnchor { display: inline-flex; align-items: center; }
 .diagnosticsAnchor .diagnosticsIndicator { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid #8f9bb3; border-radius: 50%; background: transparent; color: #b8c3d9; cursor: pointer; }
-.diagnosticsAnchor .diagnosticsIndicator:hover, .diagnosticsAnchor .diagnosticsIndicator:focus-visible { background: #342d4d; color: white; }
+.diagnosticsAnchor .diagnosticsIndicator:hover, .diagnosticsAnchor .diagnosticsIndicator:focus-visible { background: #283d5c; color: white; }
 .diagnosticsTooltip { width: min(360px, calc(100vw - 32px)); overflow-y: auto; }
 
 .deviceControl > button:first-child {
@@ -1563,6 +1567,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .controls .primary {
   background: var(--accent);
+  color: var(--accent-ink);
   font-weight: 700;
 }
 
@@ -1661,7 +1666,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .replyPreview strong {
   flex: 0 0 auto;
-  color: #aaa1dc;
+  color: #78a4ff;
 }
 
 .replyPreview span {
@@ -1671,7 +1676,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 .chat b {
-  color: #c8c0ff;
+  color: #78a4ff;
 }
 
 .chat time {
@@ -1985,7 +1990,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   min-height: 100vh;
   place-items: center;
   padding: 24px;
-  background: radial-gradient(circle at top, #252b4d, #0d1018 55%);
+  background: radial-gradient(circle at top, #203454, #0d1018 55%);
 }
 
 .noServerPage {
@@ -1993,7 +1998,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   min-height: 100vh;
   place-items: center;
   padding: 24px;
-  background: radial-gradient(circle at top, #252b4d, #0d1018 55%);
+  background: radial-gradient(circle at top, #203454, #0d1018 55%);
 }
 
 .noServerPage section {
@@ -2022,7 +2027,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   border: 0;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
 .loginCard {
@@ -2046,8 +2051,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   padding: 5px 10px;
   border: 1px solid #71829d;
   border-radius: 999px;
-  background: rgb(124 92 255 / 14%);
-  color: #c9beff;
+  background: rgb(120 164 255 / 14%);
+  color: #78a4ff;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -2065,7 +2070,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   border: 0;
   border-radius: 8px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-ink);
   font-weight: 700;
 }
 
@@ -2078,13 +2083,13 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .legalLinks a,
 .legalDocument a {
-  color: #bfb5ff;
+  color: #78a4ff;
 }
 
 .legalPage {
   min-height: 100vh;
   padding: 48px 20px;
-  background: radial-gradient(circle at top, #252b4d, #0d1018 48%);
+  background: radial-gradient(circle at top, #203454, #0d1018 48%);
 }
 
 .legalDocument {
@@ -2248,6 +2253,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .modalActions .primary {
   background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .mediaSettings {
@@ -2276,7 +2282,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   border: 0;
   border-radius: 7px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-ink);
   font-weight: 700;
 }
 

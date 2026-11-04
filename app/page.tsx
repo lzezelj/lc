@@ -19,6 +19,7 @@ import { PanelToggle } from "./panel-toggle";
 import { DeviceSelection } from "./device-selection";
 import { GroupCall } from "./group-call";
 import { WorkspaceShell } from "./workspace-shell";
+import { VoiceTransferDialog } from "./voice-transfer-dialog";
 import {
   HideTileButton,
   HiddenTilesMenu,
@@ -198,6 +199,7 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  sessionId?: string;
   channel?: Channel;
   authorId?: string;
   createdAt?: string;
@@ -492,6 +494,9 @@ export default function Home() {
   );
   const [requestingPermissions, setRequestingPermissions] = useState(false);
   const [voiceJoinKey, setVoiceJoinKey] = useState(0);
+  const voiceSessionId = useRef("");
+  const disconnectedVoiceSessionId = useRef("");
+  const [voiceTransferOpen, setVoiceTransferOpen] = useState(false);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
   const directSoundSpeaking = useRef(false);
@@ -1749,6 +1754,8 @@ export default function Home() {
           openedSocket.send(
             JSON.stringify({
               type: "set-group-presence",
+              reconnecting: true,
+              sessionId: voiceSessionId.current,
               roomId: activeGroupChannelId.current,
               present: true,
               ...groupMediaRef.current,
@@ -1760,6 +1767,17 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (message.type === "voice-replaced") {
+          handleVoiceReplacement(message.sessionId);
+          return;
+        }
+        if (message.type === "voice-transfer-failed") {
+          closeCallViewRef.current();
+          setErrorMessage(
+            "The voice service is unavailable. Your call could not reconnect. Please try again.",
+          );
+          return;
+        }
         if (
           message.channelId &&
           [
@@ -2250,6 +2268,17 @@ export default function Home() {
   async function handleSignal(
     message: Signal | { type: "chat"; text: string },
   ) {
+    if (message.type === "voice-replaced" && "sessionId" in message) {
+      handleVoiceReplacement(message.sessionId);
+      return;
+    }
+    if (message.type === "voice-transfer-failed") {
+      returnToPreviousTextChannel();
+      setErrorMessage(
+        "Could not transfer your call. The group voice service (LiveKit) may be unavailable. Please try again.",
+      );
+      return;
+    }
     if (message.type === "voice-kicked") {
       setNoticeMessage(
         "You were disconnected from the voice channel by its owner.",
@@ -2546,12 +2575,16 @@ export default function Home() {
     present: boolean,
     target = presenceSocket.current,
     media = groupMediaRef.current,
+    sessionId = voiceSessionId.current,
+    reconnecting = false,
   ) {
     if (present) groupMediaRef.current = media;
     if (target?.readyState !== WebSocket.OPEN) return;
     target.send(
       JSON.stringify({
         type: "set-group-presence",
+        sessionId,
+        reconnecting,
         roomId: channelId,
         participantName: session?.user.name ?? "Guest",
         present,
@@ -2562,7 +2595,12 @@ export default function Home() {
     );
   }
 
-  function handleGroupConnection(channelId: string, present: boolean) {
+  function handleGroupConnection(
+    channelId: string,
+    present: boolean,
+    sessionId = voiceSessionId.current,
+  ) {
+    if (sessionId !== voiceSessionId.current) return;
     if (present && pendingVoiceChannel.current === channelId)
       updatePendingVoice(channelId, false);
     if (present || activeGroupChannelId.current === channelId)
@@ -2570,7 +2608,13 @@ export default function Home() {
     setConnectedGroupChannelId((current) =>
       present ? channelId : current === channelId ? "" : current,
     );
-    sendGroupPresence(channelId, present);
+    sendGroupPresence(
+      channelId,
+      present,
+      presenceSocket.current,
+      groupMediaRef.current,
+      sessionId,
+    );
   }
 
   function scheduleDirectReconnect(channelId: string) {
@@ -2596,6 +2640,7 @@ export default function Home() {
 
   async function joinRoom(channelId = selectedChannelId, reconnecting = false) {
     if (!channelId || socket.current) return;
+    const joiningSessionId = voiceSessionId.current;
     const captureGeneration = peerGeneration.current;
     directRoomId.current = channelId;
     directReconnectInProgress.current = reconnecting;
@@ -2653,11 +2698,20 @@ export default function Home() {
       scheduleDirectReconnect(channelId);
       return;
     }
+    if (
+      captureGeneration !== peerGeneration.current ||
+      voiceSessionId.current !== joiningSessionId
+    ) {
+      ws.close();
+      return;
+    }
     socket.current = ws;
     ws.onopen = () => {
       ws.send(
         JSON.stringify({
           type: "join",
+          sessionId: joiningSessionId,
+          reconnecting,
           roomId: channelId,
           participantName: session?.user.name ?? "Guest",
         }),
@@ -2720,6 +2774,7 @@ export default function Home() {
   }
 
   function leaveRoom() {
+    disconnectedVoiceSessionId.current = "";
     if (pendingVoiceChannel.current)
       updatePendingVoice(pendingVoiceChannel.current, false);
     directMicSpeaking.current = false;
@@ -2737,6 +2792,7 @@ export default function Home() {
     setScreenShareOptionsOpen(false);
     const groupChannelId = activeGroupChannelId.current;
     if (groupChannelId) handleGroupConnection(groupChannelId, false);
+    voiceSessionId.current = "";
     setAudioPlaybackBlocked(false);
     peerGeneration.current += 1;
     creatingConnection.current = null;
@@ -2792,6 +2848,27 @@ export default function Home() {
     setSelectedChannelId(lastTextChannelId.current || fallback || "");
   }
   closeCallViewRef.current = returnToPreviousTextChannel;
+
+  function handleGroupLeave(sessionId: string) {
+    if (!sessionId || sessionId !== voiceSessionId.current) return;
+    closeCallViewRef.current();
+    // Media removal can arrive before signaling explains the handoff.
+    disconnectedVoiceSessionId.current = sessionId;
+  }
+
+  function handleVoiceReplacement(sessionId?: string) {
+    if (!sessionId) return;
+    if (sessionId === voiceSessionId.current) {
+      closeCallViewRef.current();
+    } else if (
+      voiceSessionId.current ||
+      sessionId !== disconnectedVoiceSessionId.current
+    ) {
+      return;
+    }
+    disconnectedVoiceSessionId.current = "";
+    setVoiceTransferOpen(true);
+  }
 
   function toggleAudio() {
     if (deafened) return;
@@ -3641,6 +3718,7 @@ export default function Home() {
     prepareRemoteAudio();
     prepareVoiceSounds();
     leaveRoom();
+    voiceSessionId.current = crypto.randomUUID();
     updatePendingVoice(channel.id, true);
     setActiveVoiceChannelId(channel.id);
     setActiveVoiceChannelSnapshot({
@@ -4198,6 +4276,16 @@ export default function Home() {
           : []
       }
       onClose={() => setProfileUser(null)}
+      onEditProfile={
+        profileUser.id === session.user.id
+          ? () => {
+              setProfileUser(null);
+              setServerSettingsOpen(false);
+              setUserSettingsSection("account");
+              setAccountMenuOpen(true);
+            }
+          : undefined
+      }
       requestPending={friends.some(
         (friend) =>
           friend.id === profileUser.id &&
@@ -4775,10 +4863,12 @@ export default function Home() {
     />
   );
 
+  const currentVoiceSessionId = voiceSessionId.current;
   const groupCall = session && activeVoiceChannel?.type === "voice_group" && (
     <GroupCall
       key={`${activeVoiceChannel.id}-${voiceJoinKey}`}
       channelId={activeVoiceChannel.id}
+      sessionId={currentVoiceSessionId}
       serverId={activeVoiceChannel.serverId}
       serverName={activeVoiceChannel.serverName}
       currentUserName={session.user.name ?? "You"}
@@ -4801,7 +4891,11 @@ export default function Home() {
       onMicrophoneChange={selectMicrophone}
       onCameraChange={selectCamera}
       onConnectionChange={(present) =>
-        handleGroupConnection(activeVoiceChannel.id, present)
+        handleGroupConnection(
+          activeVoiceChannel.id,
+          present,
+          currentVoiceSessionId,
+        )
       }
       onMediaStateChange={(media) => {
         if (activeGroupChannelId.current !== activeVoiceChannel.id) return;
@@ -4811,6 +4905,7 @@ export default function Home() {
           true,
           presenceSocket.current,
           media,
+          currentVoiceSessionId,
         );
       }}
       onPingChange={(ping) =>
@@ -4820,7 +4915,17 @@ export default function Home() {
         }))
       }
       onDiagnosticsChange={setCallDiagnostics}
-      onLeave={returnToPreviousTextChannel}
+      onLeave={() => handleGroupLeave(currentVoiceSessionId)}
+      onReconnect={() =>
+        sendGroupPresence(
+          activeVoiceChannel.id,
+          true,
+          presenceSocket.current,
+          groupMediaRef.current,
+          currentVoiceSessionId,
+          true,
+        )
+      }
       onError={(message) => {
         if (pendingVoiceChannel.current === activeVoiceChannel.id)
           updatePendingVoice(activeVoiceChannel.id, false);
@@ -4881,6 +4986,29 @@ export default function Home() {
             : "Delete message"}
         </button>
       )}
+    </div>
+  );
+
+  const noticeToast = noticeMessage && (
+    <div className="noticeToast" role="status">
+      <span>{noticeMessage}</span>
+      <button
+        aria-label="Dismiss confirmation"
+        onClick={() => setNoticeMessage("")}
+      >
+        ×
+      </button>
+    </div>
+  );
+  const voiceTransferDialog = voiceTransferOpen && (
+    <VoiceTransferDialog onClose={() => setVoiceTransferOpen(false)} />
+  );
+  const errorToast = errorMessage && (
+    <div className="errorToast" role="alert">
+      <span>{errorMessage}</span>
+      <button aria-label="Dismiss error" onClick={() => setErrorMessage("")}>
+        ×
+      </button>
     </div>
   );
 
@@ -5508,6 +5636,9 @@ export default function Home() {
         {serverContextMenu}
         {messageContextDropdown}
         {directDeletionDialog}
+        {noticeToast}
+        {voiceTransferDialog}
+        {errorToast}
       </WorkspaceShell>
     );
   }
@@ -5556,6 +5687,9 @@ export default function Home() {
           </button>
         </section>
         {incomingCallOverlay}
+        {noticeToast}
+        {voiceTransferDialog}
+        {errorToast}
       </WorkspaceShell>
     );
   }
@@ -6863,28 +6997,9 @@ export default function Home() {
           </section>
         </div>
       )}
-      {errorMessage && (
-        <div className="errorToast" role="alert">
-          <span>{errorMessage}</span>
-          <button
-            aria-label="Dismiss error"
-            onClick={() => setErrorMessage("")}
-          >
-            ×
-          </button>
-        </div>
-      )}
-      {noticeMessage && (
-        <div className="noticeToast" role="status">
-          <span>{noticeMessage}</span>
-          <button
-            aria-label="Dismiss confirmation"
-            onClick={() => setNoticeMessage("")}
-          >
-            ×
-          </button>
-        </div>
-      )}
+      {errorToast}
+      {noticeToast}
+      {voiceTransferDialog}
       {incomingCallOverlay}
     </WorkspaceShell>
   );

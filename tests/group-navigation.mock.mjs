@@ -4,6 +4,12 @@ export const Track = {
 };
 export const TrackEvent = { Restarted: "restart" };
 export const RoomEvent = new Proxy({}, { get: (_, name) => name });
+export const DisconnectReason = {
+  CLIENT_INITIATED: 1,
+  DUPLICATE_IDENTITY: 2,
+  PARTICIPANT_REMOVED: 4,
+  ROOM_DELETED: 5,
+};
 export class Room {
   constructor() {
     this.events = new Map();

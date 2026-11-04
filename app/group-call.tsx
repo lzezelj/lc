@@ -8,6 +8,7 @@ import {
   LocalAudioTrack,
   Room,
   RoomEvent,
+  DisconnectReason,
   Track,
   TrackEvent,
 } from "livekit-client";
@@ -71,6 +72,7 @@ type GroupCallDiagnostics = {
 };
 
 type GroupCallProps = {
+  sessionId?: string;
   serverId?: string;
   serverName?: string;
   cameraResolution?: CameraResolution;
@@ -107,6 +109,7 @@ type GroupCallProps = {
   onPingChange: (ping: number) => void;
   onDiagnosticsChange: (diagnostics: GroupCallDiagnostics | null) => void;
   onLeave: () => void;
+  onReconnect?: () => void;
   onError: (message: string) => void;
 };
 
@@ -216,6 +219,7 @@ function RemoteTrackView({
 }
 
 export function GroupCall({
+  sessionId,
   serverId,
   serverName,
   cameraResolution = "720",
@@ -243,6 +247,7 @@ export function GroupCall({
   onPingChange,
   onDiagnosticsChange,
   onLeave,
+  onReconnect,
   onError,
 }: GroupCallProps) {
   const soundboard = useSoundboard(channelId, {
@@ -291,6 +296,8 @@ export function GroupCall({
   const audibleShares = useRef(new Set<string>());
   const focusedRequest = useRef<number | null>(null);
   const joinGeneration = useRef(0);
+  const reconnectPending = useRef(false);
+  const reconnectTimer = useRef<number | null>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
   const localScreen = useRef<HTMLVideoElement>(null);
   const joinButton = useRef<HTMLButtonElement>(null);
@@ -530,7 +537,7 @@ export function GroupCall({
     setParticipants(names);
   }
 
-  function clearRoom() {
+  function clearRoom(preserveMute = false) {
     roomRef.current = null;
     soundPlayerRef.current?.stop();
     soundboard.preview.current?.stop();
@@ -540,10 +547,10 @@ export function GroupCall({
     setParticipants([]);
     setJoined(false);
     setJoining(false);
-    setMuted(false);
+    if (!preserveMute) setMuted(false);
     setCameraOff(true);
     setScreenSharing(false);
-    mutedRef.current = false;
+    if (!preserveMute) mutedRef.current = false;
     cameraOffRef.current = true;
     stopLocalStats.current?.();
     stopLocalStats.current = null;
@@ -570,12 +577,38 @@ export function GroupCall({
     void room.disconnect(true);
   }
 
+  function scheduleReconnect() {
+    if (!reconnectPending.current || reconnectTimer.current !== null) return;
+    reconnectTimer.current = window.setTimeout(() => {
+      reconnectTimer.current = null;
+      if (!reconnectPending.current) return;
+      if (navigator.onLine === false) {
+        scheduleReconnect();
+        return;
+      }
+      joinButton.current?.click();
+    }, 5000);
+  }
+
   useEffect(() => {
     const autoJoinTimer = autoJoin
       ? window.setTimeout(() => joinButton.current?.click(), 0)
       : undefined;
     const soundPlayer = soundPlayerRef.current;
+    const reconnectOnline = () => {
+      if (!reconnectPending.current) return;
+      if (reconnectTimer.current !== null)
+        window.clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+      joinButton.current?.click();
+    };
+    window.addEventListener("online", reconnectOnline);
     return () => {
+      reconnectPending.current = false;
+      if (reconnectTimer.current !== null)
+        window.clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = null;
+      window.removeEventListener("online", reconnectOnline);
       soundPlayer?.stop();
       joinGeneration.current += 1;
       if (autoJoinTimer !== undefined) window.clearTimeout(autoJoinTimer);
@@ -599,6 +632,9 @@ export function GroupCall({
 
   async function join() {
     if (joining || joined || roomRef.current) return;
+    if (reconnectTimer.current !== null)
+      window.clearTimeout(reconnectTimer.current);
+    reconnectTimer.current = null;
     setJoinAttempted(true);
     const generation = ++joinGeneration.current;
     prepareVoiceActivity();
@@ -609,6 +645,8 @@ export function GroupCall({
     try {
       response = await fetch(`/api/channels/${channelId}/livekit-token`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
       });
       credentials = (await response.json()) as TokenResponse;
     } catch {
@@ -616,6 +654,7 @@ export function GroupCall({
       setJoining(false);
       setStatus("Could not request a group media token");
       onError("Could not request a group media token");
+      scheduleReconnect();
       return;
     }
     if (generation !== joinGeneration.current) return;
@@ -627,6 +666,10 @@ export function GroupCall({
       setJoining(false);
       setStatus(credentials.error ?? "Could not join group channel");
       onError(credentials.error ?? "Could not join group channel");
+      if ([401, 403, 404].includes(response.status)) {
+        reconnectPending.current = false;
+        onLeave();
+      } else scheduleReconnect();
       return;
     }
 
@@ -722,12 +765,39 @@ export function GroupCall({
         );
         updatePresence();
       })
-      .on(RoomEvent.Disconnected, () => {
+      .on(RoomEvent.Reconnecting, () => {
+        if (roomRef.current !== room) return;
+        reconnectPending.current = true;
+      })
+      .on(RoomEvent.Reconnected, () => {
+        if (roomRef.current !== room) return;
+        onReconnect?.();
+        reconnectPending.current = false;
+        setStatus("Connected through the group media server");
+      })
+      .on(RoomEvent.Disconnected, (reason) => {
         if (roomRef.current !== room) return;
         onConnectionChange(false);
-        clearRoom();
-        setStatus("Disconnected from group channel");
-        onLeave();
+        clearRoom(true);
+        if (
+          [
+            DisconnectReason.CLIENT_INITIATED,
+            DisconnectReason.PARTICIPANT_REMOVED,
+            DisconnectReason.DUPLICATE_IDENTITY,
+            DisconnectReason.ROOM_DELETED,
+          ].includes(reason!)
+        ) {
+          reconnectPending.current = false;
+          setStatus("Disconnected from group channel");
+          onLeave();
+          return;
+        }
+        reconnectPending.current = true;
+        setStatus("Group voice connection lost; reconnecting...");
+        onError(
+          "The group voice connection was lost. Check your internet connection; the group voice service (LiveKit) may be unavailable. Reconnecting automatically.",
+        );
+        scheduleReconnect();
       });
 
     try {
@@ -774,6 +844,7 @@ export function GroupCall({
         onError(message);
       }
       setJoined(true);
+      reconnectPending.current = false;
       setJoining(false);
       onConnectionChange(true);
       publishPresence(room, true);
@@ -792,9 +863,12 @@ export function GroupCall({
       roomRef.current = null;
       onConnectionChange(false);
       releaseRoom(room);
-      clearRoom();
+      clearRoom(reconnectPending.current);
       setStatus("Could not connect to the group media server");
-      onError("Could not connect to the group media server");
+      onError(
+        "Could not connect to the group voice service (LiveKit). Check your internet connection and try again.",
+      );
+      scheduleReconnect();
     }
   }
 

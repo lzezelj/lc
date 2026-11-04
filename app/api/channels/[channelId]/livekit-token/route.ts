@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { AccessToken } from "livekit-server-sdk";
 import { NextResponse } from "next/server";
@@ -14,7 +13,7 @@ import {
 export const runtime = "nodejs";
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ channelId: string }> },
 ) {
   const session = await auth();
@@ -65,10 +64,51 @@ export async function POST(
     );
   }
 
+  const body = await request.json().catch(() => null);
+  const sessionId = body?.sessionId;
+  if (typeof sessionId !== "string" || !/^[a-f0-9-]{36}$/i.test(sessionId))
+    return NextResponse.json(
+      { error: "Invalid voice session" },
+      { status: 400 },
+    );
+  const signalingUrl =
+    process.env.SIGNALING_INTERNAL_URL ?? "http://127.0.0.1:3001";
+  const secret =
+    process.env.SIGNALING_INTERNAL_SECRET ?? process.env.AUTH_SECRET;
+  if (!secret)
+    return NextResponse.json(
+      { error: "Voice coordination is unavailable" },
+      { status: 503 },
+    );
+  try {
+    const claim = await fetch(`${signalingUrl}/internal/claim-voice`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: session.user.id,
+        roomId: channel.id,
+        sessionId,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!claim.ok) throw new Error("Voice transfer failed");
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "Could not connect or transfer your call. The voice services (signaling or LiveKit) may be unavailable. Please try again.",
+      },
+      { status: 503 },
+    );
+  }
+
   const token = new AccessToken(apiKey, apiSecret, {
-    identity: `${session.user.id}:${randomUUID()}`,
+    identity: `${session.user.id}:${sessionId}`,
     name: session.user.name ?? "LC user",
-    ttl: "10m",
+    ttl: "30s",
   });
   token.addGrant({ roomJoin: true, room: `channel-${channel.id}` });
 

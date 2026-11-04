@@ -7,5 +7,3 @@ Backups and database migrations
 Browser/device testing
 Automated tests for permissions and authorization
 Monitoring and structured logs
-
-One device in a call per account.

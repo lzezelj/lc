@@ -210,8 +210,7 @@ window.verifyHelpAndSkeletons = async () => {
       "Skipping must offer Do not show again",
     );
     const preference = document.querySelector(".helpPreference input");
-    preference.click();
-    await wait();
+    check(preference.checked, "Do not show again must be checked by default");
     await click("Done");
     check(
       !document.querySelector(".helpTour") &&
@@ -305,7 +304,7 @@ window.verifyHelpAndSkeletons = async () => {
     await wait();
     await click("Finish");
     check(
-      localStorage.getItem(key) === null,
+      localStorage.getItem(key) === "false",
       "Unchecking the preference must enable future automatic tours",
     );
     await render(1, otherUser);

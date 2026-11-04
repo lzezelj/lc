@@ -62,6 +62,8 @@ function renderCall(state = {}, options = {}) {
   const events = [];
   const sounds = [];
   const handlers = new Map();
+  const timeouts = new Map(),
+    windowEvents = new Map();
   const stateWrites = {};
   const track = {
     attach: (element) => attached.push(element),
@@ -178,6 +180,12 @@ function renderCall(state = {}, options = {}) {
       }
     },
     RoomEvent: new Proxy({}, { get: (_, name) => name }),
+    DisconnectReason: {
+      CLIENT_INITIATED: 1,
+      DUPLICATE_IDENTITY: 2,
+      PARTICIPANT_REMOVED: 4,
+      ROOM_DELETED: 5,
+    },
     LocalAudioTrack: class {
       constructor(track) {
         this.mediaStreamTrack = track;
@@ -196,7 +204,25 @@ function renderCall(state = {}, options = {}) {
         ok: true,
         json: async () => ({ server_url: "test", participant_token: "test" }),
       })),
-    window: { setInterval: () => 1, clearInterval() {} },
+    navigator: { onLine: options.online ?? true },
+    window: {
+      setInterval: () => 1,
+      clearInterval() {},
+      setTimeout(callback) {
+        const id = timeouts.size + 1;
+        timeouts.set(id, callback);
+        return id;
+      },
+      clearTimeout(id) {
+        timeouts.delete(id);
+      },
+      addEventListener(event, callback) {
+        windowEvents.set(event, callback);
+      },
+      removeEventListener(event) {
+        windowEvents.delete(event);
+      },
+    },
     DeviceMenu: "DeviceMenu",
     StreamInfo: "StreamInfo",
     StreamVolume: "StreamVolume",
@@ -207,6 +233,7 @@ function renderCall(state = {}, options = {}) {
       options.soundSettings = settings;
       return {
         player: { current: { stop() {} } },
+        preview: { current: { stop() {} } },
         volume: options.soundboardVolume ?? 100,
         muted: options.soundboardMuted ?? false,
       };
@@ -234,6 +261,8 @@ function renderCall(state = {}, options = {}) {
     cameras: [],
     viewOpen: options.viewOpen ?? true,
     onConnectionChange: (present) => events.push(["present", present]),
+    onReconnect: () => events.push("reconnected"),
+    onLeave: () => events.push("leave"),
     onPingChange() {},
     onMediaStateChange: (media) => events.push(["media", media]),
     onDiagnosticsChange() {},
@@ -258,6 +287,8 @@ function renderCall(state = {}, options = {}) {
     sounds,
     refs,
     handlers,
+    timeouts,
+    windowEvents,
     stateWrites,
     rerender() {
       stateIndex = refIndex = effectIndex = 0;
@@ -1095,6 +1126,56 @@ test("leaving during screen sharing stops both captures and ignores disconnect u
   );
 });
 
+test("LiveKit failures show an error and retry on internet return; replacement never retries", async () => {
+  for (const reason of [9, 4]) {
+    const errors = [];
+    const result = renderCall(
+      {},
+      {
+        unjoined: true,
+        initialMuted: true,
+        onError: (message) => errors.push(message),
+      },
+    );
+    const cleanups = result.effects.map((effect) => effect());
+    const button = elements(result.tree).find(
+      (element) => element.props?.className === "primary",
+    );
+    button.props.onClick();
+    await settle();
+    assert.equal(result.stateWrites.joined, true);
+    result.handlers.get("Reconnected")();
+    assert.ok(result.events.includes("reconnected"));
+    result.handlers.get("Disconnected")(reason);
+    if (reason === 9) {
+      assert.match(errors[0], /LiveKit.*unavailable/);
+      assert.equal(result.events.includes("leave"), false);
+      assert.equal(result.timeouts.size, 1);
+      const latest = result.rerender();
+      const retry = elements(latest.tree).find(
+        (element) => element.props?.className === "primary",
+      );
+      retry.props.ref.current = { click: () => retry.props.onClick() };
+      result.windowEvents.get("online")();
+      await settle();
+      assert.equal(result.stateWrites.joined, true);
+      assert.equal(result.timeouts.size, 0);
+      assert.equal(
+        result.stateWrites.userMuted,
+        undefined,
+        "reconnection does not unmute the user's microphone",
+      );
+    } else {
+      assert.ok(result.events.includes("leave"));
+      assert.deepEqual(errors, []);
+      assert.equal(result.timeouts.size, 0);
+    }
+    cleanups.filter(Boolean).forEach((cleanup) => cleanup());
+    assert.equal(result.timeouts.size, 0);
+    assert.equal(result.windowEvents.has("online"), false);
+  }
+});
+
 test("leaving before the media token arrives prevents a late room connection", async () => {
   let resolveToken;
   const result = renderCall(
@@ -1285,6 +1366,8 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
     `${ts.transpile(select.getText(pageAst))}; selectVoiceChannel`,
     {
       activeVoiceChannelId: "active",
+      voiceSessionId: { current: "active-session" },
+      crypto: { randomUUID: () => "next-session" },
       selectedServerId: "server-a",
       servers: [{ id: "server-a", name: "Server A" }],
       setMediaFocusTarget() {},

@@ -4,6 +4,7 @@ import { afterEach, test } from "node:test";
 import WebSocket from "ws";
 import { createSignalingToken } from "../server/signaling-auth.mjs";
 import { createSignalingServer } from "../server/signaling.mjs";
+import { createVoiceSessions } from "../server/voice-sessions.mjs";
 
 const resources = [];
 const authSecret = "test-signaling-secret";
@@ -15,6 +16,249 @@ const permittedChannelIds = [
   "random",
   "group-room",
 ];
+
+test("voice claims serialize per account, remove SFU media before replacement and reject stale cleanup", async () => {
+  const events = [];
+  const sessions = createVoiceSessions({
+    removeGroupMedia: async (userId) => {
+      events.push(`remove:${userId}`);
+    },
+    onReplace: (userId, session) =>
+      events.push(`replace:${userId}:${session.id}`),
+  });
+  await Promise.all([
+    sessions.claim("a", { id: "first", roomId: "one", kind: "direct" }),
+    sessions.claim("a", { id: "second", roomId: "two", kind: "group" }),
+  ]);
+  assert.deepEqual(events, ["remove:a", "remove:a", "replace:a:first"]);
+  sessions.release("a", "first");
+  assert.equal(sessions.confirm("a", "second"), true);
+  sessions.suspend("a", "second");
+  assert.equal(
+    sessions.confirm("a", "second"),
+    true,
+    "presence reconnect retains ownership",
+  );
+  sessions.release("a", "second");
+  assert.equal(sessions.confirm("a", "second"), false);
+});
+
+test("failed media removal preserves ownership, and an obsolete pending join cannot take over", async () => {
+  let fail = false,
+    valid = true;
+  const replaced = [];
+  const sessions = createVoiceSessions({
+    removeGroupMedia: async () => {
+      if (fail) throw new Error("SFU offline");
+      valid = false;
+    },
+    onReplace: (_userId, session) => replaced.push(session.id),
+  });
+  await sessions.claim("a", { id: "original", roomId: "one", kind: "direct" });
+  fail = true;
+  await assert.rejects(
+    sessions.claim("a", { id: "failed", roomId: "two", kind: "group" }),
+  );
+  assert.equal(sessions.confirm("a", "original"), true);
+  fail = false;
+  valid = true;
+  assert.equal(
+    await sessions.claim(
+      "a",
+      { id: "obsolete", roomId: "two", kind: "direct" },
+      () => valid,
+    ),
+    false,
+  );
+  assert.deepEqual(replaced, []);
+  sessions.release("a", "original");
+});
+
+test("automatic native reconnect resumes its own disconnected session and reclaims a temporary replacement", async () => {
+  const sessions = createVoiceSessions({
+    removeGroupMedia: async () => {},
+    onReplace() {},
+  });
+  const oldSocket = { readyState: 1 };
+  await sessions.claim("a", {
+    id: "old",
+    roomId: "one",
+    kind: "direct",
+    socket: oldSocket,
+  });
+  assert.equal(
+    await sessions.claim("a", {
+      id: "old",
+      roomId: "one",
+      kind: "direct",
+    }),
+    false,
+    "an explicit join cannot duplicate a live session ID",
+  );
+  oldSocket.readyState = 3;
+  sessions.suspend("a", "old");
+  assert.equal(
+    await sessions.claim("a", {
+      id: "old",
+      roomId: "one",
+      kind: "direct",
+      reconnecting: true,
+    }),
+    true,
+  );
+  await sessions.claim("a", { id: "new", roomId: "two", kind: "group" });
+  assert.equal(
+    await sessions.claim("a", {
+      id: "old",
+      roomId: "one",
+      kind: "direct",
+      reconnecting: true,
+    }),
+    true,
+  );
+  sessions.release("a", "old");
+});
+
+test("one account's new direct channel replaces its call in another server without affecting its peer", async () => {
+  const removed = [];
+  const url = await startServer({
+    removeGroupMedia: async (userId) => removed.push(userId),
+  });
+  const first = await connect(url, "Ada", ["lounge"], ["server-1"]);
+  let joined = nextMessage(first);
+  first.send(
+    JSON.stringify({ type: "join", roomId: "lounge", sessionId: "old" }),
+  );
+  await joined;
+  const peer = await connect(url, "Grace");
+  joined = nextMessage(peer);
+  peer.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await joined;
+  const second = await connect(url, "Ada", ["other-room"], ["server-2"]);
+  const closed = once(first, "close"),
+    left = nextMessage(peer);
+  joined = nextMessage(second);
+  second.send(
+    JSON.stringify({ type: "join", roomId: "other-room", sessionId: "new" }),
+  );
+  assert.equal((await joined).type, "joined");
+  assert.equal((await left).type, "peer-left");
+  assert.equal((await closed)[0], 4000);
+  assert.equal(peer.readyState, WebSocket.OPEN);
+  assert.deepEqual(removed, ["test-Ada", "test-Grace", "test-Ada"]);
+});
+
+test("group admission is internal-only, replaces direct voice and survives stale direct socket cleanup", async () => {
+  const url = await startServer();
+  const first = await connect(url, "Ada");
+  const joined = nextMessage(first);
+  first.send(
+    JSON.stringify({ type: "join", roomId: "lounge", sessionId: "direct" }),
+  );
+  await joined;
+  const endpoint = `${url.replace("ws://", "http://")}/internal/claim-voice`;
+  const body = JSON.stringify({
+    userId: "test-Ada",
+    roomId: "group-room",
+    sessionId: "group",
+  });
+  assert.equal((await fetch(endpoint, { method: "POST", body })).status, 401);
+  const closed = once(first, "close");
+  assert.equal(
+    (
+      await fetch(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authSecret}` },
+        body,
+      })
+    ).status,
+    204,
+  );
+  await closed;
+  const presence = await connect(url, "Ada");
+  const observer = await connect(url, "Observer");
+  const initial = nextMessage(observer);
+  observer.send(
+    JSON.stringify({ type: "subscribe-presence", roomIds: ["group-room"] }),
+  );
+  await initial;
+  const update = nextMessage(observer);
+  presence.send(
+    JSON.stringify({
+      type: "set-group-presence",
+      roomId: "group-room",
+      sessionId: "group",
+      present: true,
+    }),
+  );
+  assert.equal((await update).participants.length, 1);
+  const quiet = expectNoMessage(observer);
+  presence.send(
+    JSON.stringify({
+      type: "set-group-presence",
+      roomId: "group-room",
+      sessionId: "direct",
+      present: true,
+    }),
+  );
+  await quiet;
+});
+
+test("native admission waits for group-media removal and notifies only the replaced session", async () => {
+  let finishRemoval,
+    calls = 0;
+  const url = await startServer({
+    removeGroupMedia: async () => {
+      if (++calls === 2)
+        await new Promise((resolve) => {
+          finishRemoval = resolve;
+        });
+    },
+  });
+  const workspace = await connect(url, "Ada");
+  const initial = matchingMessage(
+    workspace,
+    (message) => message.type === "presence" && message.roomId === "group-room",
+  );
+  workspace.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await initial;
+  const claim = await fetch(
+    `${url.replace("ws://", "http://")}/internal/claim-voice`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authSecret}` },
+      body: JSON.stringify({
+        userId: "test-Ada",
+        roomId: "group-room",
+        sessionId: "old-group",
+      }),
+    },
+  );
+  assert.equal(claim.status, 204);
+  const direct = await connect(url, "Ada");
+  const replaced = matchingMessage(
+    workspace,
+    (message) => message.type === "voice-replaced",
+  );
+  const quiet = expectNoMessage(direct);
+  direct.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "lounge",
+      sessionId: "new-direct",
+      reconnecting: true,
+    }),
+  );
+  await quiet;
+  assert.equal(typeof finishRemoval, "function");
+  const joined = nextMessage(direct);
+  finishRemoval();
+  assert.equal((await joined).type, "joined");
+  assert.deepEqual(await replaced, {
+    type: "voice-replaced",
+    sessionId: "old-group",
+  });
+});
 
 afterEach(async () => {
   for (const resource of resources.splice(0)) {
@@ -28,6 +272,7 @@ async function startServer(options) {
     port: 0,
     authSecret,
     internalSecret: authSecret,
+    removeGroupMedia: async () => {},
     ...options,
   });
   resources.push(server);
@@ -53,6 +298,43 @@ async function connect(
   await once(socket, "open");
   return socket;
 }
+
+test("a returning group connection reclaims ownership and preserves its own SFU identity", async () => {
+  const removed = [];
+  const url = await startServer({
+    removeGroupMedia: async (id, keep) => removed.push([id, keep]),
+  });
+  const temporary = await connect(url, "Ada");
+  const joined = nextMessage(temporary);
+  temporary.send(
+    JSON.stringify({ type: "join", roomId: "lounge", sessionId: "temporary" }),
+  );
+  await joined;
+  const closed = once(temporary, "close");
+  const returning = await connect(url, "Ada");
+  const observer = await connect(url, "Observer");
+  const initial = nextMessage(observer);
+  observer.send(
+    JSON.stringify({ type: "subscribe-presence", roomIds: ["group-room"] }),
+  );
+  await initial;
+  const present = nextMessage(observer);
+  returning.send(
+    JSON.stringify({
+      type: "set-group-presence",
+      roomId: "group-room",
+      sessionId: "original",
+      present: true,
+      reconnecting: true,
+      muted: true,
+    }),
+  );
+  const snapshot = await present;
+  assert.equal(snapshot.participants[0].userId, "test-Ada");
+  assert.equal(snapshot.participants[0].muted, true);
+  await closed;
+  assert.deepEqual(removed.at(-1), ["test-Ada", "original"]);
+});
 
 test("authenticated internal events reach only the selected user", async () => {
   const url = await startServer();
@@ -915,7 +1197,9 @@ test("reconnecting user replaces an old room socket without evicting the peer", 
   const first = await connect(url, "Ada");
   const other = await connect(url, "Grace");
   const firstJoined = nextMessage(first);
-  first.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  first.send(
+    JSON.stringify({ type: "join", roomId: "lounge", sessionId: "resuming" }),
+  );
   await firstJoined;
   const otherJoined = nextMessage(other);
   const announced = nextMessage(first);
@@ -927,7 +1211,14 @@ test("reconnecting user replaces an old room socket without evicting the peer", 
   const replaced = once(first, "close");
   const replacementJoined = nextMessage(replacement);
   const replacementAnnounced = nextMessage(other);
-  replacement.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  replacement.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "lounge",
+      sessionId: "resuming",
+      reconnecting: true,
+    }),
+  );
   assert.deepEqual(await replacementJoined, {
     type: "joined",
     initiator: false,

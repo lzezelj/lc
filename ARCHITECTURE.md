@@ -629,8 +629,69 @@ instead of reconnecting it.
 
 Next.js checks that the authenticated user belongs to the channel's server and
 that the channel is a group voice channel. It then signs a LiveKit token with a
-10-minute lifetime and a grant allowing entry only to that channel's room. The
+30-second initial lifetime and a grant allowing entry only to that channel's room. The
 LiveKit API secret is never sent to the browser.
+
+### One active voice connection per account
+
+A new voice join transfers the account's call from its previous tab/device,
+including between servers, native channels, group channels and friend calls.
+Ordinary workspace navigation does not claim a new connection or leave a call.
+The signaling process serializes admission per authenticated account through
+`server/voice-sessions.mjs`. Direct sockets claim after channel/friend authorization;
+the group-token API checks membership before calling the authenticated internal
+`/internal/claim-voice` endpoint. A browser-generated session UUID identifies
+each join and is included in the LiveKit identity after the account prefix.
+
+Before admitting a different session, signaling calls Next.js's secret-authenticated
+`POST /api/internal/voice-media`. Next.js uses the LiveKit server API to
+find and remove that account's participants across rooms, including orphaned
+media after a signaling restart. A media-service failure rejects admission.
+It then detaches the old native socket/presence and sends `voice-replaced` with
+the old session ID. The matching browser stops capture, clears call UI and
+cancels automatic reconnect on that explicitly replaced client; delayed events
+cannot close a newer session. The client displays a confirmation dialog with
+an OK button in every workspace, retaining it until dismissed.
+If LiveKit's disconnect arrives before signaling's replacement event, the browser
+retains that disconnected session ID solely to match the notice. The notice can
+then appear after media cleanup in every workspace. A new join or explicit leave
+clears that ID, and a late event cannot disconnect a newer call.
+Group token/capture generation guards discard responses after replacement.
+Group presence confirms pending admission; unconfirmed admissions expire after
+35 seconds, and a brief socket outage retains ownership for reconnect. Native
+automatic reconnects retain their session ID and can reclaim a call from a
+temporary device when the original device's internet returns. Group signaling
+and SDK reconnects explicitly reannounce recovery; admission removes the temporary
+device while preserving the returning session's own SFU identity. Ordinary stale
+group presence is still rejected and cannot silently reclaim a call.
+After an unexpected terminal group transport failure the mounted client shows an
+error explaining that the internet connection or LiveKit may be unavailable,
+and retries every five seconds while online or immediately on the browser's
+online event. Its microphone mute preference survives these retries. Explicit
+leave, handoff, owner removal, room deletion or account/access rejection cancels
+recovery. Reloading the site still starts with no call; no persistent recovery
+across a whole-site outage is added. Errors appear in all workspace branches.
+Cleanup checks session IDs so an old socket cannot release its replacement.
+
+Signaling has no scheduled restart. Production Compose uses `restart: unless-stopped`
+to recover after process exit or host restart; deployments/manual restarts can
+also replace it. Development uses Node's file watcher to restart signaling after
+source edits. The health check observes readiness and does not schedule restarts.
+
+This coordinator remains in the single signaling process; multiple signaling
+instances would require shared admission state. LiveKit credentials remain only
+in Next.js. Signaling reaches the application through `APP_INTERNAL_URL`, defaulting
+to `http://app:3000` in production (the existing Compose service) and loopback
+port 3000 in development. Admission requires both application and signaling
+availability. SFU discovery scans rooms on a
+new admission, adding control-plane work proportional to room count. No database
+migration or production configuration is changed here.
+Self-hosted LiveKit bearer tokens already issued to a modified client are not
+revoked by this coordinator. Initial tokens last 30 seconds, but LiveKit supplies
+refreshed credentials with at least a ten-minute lifetime for established-session
+reconnects. Normal LC clients cancel obsolete joins and disconnect on replacement;
+this is not a hard SFU admission guarantee against deliberate token replay.
+See [LiveKit token lifecycle](https://docs.livekit.io/frontends/reference/tokens-grants/).
 
 ## Text-message flow
 
@@ -762,8 +823,9 @@ lives beside the persistent call layer, so workspace navigation and guidance
 do not remount media or start capture. It automatically opens after workspace
 startup unless `lc.help.dismissed:{userId}` is true in localStorage. Next/Back
 navigate the guide; Skip and modal dismissal offer a final preference prompt.
-The final step and skip prompt both offer Do not show again; confirming saves
-that choice per account/browser. Manual Help always works, and unchecking the
+The final step and skip prompt both offer Do not show again, checked by default
+when no choice has been saved. Confirming stores the explicit `true` or `false`
+choice per account/browser. Manual Help always works, and unchecking the
 preference enables future automatic display. This preference is not synced
 between browsers/devices; unavailable storage leaves the tour usable.
 Each guide step maps to visible workspace controls. A viewport-aligned SVG mask

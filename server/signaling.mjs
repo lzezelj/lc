@@ -1,9 +1,10 @@
 import "dotenv/config";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { verifySignalingToken } from "./signaling-auth.mjs";
+import { createVoiceSessions } from "./voice-sessions.mjs";
 
 export function createSignalingServer({
   port = 3001,
@@ -11,6 +12,23 @@ export function createSignalingServer({
   pendingVoiceTimeoutMs = 30_000,
   authSecret = process.env.AUTH_SECRET,
   internalSecret = process.env.SIGNALING_INTERNAL_SECRET ?? authSecret,
+  removeGroupMedia = async (userId, keepSessionId) => {
+    const appUrl =
+      process.env.APP_INTERNAL_URL ??
+      (process.env.NODE_ENV === "production"
+        ? "http://app:3000"
+        : "http://127.0.0.1:3000");
+    const response = await fetch(`${appUrl}/api/internal/voice-media`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId, keepSessionId }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error("Could not remove previous group media");
+  },
 } = {}) {
   if (!authSecret) throw new Error("AUTH_SECRET is required");
   if (!internalSecret) throw new Error("SIGNALING_INTERNAL_SECRET is required");
@@ -20,6 +38,44 @@ export function createSignalingServer({
       response.end(
         JSON.stringify({ status: "ok", websocketClients: ws.clients.size }),
       );
+      return;
+    }
+    if (request.method === "POST" && request.url === "/internal/claim-voice") {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret))
+        return response.writeHead(401).end("Unauthorized");
+      readJsonBody(request)
+        .then(async (body) => {
+          if (
+            ![body.userId, body.roomId, body.sessionId].every(
+              (value) =>
+                typeof value === "string" &&
+                value.length > 0 &&
+                value.length <= 200,
+            )
+          )
+            return response.writeHead(400).end("Invalid voice session");
+          if (deletedChannels.has(body.roomId))
+            return response.writeHead(403).end("Channel deleted");
+          try {
+            const admitted = await voiceSessions.claim(
+              body.userId,
+              {
+                id: body.sessionId,
+                roomId: body.roomId,
+                kind: "group",
+              },
+              () => !response.destroyed && !deletedChannels.has(body.roomId),
+            );
+            response.writeHead(admitted ? 204 : 409).end();
+          } catch {
+            response.writeHead(503).end("Could not transfer voice connection");
+          }
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
       return;
     }
     if (
@@ -334,6 +390,43 @@ export function createSignalingServer({
   const deletedChannels = new Set();
   const userStatuses = new Map();
   const validStatuses = new Set(["online", "away", "dnd", "invisible"]);
+  const voiceSessions = createVoiceSessions({
+    removeGroupMedia,
+    onReplace(userId, previous, next) {
+      const event = JSON.stringify({
+        type: "voice-replaced",
+        sessionId: previous.id,
+      });
+      for (const client of ws.clients) {
+        if (client.identity?.sub !== userId) continue;
+        if (
+          previous.id !== next.id &&
+          client.readyState === WebSocket.OPEN &&
+          (client.subscribedWorkspace || client.voiceSessionId === previous.id)
+        )
+          client.send(event);
+        for (const roomId of client.groupPresence?.keys() ?? []) {
+          client.groupPresence.delete(roomId);
+          broadcastPresence(roomId);
+        }
+      }
+      for (const [roomId, peers] of rooms) {
+        let changed = false;
+        for (const peer of peers) {
+          if (peer.identity.sub !== userId) continue;
+          changed = true;
+          peers.delete(peer);
+          peer.close(4000, "Voice connection transferred");
+          if (roomId !== next.roomId || next.kind !== "direct")
+            for (const remaining of peers)
+              if (remaining.readyState === WebSocket.OPEN)
+                remaining.send(JSON.stringify({ type: "peer-left" }));
+        }
+        if (changed) broadcastPresence(roomId);
+        if (!peers.size) rooms.delete(roomId);
+      }
+    },
+  });
 
   server.on("upgrade", (request, socket, head) => {
     const token = new URL(
@@ -755,7 +848,69 @@ export function createSignalingServer({
           return;
         }
         socket.groupPresence ??= new Map();
+        if (
+          message.present &&
+          socket.groupReclaimSessionId === message.sessionId &&
+          message.sessionId
+        )
+          return;
+        if (
+          message.present &&
+          message.reconnecting === true &&
+          typeof message.sessionId === "string" &&
+          !voiceSessions.confirm(socket.identity.sub, message.sessionId)
+        ) {
+          socket.groupReclaimSessionId = message.sessionId;
+          void voiceSessions
+            .claim(
+              socket.identity.sub,
+              {
+                id: message.sessionId,
+                roomId: message.roomId,
+                kind: "group",
+              },
+              () =>
+                socket.readyState === WebSocket.OPEN &&
+                isAllowed(message.roomId),
+            )
+            .then((admitted) => {
+              socket.groupReclaimSessionId = null;
+              if (!admitted) return;
+              socket.groupVoiceSessionId = message.sessionId;
+              voiceSessions.confirm(socket.identity.sub, message.sessionId);
+              socket.groupPresence.set(message.roomId, {
+                userId: socket.identity.sub,
+                name: socket.identity.name,
+                muted: Boolean(message.muted) || Boolean(message.deafened),
+                deafened: Boolean(message.deafened),
+                camera: Boolean(message.camera),
+                screen: Boolean(message.screen),
+                speaking: Boolean(message.speaking),
+              });
+              completePendingVoice(socket.identity.sub, message.roomId);
+              broadcastPresence(message.roomId);
+            })
+            .catch(() => {
+              socket.groupReclaimSessionId = null;
+              if (socket.readyState === WebSocket.OPEN)
+                socket.send(JSON.stringify({ type: "voice-transfer-failed" }));
+            });
+          return;
+        }
         if (message.present) {
+          if (
+            message.sessionId &&
+            !voiceSessions.confirm(socket.identity.sub, message.sessionId)
+          ) {
+            socket.send(
+              JSON.stringify({
+                type: "voice-replaced",
+                sessionId: message.sessionId,
+              }),
+            );
+            return;
+          }
+          socket.groupVoiceSessionId = message.sessionId;
           completePendingVoice(socket.identity.sub, message.roomId);
           const name = socket.identity.name;
           socket.groupPresence.set(message.roomId, {
@@ -769,6 +924,8 @@ export function createSignalingServer({
           });
         } else {
           socket.groupPresence.delete(message.roomId);
+          if (message.sessionId)
+            voiceSessions.release(socket.identity.sub, message.sessionId);
         }
         broadcastPresence(message.roomId);
         return;
@@ -793,35 +950,82 @@ export function createSignalingServer({
           return;
         }
 
-        const peers = peersFor(message.roomId);
-        for (const oldPeer of peers) {
-          if (oldPeer.identity?.sub === socket.identity.sub) {
-            peers.delete(oldPeer);
-            oldPeer.close(4000, "Replaced by new connection");
-          }
-        }
-        if (peers.size >= maxPeers) {
+        if (socket.voiceJoinPending) return;
+        const available = () =>
+          [...peersFor(message.roomId)].filter(
+            (peer) => peer.identity.sub !== socket.identity.sub,
+          ).length < maxPeers;
+        if (!available()) {
           socket.send(JSON.stringify({ type: "room-full" }));
           return;
         }
+        socket.voiceJoinPending = true;
+        socket.voiceSessionId =
+          typeof message.sessionId === "string"
+            ? message.sessionId
+            : randomUUID();
+        void voiceSessions
+          .claim(
+            socket.identity.sub,
+            {
+              id: socket.voiceSessionId,
+              roomId: message.roomId,
+              kind: "direct",
+              socket,
+              reconnecting: message.reconnecting === true,
+            },
+            () =>
+              socket.readyState === WebSocket.OPEN &&
+              isAllowed(message.roomId) &&
+              available(),
+          )
+          .then((admitted) => {
+            socket.voiceJoinPending = false;
+            if (!admitted) {
+              if (socket.readyState === WebSocket.OPEN)
+                socket.send(
+                  JSON.stringify(
+                    message.reconnecting
+                      ? {
+                          type: "voice-replaced",
+                          sessionId: socket.voiceSessionId,
+                        }
+                      : { type: "room-full" },
+                  ),
+                );
+              return;
+            }
+            if (!available()) {
+              voiceSessions.release(socket.identity.sub, socket.voiceSessionId);
+              socket.send(JSON.stringify({ type: "room-full" }));
+              return;
+            }
+            const peers = peersFor(message.roomId);
+            joinedRoomId = message.roomId;
+            socket.participantName = socket.identity.name;
+            const hasPeer = peers.size > 0;
+            peers.add(socket);
+            completePendingVoice(socket.identity.sub, joinedRoomId);
+            socket.send(
+              JSON.stringify({ type: "joined", initiator: !hasPeer }),
+            );
 
-        joinedRoomId = message.roomId;
-        socket.participantName = socket.identity.name;
-        const hasPeer = peers.size > 0;
-        peers.add(socket);
-        completePendingVoice(socket.identity.sub, joinedRoomId);
-        socket.send(JSON.stringify({ type: "joined", initiator: !hasPeer }));
-
-        for (const peer of peers) {
-          if (peer !== socket && peer.readyState === WebSocket.OPEN) {
-            peer.send(JSON.stringify({ type: "peer-joined" }));
-          }
-        }
-        broadcastPresence(joinedRoomId);
+            for (const peer of peers) {
+              if (peer !== socket && peer.readyState === WebSocket.OPEN) {
+                peer.send(JSON.stringify({ type: "peer-joined" }));
+              }
+            }
+            broadcastPresence(joinedRoomId);
+          })
+          .catch(() => {
+            socket.voiceJoinPending = false;
+            if (socket.readyState === WebSocket.OPEN)
+              socket.send(JSON.stringify({ type: "voice-transfer-failed" }));
+          });
         return;
       }
 
-      if (!joinedRoomId) return;
+      if (!joinedRoomId || !peersFor(joinedRoomId).has(socket)) return;
       for (const peer of peersFor(joinedRoomId)) {
         if (peer !== socket && peer.readyState === WebSocket.OPEN) {
           peer.send(JSON.stringify(message));
@@ -830,6 +1034,8 @@ export function createSignalingServer({
     });
 
     socket.on("close", () => {
+      voiceSessions.suspend(socket.identity.sub, socket.voiceSessionId, socket);
+      voiceSessions.suspend(socket.identity.sub, socket.groupVoiceSessionId);
       const pendingRoom = clearPendingVoice(socket);
       if (pendingRoom) broadcastPresence(pendingRoom);
       if (
@@ -851,8 +1057,8 @@ export function createSignalingServer({
       }
       if (!joinedRoomId) return;
 
-      const peers = peersFor(joinedRoomId);
-      if (!peers.delete(socket)) return;
+      const peers = rooms.get(joinedRoomId);
+      if (!peers?.delete(socket)) return;
       for (const peer of peers) {
         if (peer.readyState === WebSocket.OPEN) {
           peer.send(JSON.stringify({ type: "peer-left" }));

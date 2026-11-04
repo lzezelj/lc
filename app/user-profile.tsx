@@ -17,6 +17,7 @@ export function UserProfile({
   mutualServers,
   onClose,
   onMessage,
+  onEditProfile,
   onAddFriend,
   onAcceptFriend,
   requestPending = false,
@@ -27,6 +28,7 @@ export function UserProfile({
   mutualServers: string[];
   onClose: () => void;
   onMessage?: () => void;
+  onEditProfile?: () => void;
   onAddFriend?: () => Promise<void>;
   onAcceptFriend?: () => Promise<void>;
   requestPending?: boolean;
@@ -72,16 +74,22 @@ export function UserProfile({
           {status}
         </p>
         {user.role && <span className="profileRole">{user.role}</span>}
-        <section>
-          <h4>Shared server</h4>
-          {mutualServers.length ? (
-            mutualServers.map((name) => <p key={name}>{name}</p>)
-          ) : (
-            <p>No shared server in this view.</p>
-          )}
-        </section>
+        {!onEditProfile && (
+          <section>
+            <h4>Shared server</h4>
+            {mutualServers.length ? (
+              mutualServers.map((name) => <p key={name}>{name}</p>)
+            ) : (
+              <p>No shared server in this view.</p>
+            )}
+          </section>
+        )}
         <div className="profileActions">
-          {onMessage ? (
+          {onEditProfile ? (
+            <button className="primary" type="button" onClick={onEditProfile}>
+              Edit profile
+            </button>
+          ) : onMessage ? (
             <button className="primary" type="button" onClick={onMessage}>
               Message
             </button>

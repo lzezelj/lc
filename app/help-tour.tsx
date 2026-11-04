@@ -127,7 +127,7 @@ export function HelpTour({
 }) {
   const [phase, setPhase] = useState<"closed" | "tour" | "skipped">("closed");
   const [step, setStep] = useState(0);
-  const [dontShow, setDontShow] = useState(false);
+  const [dontShow, setDontShow] = useState(true);
   const heading = useRef<HTMLHeadingElement>(null);
   const lastRequest = useRef(requestKey);
   const stepChange = useRef(onStepChange);
@@ -143,11 +143,14 @@ export function HelpTour({
     const manual = requestKey !== lastRequest.current;
     lastRequest.current = requestKey;
     let dismissed = false;
+    let preference = true;
     try {
-      dismissed = localStorage.getItem(storageKey) === "true";
+      const savedPreference = localStorage.getItem(storageKey);
+      dismissed = savedPreference === "true";
+      preference = savedPreference !== "false";
     } catch {}
     const timer = window.setTimeout(() => {
-      setDontShow(dismissed);
+      setDontShow(preference);
       setStep(0);
       setPhase(manual || !dismissed ? "tour" : "closed");
     }, 0);
@@ -158,8 +161,7 @@ export function HelpTour({
   }, [phase, step]);
   function finish() {
     try {
-      if (dontShow) localStorage.setItem(storageKey, "true");
-      else localStorage.removeItem(storageKey);
+      localStorage.setItem(storageKey, String(dontShow));
     } catch {}
     setPhase("closed");
   }
