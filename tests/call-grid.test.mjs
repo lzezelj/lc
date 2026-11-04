@@ -1293,6 +1293,7 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
       prepareVoiceActivity() {},
       prepareRemoteAudio() {},
       prepareVoiceSounds() {},
+      updatePendingVoice() {},
       setActiveVoiceChannelId() {},
       setActiveVoiceChannelSnapshot(value) {
         voiceSnapshot = value;

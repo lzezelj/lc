@@ -42,6 +42,9 @@ import { CallMediaProvider, useCallAudio } from "./call-media.js";
 import { SoundboardButton, useSoundboard } from "./soundboard.js";
 import { SoundManager } from "./sound-manager.js";
 import { ServerNavButton } from "./server-nav-button.js";
+import { VoiceParticipantMenu } from "./voice-participant-menu.js";
+import { HelpTour, helpSteps } from "./help-tour.js";
+import { LoadingSkeleton } from "./loading-skeleton.js";
 import { useWorkspaceActivity } from "./use-workspace-activity.js";
 import { IncomingCallNotice } from "./incoming-call-notice.js";
 import { friendCallRoom, conversationHasCall } from "./call-context.js";
@@ -53,6 +56,375 @@ const h = React.createElement;
 const wait = () => new Promise((resolve) => setTimeout(resolve, 60));
 const check = (value, message) => {
   if (!value) throw new Error(message);
+};
+window.verifyHelpAndSkeletons = async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const target = document.createElement("button");
+  target.className = "workspaceLogo";
+  target.style.cssText =
+    "position:fixed;left:18px;top:80px;width:46px;height:46px;z-index:50";
+  target.textContent = "LC";
+  document.body.append(target);
+  // Isolate geometry checks from controls in the background workspace fixture.
+  const otherTargets = [
+    ...document.querySelectorAll(
+      ".workspaceLogo, .friendSearchForm, .friendsSidebar",
+    ),
+  ]
+    .filter((element) => element !== target)
+    .map((element) => ({ element, visibility: element.style.visibility }));
+  otherTargets.forEach(({ element }) => {
+    element.style.visibility = "hidden";
+  });
+  let root = createRoot(container);
+  const userId = `help-browser-${Math.random()}`,
+    otherUser = `${userId}-other`;
+  const key = `lc.help.dismissed:${userId}`;
+  const visitedSteps = [];
+  const waitForHighlight = async (condition) => {
+    for (let attempt = 0; attempt < 25 && !condition(); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  const render = async (requestKey = 0, id = userId) => {
+    root.render(
+      h(HelpTour, {
+        key: id,
+        userId: id,
+        requestKey,
+        onStepChange: (step) => visitedSteps.push(step),
+        profile: { name: "Taylor", status: "Away", statusCode: "away" },
+      }),
+    );
+    await wait();
+  };
+  const click = async (label) => {
+    const button = [...document.querySelectorAll(".helpTour button")].find(
+      (item) => item.textContent === label,
+    );
+    check(button, `${label} button must exist`);
+    button.click();
+    await wait();
+  };
+  try {
+    await render();
+    check(
+      document.querySelector(".helpTour[open]") &&
+        document
+          .querySelector(".helpStep")
+          .textContent.includes("Welcome to LC"),
+      "The introduction must open automatically for a new account",
+    );
+    const initialWindow = document
+      .querySelector(".helpTour")
+      .getBoundingClientRect();
+    const dragHeader = document.querySelector(".helpTour header");
+    dragHeader.focus();
+    dragHeader.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    );
+    const movedWindow = document
+      .querySelector(".helpTour")
+      .getBoundingClientRect();
+    check(
+      movedWindow.top === initialWindow.top + 10,
+      "The guide header must support keyboard movement",
+    );
+    await click("Next");
+    check(
+      visitedSteps.at(-1) === 1,
+      "Friends guidance must request the actual Friends workspace",
+    );
+    await waitForHighlight(() => document.querySelector(".helpTargetOutline"));
+    const nextWindow = document
+      .querySelector(".helpTour")
+      .getBoundingClientRect();
+    check(
+      nextWindow.left === movedWindow.left &&
+        nextWindow.top === movedWindow.top &&
+        nextWindow.width === movedWindow.width,
+      "Changing steps or highlights must not move or resize the guide window",
+    );
+    const outlines = [...document.querySelectorAll(".helpTargetOutline")];
+    const targetBox = target.getBoundingClientRect();
+    check(
+      outlines.some(
+        (outline) =>
+          Math.abs(Number(outline.getAttribute("x")) - (targetBox.left - 5)) <
+            1 &&
+          Math.abs(
+            Number(outline.getAttribute("width")) - (targetBox.width + 10),
+          ) < 1,
+      ),
+      `Friends step must highlight the actual LC control ${JSON.stringify({ target: targetBox.toJSON(), outlines: outlines.map((item) => ({ x: item.getAttribute("x"), width: item.getAttribute("width") })), active: document.querySelector(".helpTour").getAttribute("data-help-spotlight") })}`,
+    );
+    const canvas = document
+      .querySelector(".helpSpotlightCanvas")
+      .getBoundingClientRect();
+    check(
+      canvas.left === 0 && canvas.top === 0 && canvas.width === innerWidth,
+      "Spotlight coordinates must stay aligned with the viewport despite dialog positioning",
+    );
+    const surface = document.querySelector(".helpTour .settingsModalSurface");
+    check(
+      Number(getComputedStyle(surface).zIndex) >
+        Number(
+          getComputedStyle(document.querySelector(".helpSpotlightCanvas"))
+            .zIndex,
+        ) && getComputedStyle(surface).backgroundColor !== "rgba(0, 0, 0, 0)",
+      "An opaque guide surface must paint above the entire spotlight, including its outlines",
+    );
+    target.style.left = "94px";
+    await waitForHighlight(() =>
+      [...document.querySelectorAll(".helpTargetOutline")].some(
+        (outline) => Math.abs(Number(outline.getAttribute("x")) - 89) < 1,
+      ),
+    );
+    check(
+      [...document.querySelectorAll(".helpTargetOutline")].some(
+        (outline) => Math.abs(Number(outline.getAttribute("x")) - 89) < 1,
+      ),
+      "Highlights must follow layout changes",
+    );
+    target.style.display = "none";
+    await waitForHighlight(() => !document.querySelector(".helpTargetOutline"));
+    check(
+      !document.querySelector(".helpTargetOutline") &&
+        document.querySelector(".helpTargetHint"),
+      "Hidden controls must not leave phantom highlights and must explain where to find them",
+    );
+    target.style.display = "block";
+    await waitForHighlight(() => document.querySelector(".helpTargetOutline"));
+    check(
+      document.querySelector(".helpProgress").textContent.includes("Step 2"),
+      "Next must advance one step",
+    );
+    await click("Skip");
+    check(
+      !document.querySelector(".helpSpotlightCanvas"),
+      "Skipping must remove all highlights",
+    );
+    check(
+      document.querySelector(".helpPreference"),
+      "Skipping must offer Do not show again",
+    );
+    const preference = document.querySelector(".helpPreference input");
+    preference.click();
+    await wait();
+    await click("Done");
+    check(
+      !document.querySelector(".helpTour") &&
+        localStorage.getItem(key) === "true",
+      "Skip must persist the explicit preference and close",
+    );
+    root.unmount();
+    root = createRoot(container);
+    await render();
+    check(
+      !document.querySelector(".helpTour"),
+      "Reloading with opt-out must not automatically reopen the introduction",
+    );
+    await render(1);
+    check(
+      document.querySelector(".helpTour[open]"),
+      "Help must reopen the tour even after opting out",
+    );
+    for (let step = 1; step < helpSteps.length; step++) {
+      await click("Next");
+      if (step === 5) {
+        const preview = document.querySelector(".helpCallPreview");
+        const previewBox = preview.getBoundingClientRect();
+        const toolbar = preview.querySelector(".helpPreviewControls");
+        const toolbarBox = toolbar.getBoundingClientRect();
+        const actions = toolbar.querySelectorAll(":scope > button");
+        check(
+          Math.abs(
+            actions[0].getBoundingClientRect().width -
+              actions[1].getBoundingClientRect().width,
+          ) < 1 &&
+            Math.abs(
+              actions[1].getBoundingClientRect().right -
+                (toolbarBox.right - 10),
+            ) < 1,
+          "Share screen and Soundboard must stretch evenly across the remaining toolbar width",
+        );
+        const guideSurface = document.querySelector(
+          ".helpTour .settingsModalSurface",
+        );
+        check(
+          !guideSurface.contains(preview) &&
+            Number(getComputedStyle(guideSurface).zIndex) >
+              Number(getComputedStyle(preview).zIndex),
+          "The guide must remain above the connected-call example when dragged over it",
+        );
+        check(
+          preview.querySelectorAll(".deviceControl").length === 3 &&
+            preview.querySelector(".helpPreviewControls .mediaDisabled"),
+          "The example must reuse camera-off, microphone and headphone device controls",
+        );
+        check(
+          preview.querySelector(".helpPreviewStatus strong").textContent ===
+            "Connected" &&
+            preview
+              .querySelector(".helpPreviewIdentity")
+              .textContent.includes("Taylor") &&
+            preview
+              .querySelector(".helpPreviewIdentity")
+              .textContent.includes("Away"),
+          "The example must show the current profile and a connected status without a channel name",
+        );
+        check(
+          Math.abs(previewBox.bottom - (innerHeight - 8)) < 1 &&
+            previewBox.left >= 8 &&
+            previewBox.right <= innerWidth,
+          "Connected-call example must sit at the bottom-left within the viewport",
+        );
+        check(
+          preview?.textContent.includes("Connected") &&
+            preview.textContent.includes("Share screen") &&
+            preview.textContent.includes("Soundboard"),
+          "Media guidance must show a connected call example",
+        );
+        check(
+          [...preview.querySelectorAll("button")].every(
+            (button) => button.disabled,
+          ) && !preview.querySelector("audio, video"),
+          "The example must not start media or allow real call actions",
+        );
+      }
+    }
+    check(
+      document.querySelector(".helpPreference") &&
+        document
+          .querySelector(".helpProgress")
+          .textContent.includes(`Step ${helpSteps.length}`),
+      "The final step must offer Do not show again",
+    );
+    document.querySelector(".helpPreference input").click();
+    await wait();
+    await click("Finish");
+    check(
+      localStorage.getItem(key) === null,
+      "Unchecking the preference must enable future automatic tours",
+    );
+    await render(1, otherUser);
+    check(
+      document.querySelector(".helpTour[open]"),
+      "One account's tour preference must not suppress another account's introduction",
+    );
+    await click("Skip");
+    await click("Done");
+    for (const kind of ["channels", "messages", "sounds"]) {
+      root.render(h(LoadingSkeleton, { kind }));
+      await wait();
+      const skeleton = container.querySelector('[role="status"]');
+      check(
+        skeleton?.getAttribute("aria-label") === `Loading ${kind}` &&
+          !skeleton.querySelector("button"),
+        "Skeletons must announce loading without offering fake interactive controls",
+      );
+      check(
+        container.querySelectorAll(".skeletonRow").length ===
+          (kind === "sounds" ? 6 : 5),
+        "Skeleton rows must match the intended layout",
+      );
+    }
+  } finally {
+    root.unmount();
+    container.remove();
+    target.remove();
+    otherTargets.forEach(({ element, visibility }) => {
+      element.style.visibility = visibility;
+    });
+    localStorage.removeItem(key);
+    localStorage.removeItem(`lc.help.dismissed:${otherUser}`);
+  }
+};
+window.mountMovableHelpTest = async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  root.render(
+    h(HelpTour, { userId: `drag-help-${Math.random()}`, requestKey: 0 }),
+  );
+  await wait();
+  const rect = document.querySelector(".helpTour").getBoundingClientRect();
+  const header = document
+    .querySelector(".helpTour header")
+    .getBoundingClientRect();
+  window.readMovableHelpTest = () => {
+    const rect = document.querySelector(".helpTour").getBoundingClientRect();
+    return { left: rect.left, top: rect.top };
+  };
+  window.advanceMovableHelpTest = async () => {
+    [...document.querySelectorAll(".helpTour button")]
+      .find((button) => button.textContent === "Next")
+      .click();
+    await wait();
+    return window.readMovableHelpTest();
+  };
+  window.cleanupMovableHelpTest = () => {
+    root.unmount();
+    container.remove();
+  };
+  return { x: header.left + 20, y: header.top + 10, top: rect.top };
+};
+window.verifyVoiceParticipantMenu = async () => {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const moved = [];
+  let closed = 0;
+  try {
+    root.render(
+      h(VoiceParticipantMenu, {
+        x: innerWidth - 30,
+        y: innerHeight - 30,
+        channels: Array.from({ length: 20 }, (_, index) => ({
+          id: String(index),
+          name: `Voice ${index}`,
+        })),
+        onClose: () => closed++,
+        onKick() {},
+        onMove: (id) => moved.push(id),
+      }),
+    );
+    await wait();
+    check(
+      container.querySelector("button").textContent === "Kick",
+      "Kick must use the short label",
+    );
+    container
+      .querySelector(".voiceMoveItem")
+      .dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    await wait();
+    const submenu = container.querySelector(".voiceMoveMenu");
+    check(
+      submenu?.querySelectorAll("button").length === 20,
+      "Hover must list every destination voice channel",
+    );
+    const rect = submenu.getBoundingClientRect();
+    check(
+      rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+      "Move submenu must fit within the viewport",
+    );
+    submenu.dispatchEvent(new Event("scroll"));
+    check(closed === 0, "Scrolling the destination list must keep it open");
+    submenu.querySelector("button").click();
+    check(
+      moved[0] === "0" && closed === 1,
+      "Choosing a destination closes and moves",
+    );
+    document.body.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true }),
+    );
+    check(closed === 2, "Clicking outside must dismiss voice actions");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    check(closed === 3, "Escape must dismiss voice actions");
+  } finally {
+    root.unmount();
+    container.remove();
+  }
 };
 window.verifyCallContext = async () => {
   const container = document.createElement("div");
@@ -618,7 +990,14 @@ async function verifySoundboard() {
       "Clip actions must be available on keyboard focus",
     );
     preview.click();
-    await new Promise((resolve) => setTimeout(resolve, 160));
+    for (
+      let attempt = 0;
+      attempt < 30 &&
+      !document.querySelector('[data-lc-soundboard-local="preview"]')
+        ?.srcObject;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
     check(
       publications === 0 && !speaking.includes(true),
       "Preview must stay local and must not announce speaking",

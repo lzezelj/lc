@@ -5,7 +5,9 @@ const require = createRequire(import.meta.url);
 const nextBin = require.resolve("next/dist/bin/next");
 const children = [
   spawn(process.execPath, [nextBin, "dev"], { stdio: "inherit" }),
-  spawn(process.execPath, ["server/signaling.mjs"], { stdio: "inherit" }),
+  spawn(process.execPath, ["--watch", "server/signaling.mjs"], {
+    stdio: "inherit",
+  }),
 ];
 
 function stop() {

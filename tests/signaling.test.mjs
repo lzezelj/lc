@@ -519,6 +519,253 @@ test("workspace voice presence covers initial occupants and live changes across 
   await left;
 });
 
+test("authenticated voice moves reach only the target's workspace for native and group calls", async () => {
+  const url = await startServer();
+  for (const [name, roomId, type] of [
+    ["Native mover", "interview", "voice_direct"],
+    ["Group mover", "group-room", "voice_group"],
+  ]) {
+    const target = await connect(url, name, [roomId, "lounge"]);
+    const ready = matchingMessage(
+      target,
+      (message) => message.type === "presence" && message.roomId === roomId,
+    );
+    target.send(JSON.stringify({ type: "subscribe-workspace" }));
+    await ready;
+    const present = matchingMessage(
+      target,
+      (message) =>
+        message.type === "presence" &&
+        message.roomId === roomId &&
+        message.participants.length === 1,
+    );
+    target.send(
+      JSON.stringify(
+        type === "voice_direct"
+          ? { type: "join", roomId }
+          : { type: "set-group-presence", roomId, present: true },
+      ),
+    );
+    await present;
+    const body = {
+      userId: `test-${name}`,
+      roomId,
+      channel: {
+        id: "lounge",
+        type: "voice_direct",
+        name: "Lounge",
+        serverId: "server-1",
+      },
+    };
+    const endpoint = `${url.replace("ws://", "http://")}/internal/move-voice`;
+    assert.equal(
+      (await fetch(endpoint, { method: "POST", body: JSON.stringify(body) }))
+        .status,
+      401,
+    );
+    const event = matchingMessage(
+      target,
+      (message) => message.type === "voice-move",
+    );
+    assert.equal(
+      (
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${authSecret}` },
+          body: JSON.stringify(body),
+        })
+      ).status,
+      204,
+    );
+    assert.deepEqual(await event, {
+      type: "voice-move",
+      roomId,
+      channel: body.channel,
+    });
+    assert.equal(
+      (
+        await fetch(endpoint, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${authSecret}` },
+          body: JSON.stringify({ ...body, roomId: "other-room" }),
+        })
+      ).status,
+      404,
+    );
+  }
+});
+
+test("voice moves reject full native destinations and never accept client-published move commands", async () => {
+  const url = await startServer();
+  for (const name of ["Occupant A", "Occupant B"]) {
+    const occupant = await connect(url, name);
+    const joined = matchingMessage(
+      occupant,
+      (message) => message.type === "joined",
+    );
+    occupant.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+    await joined;
+  }
+  const target = await connect(url, "Moving", ["lounge", "group-room"]);
+  const ready = matchingMessage(
+    target,
+    (message) => message.type === "presence" && message.roomId === "group-room",
+  );
+  target.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await ready;
+  const present = matchingMessage(
+    target,
+    (message) =>
+      message.type === "presence" &&
+      message.roomId === "group-room" &&
+      message.participants.length === 1,
+  );
+  target.send(
+    JSON.stringify({
+      type: "set-group-presence",
+      roomId: "group-room",
+      present: true,
+    }),
+  );
+  await present;
+  const event = {
+    type: "voice-move",
+    roomId: "group-room",
+    channel: {
+      id: "lounge",
+      name: "Lounge",
+      type: "voice_direct",
+      serverId: "server-1",
+    },
+  };
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/move-voice`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authSecret}` },
+      body: JSON.stringify({ ...event, userId: "test-Moving" }),
+    },
+  );
+  assert.equal(response.status, 409);
+  const quiet = expectNoMessage(target);
+  target.send(JSON.stringify(event));
+  await quiet;
+});
+
+test("pending voice is visible before media joins, uses signed identity and becomes a single connected occupant", async () => {
+  const url = await startServer();
+  const viewer = await connect(url, "Pending viewer");
+  const ready = matchingMessage(
+    viewer,
+    (message) => message.type === "presence" && message.roomId === "group-room",
+  );
+  viewer.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await ready;
+  const pending = await connect(url, "Joining user");
+  for (const roomId of ["lounge", "group-room"]) {
+    const appeared = matchingMessage(
+      viewer,
+      (message) =>
+        message.type === "presence" &&
+        message.roomId === roomId &&
+        message.participants[0]?.connecting,
+    );
+    pending.send(
+      JSON.stringify({
+        type: "set-voice-pending",
+        roomId,
+        present: true,
+        userId: "spoof",
+        name: "spoof",
+      }),
+    );
+    const people = (await appeared).participants;
+    assert.equal(people.length, 1);
+    assert.equal(people[0].userId, "test-Joining user");
+    assert.equal(people[0].name, "Joining user");
+    const connected = matchingMessage(
+      viewer,
+      (message) =>
+        message.type === "presence" &&
+        message.roomId === roomId &&
+        message.participants.length === 1 &&
+        !message.participants[0].connecting,
+    );
+    if (roomId === "lounge") {
+      const call = await connect(url, "Joining user");
+      call.send(JSON.stringify({ type: "join", roomId }));
+      await connected;
+      const left = matchingMessage(
+        viewer,
+        (message) =>
+          message.type === "presence" &&
+          message.roomId === roomId &&
+          !message.participants.length,
+      );
+      call.close();
+      await left;
+    } else {
+      pending.send(
+        JSON.stringify({ type: "set-group-presence", roomId, present: true }),
+      );
+      await connected;
+    }
+  }
+});
+
+test("pending voice cancellation, disconnect and expiry clear placeholders; unrelated channels are forbidden", async () => {
+  const url = await startServer({ pendingVoiceTimeoutMs: 500 });
+  const viewer = await connect(url, "Observer", ["group-room"]);
+  const ready = matchingMessage(
+    viewer,
+    (message) => message.type === "presence",
+  );
+  viewer.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await ready;
+  const target = await connect(url, "Pending", ["group-room"]);
+  const forbidden = matchingMessage(
+    target,
+    (message) => message.type === "forbidden",
+  );
+  target.send(
+    JSON.stringify({
+      type: "set-voice-pending",
+      roomId: "private",
+      present: true,
+    }),
+  );
+  await forbidden;
+  for (const action of ["cancel", "expiry", "disconnect"]) {
+    const appeared = matchingMessage(
+      viewer,
+      (message) =>
+        message.type === "presence" && message.participants[0]?.connecting,
+    );
+    target.send(
+      JSON.stringify({
+        type: "set-voice-pending",
+        roomId: "group-room",
+        present: true,
+      }),
+    );
+    await appeared;
+    const cleared = matchingMessage(
+      viewer,
+      (message) => message.type === "presence" && !message.participants.length,
+    );
+    if (action === "cancel")
+      target.send(
+        JSON.stringify({
+          type: "set-voice-pending",
+          roomId: "group-room",
+          present: false,
+        }),
+      );
+    if (action === "disconnect") target.close();
+    await cleared;
+  }
+});
+
 function expectNoMessage(socket, duration = 75) {
   return new Promise((resolve, reject) => {
     const onMessage = (data) => {

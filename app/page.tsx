@@ -10,6 +10,9 @@ import {
 } from "react";
 import { signOut, useSession } from "next-auth/react";
 import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
+import { VoiceParticipantMenu } from "./voice-participant-menu";
+import { HelpIcon, HelpTour } from "./help-tour";
+import { LoadingSkeleton } from "./loading-skeleton";
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { ParticipantMediaIndicators } from "./participant-media-indicators";
 import { PanelToggle } from "./panel-toggle";
@@ -173,6 +176,7 @@ type AccountMessage = {
   serverName: string;
 };
 type VoiceParticipant = {
+  connecting?: boolean;
   userId?: string;
   name: string;
   muted: boolean;
@@ -198,6 +202,7 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  channel?: Channel;
   authorId?: string;
   createdAt?: string;
   channelId?: string;
@@ -318,10 +323,17 @@ export default function Home() {
   const [callPeerPresent, setCallPeerPresent] = useState(false);
   const [signalingRefreshKey, setSignalingRefreshKey] = useState(0);
   const [serversLoaded, setServersLoaded] = useState(false);
+  const [helpRequest, setHelpRequest] = useState(0);
+  const helpPreviousView = useRef<{
+    friends: boolean;
+    friend: Friend | null;
+    callView: boolean;
+  } | null>(null);
   const [navigationReady, setNavigationReady] = useState(false);
   const pendingLocation = useRef<WorkspaceLocation | null>(null);
   const locationUser = useRef("");
   const [selectedServerId, setSelectedServerId] = useState("");
+  const [serverChannelsLoaded, setServerChannelsLoaded] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
@@ -483,6 +495,7 @@ export default function Home() {
   });
   const soundPlayerRef = soundboard.player;
   const activeVoiceChannelRef = useRef("");
+  const pendingVoiceChannel = useRef("");
   activeVoiceChannelRef.current = activeVoiceChannelId;
   const [connectedGroupChannelId, setConnectedGroupChannelId] = useState("");
   const [activeVoiceChannelSnapshot, setActiveVoiceChannelSnapshot] =
@@ -564,7 +577,19 @@ export default function Home() {
     (event: "call-ended" | "call-declined" | "user-unavailable") => void
   >(() => undefined);
   const closeCallViewRef = useRef<() => void>(() => undefined);
-  const serverSwitchRequest = useRef(0);
+  const moveVoiceRef = useRef<(message: Signal) => void>(() => undefined);
+  useEffect(() => {
+    moveVoiceRef.current = (message) => {
+      if (
+        message.roomId !== activeVoiceChannelRef.current ||
+        !message.channel ||
+        message.channel.type === "text"
+      )
+        return;
+      selectVoiceChannel(message.channel);
+      setNoticeMessage(`You were moved to ${message.channel.name}.`);
+    };
+  });
   const stopSpeechMonitor = useRef<(() => void) | null>(null);
   const stopRemoteSpeechMonitor = useRef<(() => void) | null>(null);
   const stopDirectStats = useRef<(() => void) | null>(null);
@@ -1115,21 +1140,19 @@ export default function Home() {
   useEffect(() => {
     if (!selectedServerId) return;
     let active = true;
-    void Promise.all([
-      fetch(`/api/servers/${selectedServerId}/channels`).then((response) => {
+    const controller = new AbortController();
+    void fetch(`/api/servers/${selectedServerId}/channels`, {
+      signal: controller.signal,
+    })
+      .then((response) => {
         if (!response.ok) throw new Error("Channels could not be loaded.");
         return response.json();
-      }),
-      fetch(`/api/servers/${selectedServerId}/members`).then((response) => {
-        if (!response.ok) throw new Error("Members could not be loaded.");
-        return response.json();
-      }),
-    ])
-      .then(([channelData, memberData]: [Channel[], Member[]]) => {
+      })
+      .then((channelData: Channel[]) => {
         if (!active) return;
         const nextChannels = Array.isArray(channelData) ? channelData : [];
         setChannels(nextChannels);
-        setMembers(Array.isArray(memberData) ? memberData : []);
+        setServerChannelsLoaded(selectedServerId);
         const savedChannel =
           pendingLocation.current?.serverId === selectedServerId
             ? pendingLocation.current.channelId
@@ -1154,14 +1177,27 @@ export default function Home() {
       .catch(() => {
         if (active) {
           pendingLocation.current = null;
-          setFriendsView(true);
+          setServerChannelsLoaded(selectedServerId);
           setNavigationReady(true);
           setErrorMessage("The server could not be loaded.");
         }
+      });
+    void fetch(`/api/servers/${selectedServerId}/members`, {
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("Members could not be loaded.");
+        return response.json();
       })
-      .finally(() => undefined);
+      .then((memberData: Member[]) => {
+        if (active) setMembers(Array.isArray(memberData) ? memberData : []);
+      })
+      .catch(() => {
+        if (active) setErrorMessage("Members could not be loaded.");
+      });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [selectedServerId, session?.user.id]);
 
@@ -1231,30 +1267,33 @@ export default function Home() {
 
   async function switchServer(serverId: string) {
     if (!serverId || serverId === selectedServerId) return;
-    const requestId = ++serverSwitchRequest.current;
-    try {
-      const [channelData, memberData] = await Promise.all([
-        fetch(`/api/servers/${serverId}/channels`).then(
-          (response) => response.json() as Promise<Channel[]>,
-        ),
-        fetch(`/api/servers/${serverId}/members`).then(
-          (response) => response.json() as Promise<Member[]>,
-        ),
-      ]);
-      if (requestId !== serverSwitchRequest.current) return;
-      const nextChannels = Array.isArray(channelData) ? channelData : [];
-      setChannels(nextChannels);
-      setMembers(Array.isArray(memberData) ? memberData : []);
-      const firstTextChannel = nextChannels.find(
-        (channel) => channel.type === "text",
-      );
-      lastTextChannelId.current = firstTextChannel?.id ?? "";
-      setSelectedChannelId(firstTextChannel?.id ?? nextChannels[0]?.id ?? "");
-      setCallViewOpen(false);
-      setSelectedServerId(serverId);
-    } catch {
-      setErrorMessage("The server could not be loaded.");
+    channelHistoryGeneration.current += 1;
+    setChannels([]);
+    setMembers([]);
+    setMessages([]);
+    setSelectedChannelId("");
+    setServerChannelsLoaded("");
+    setReplyingTo(null);
+    setMessageMenu(null);
+    lastTextChannelId.current = "";
+    setCallViewOpen(false);
+    setSelectedServerId(serverId);
+  }
+
+  function selectTextChannel(channelId: string) {
+    if (channelId !== selectedChannelId) {
+      channelHistoryGeneration.current += 1;
+      setChannelHistoryLoaded("");
+      setReadableHistoryChannel("");
+      setMessages([]);
+      setNextMessageCursor(null);
+      setLoadingMoreMessages(false);
     }
+    lastTextChannelId.current = channelId;
+    setCallViewOpen(false);
+    setReplyingTo(null);
+    setMessageMenu(null);
+    setSelectedChannelId(channelId);
   }
 
   async function refreshAccess() {
@@ -1313,7 +1352,7 @@ export default function Home() {
   }, [messageMenu]);
 
   useEffect(() => {
-    if (!memberMenu && !voiceMenu) return;
+    if (!memberMenu) return;
     const closeMemberMenu = (event: PointerEvent) => {
       if (!memberContextMenu.current?.contains(event.target as Node)) {
         setMemberMenu(null);
@@ -1326,7 +1365,7 @@ export default function Home() {
       document.removeEventListener("pointerdown", closeMemberMenu);
       document.removeEventListener("scroll", closeOnScroll, true);
     };
-  }, [memberMenu, voiceMenu]);
+  }, [memberMenu]);
 
   const historyChannelType = channels.find(
     (channel) => channel.id === selectedChannelId,
@@ -1513,6 +1552,14 @@ export default function Home() {
       onOpen: (openedSocket) => {
         openedSocket.send(JSON.stringify({ type: "get-user-status" }));
         openedSocket.send(JSON.stringify({ type: "subscribe-workspace" }));
+        if (pendingVoiceChannel.current)
+          openedSocket.send(
+            JSON.stringify({
+              type: "set-voice-pending",
+              roomId: pendingVoiceChannel.current,
+              present: true,
+            }),
+          );
         void workspaceActivityRef.current.refresh();
         openedSocket.send(JSON.stringify({ type: "subscribe-user-presence" }));
         openedSocket.send(
@@ -1537,6 +1584,10 @@ export default function Home() {
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
         workspaceActivityRef.current.handle(message);
+        if (message.type === "voice-move") {
+          moveVoiceRef.current(message);
+          return;
+        }
         if (message.type === "user-status" && isUserStatus(message.status)) {
           localStorage.setItem("lc.userStatus", message.status);
           setUserStatus(message.status);
@@ -1592,6 +1643,19 @@ export default function Home() {
           Array.isArray(message.participants)
         ) {
           const participants = message.participants.map(normalizePresence);
+          if (
+            pendingVoiceChannel.current === message.roomId &&
+            !participants.some((person) => person.userId === currentUserId)
+          )
+            participants.push({
+              userId: currentUserId,
+              name: session?.user.name ?? "You",
+              muted: true,
+              camera: false,
+              screen: false,
+              speaking: false,
+              connecting: true,
+            });
           authoritativePresenceChannels.current.add(message.roomId);
           if (message.roomId === directRoomId.current) {
             setDirectRemoteSpeaking(
@@ -1697,7 +1761,7 @@ export default function Home() {
       livePresence.close();
       presenceSocket.current = null;
     };
-  }, [authStatus, session?.user.id, signalingRefreshKey]);
+  }, [authStatus, session?.user.id, session?.user.name, signalingRefreshKey]);
 
   useEffect(() => {
     if (!selectedServerId) return;
@@ -1985,6 +2049,7 @@ export default function Home() {
       return;
     }
     if (message.type === "joined") {
+      updatePendingVoice(directRoomId.current, false);
       setJoining(false);
       setJoined(true);
       setStatus("Waiting for another person...");
@@ -2001,6 +2066,7 @@ export default function Home() {
       return;
     }
     if (message.type === "room-full") {
+      updatePendingVoice(directRoomId.current, false);
       setJoining(false);
       setJoined(false);
       setStatus("Room is full");
@@ -2288,6 +2354,8 @@ export default function Home() {
   }
 
   function handleGroupConnection(channelId: string, present: boolean) {
+    if (present && pendingVoiceChannel.current === channelId)
+      updatePendingVoice(channelId, false);
     if (present || activeGroupChannelId.current === channelId)
       activeGroupChannelId.current = present ? channelId : "";
     setConnectedGroupChannelId((current) =>
@@ -2443,6 +2511,8 @@ export default function Home() {
   }
 
   function leaveRoom() {
+    if (pendingVoiceChannel.current)
+      updatePendingVoice(pendingVoiceChannel.current, false);
     directMicSpeaking.current = false;
     soundPlayerRef.current?.stop();
     soundboard.preview.current?.stop();
@@ -3064,6 +3134,31 @@ export default function Home() {
     setNoticeMessage("Participant disconnected from voice.");
   }
 
+  async function moveVoiceParticipant(
+    userId: string,
+    channelId: string,
+    destinationId: string,
+  ) {
+    try {
+      const response = await fetch(
+        `/api/servers/${selectedServerId}/voice-move`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, channelId, destinationId }),
+        },
+      );
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(result.error ?? "Could not move this person.");
+      setNoticeMessage("Voice move sent.");
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not move this person.",
+      );
+    }
+  }
+
   async function openAccountMessages(
     userId: string,
     name: string,
@@ -3288,6 +3383,39 @@ export default function Home() {
     if (target.kind === "user") await updateSession();
   }
 
+  function updatePendingVoice(channelId: string, present: boolean) {
+    if (!channelId || channelId.startsWith("friend:")) return;
+    if (!present && pendingVoiceChannel.current !== channelId) return;
+    pendingVoiceChannel.current = present ? channelId : "";
+    if (presenceSocket.current?.readyState === WebSocket.OPEN)
+      presenceSocket.current.send(
+        JSON.stringify({
+          type: "set-voice-pending",
+          roomId: channelId,
+          present,
+        }),
+      );
+    setVoicePresence((current) => {
+      const people = (current[channelId] ?? []).filter(
+        (person) => !(person.userId === session?.user.id && person.connecting),
+      );
+      if (
+        present &&
+        !people.some((person) => person.userId === session?.user.id)
+      )
+        people.push({
+          userId: session?.user.id,
+          name: session?.user.name ?? "You",
+          muted: true,
+          camera: false,
+          screen: false,
+          speaking: false,
+          connecting: true,
+        });
+      return { ...current, [channelId]: people };
+    });
+  }
+
   function selectVoiceChannel(channel: Channel) {
     setMediaFocusTarget(null);
     if (activeVoiceChannelId === channel.id) {
@@ -3298,6 +3426,7 @@ export default function Home() {
     prepareRemoteAudio();
     prepareVoiceSounds();
     leaveRoom();
+    updatePendingVoice(channel.id, true);
     setActiveVoiceChannelId(channel.id);
     setActiveVoiceChannelSnapshot({
       ...channel,
@@ -4245,6 +4374,48 @@ export default function Home() {
     />
   );
   const panelClasses = `${activeVoiceChannel ? "voiceActive" : ""} ${serverListToggled ? "serverListToggled" : ""} ${channelsHidden ? "channelsHidden" : ""} ${userListToggled ? "userListToggled" : ""}`;
+  function handleHelpStep(step: number | null) {
+    if (step === 1) {
+      helpPreviousView.current ??= {
+        friends: friendsView,
+        friend: selectedFriend,
+        callView: callViewOpen,
+      };
+      setFriendsView(true);
+      setSelectedFriend(null);
+      setCallViewOpen(false);
+    } else if (helpPreviousView.current) {
+      const previous = helpPreviousView.current;
+      helpPreviousView.current = null;
+      setFriendsView(previous.friends);
+      setSelectedFriend(previous.friend);
+      setCallViewOpen(previous.callView);
+    }
+  }
+  const helpButton = (
+    <button
+      className="helpTrigger"
+      type="button"
+      aria-label="Help and introduction"
+      title="Help and introduction"
+      onClick={() => setHelpRequest((value) => value + 1)}
+    >
+      <HelpIcon />
+    </button>
+  );
+  const helpTour = session?.user.id && (
+    <HelpTour
+      key={session.user.id}
+      userId={session.user.id}
+      requestKey={helpRequest}
+      onStepChange={handleHelpStep}
+      profile={{
+        name: session.user.name ?? "You",
+        status: statusLabels[userStatus],
+        statusCode: userStatus,
+      }}
+    />
+  );
   const panelControls = (
     <nav className="panelControls" aria-label="Workspace panels">
       <PanelToggle
@@ -4293,6 +4464,7 @@ export default function Home() {
           <path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5" />
         </svg>
       </PanelToggle>
+      {helpButton}
     </nav>
   );
   const closeUserList = (
@@ -4434,7 +4606,11 @@ export default function Home() {
       }
       onDiagnosticsChange={setCallDiagnostics}
       onLeave={returnToPreviousTextChannel}
-      onError={setErrorMessage}
+      onError={(message) => {
+        if (pendingVoiceChannel.current === activeVoiceChannel.id)
+          updatePendingVoice(activeVoiceChannel.id, false);
+        setErrorMessage(message);
+      }}
     />
   );
 
@@ -4515,6 +4691,7 @@ export default function Home() {
     return (
       <WorkspaceShell
         call={groupCall}
+        help={helpTour}
         className={`workspace friendsScreen ${panelClasses}`}
         style={sidebarStyle}
       >
@@ -5129,7 +5306,8 @@ export default function Home() {
 
   if (serversLoaded && servers.length === 0) {
     return (
-      <WorkspaceShell call={groupCall} className="noServerPage">
+      <WorkspaceShell call={groupCall} help={helpTour} className="noServerPage">
+        {helpButton}
         <section>
           <button
             className="workspaceLogo noServerFriendsButton"
@@ -5177,6 +5355,7 @@ export default function Home() {
   return (
     <WorkspaceShell
       call={groupCall}
+      help={helpTour}
       className={`workspace ${panelClasses}`}
       style={sidebarStyle}
     >
@@ -5302,6 +5481,9 @@ export default function Home() {
         </header>
         <nav>
           <p className="sectionLabel">TEXT CHANNELS</p>
+          {serverChannelsLoaded !== selectedServerId && (
+            <LoadingSkeleton kind="channels" />
+          )}
           {channels
             .filter((channel) => channel.type === "text")
             .map((channel) => (
@@ -5313,13 +5495,7 @@ export default function Home() {
                 <button
                   className={`channel ${!callViewOpen && channel.id === selectedChannelId ? "active" : ""}`}
                   title={channel.name}
-                  onClick={() => {
-                    lastTextChannelId.current = channel.id;
-                    setCallViewOpen(false);
-                    setReplyingTo(null);
-                    setMessageMenu(null);
-                    setSelectedChannelId(channel.id);
-                  }}
+                  onClick={() => selectTextChannel(channel.id)}
                 >
                   <span
                     className={`channelName ${notificationsEnabled && workspaceActivity.unread[channel.id] ? "channelUnread" : ""}`}
@@ -5390,6 +5566,7 @@ export default function Home() {
                           if (
                             !isSelectedServerOwner ||
                             !participant.userId ||
+                            participant.connecting ||
                             participant.userId === session.user.id
                           )
                             return;
@@ -5417,6 +5594,14 @@ export default function Home() {
                         >
                           <i>{participant.name[0]?.toUpperCase()}</i>
                           <b>{participant.name}</b>
+                          {participant.connecting && (
+                            <small
+                              className="voiceConnectingLabel"
+                              role="status"
+                            >
+                              Connecting…
+                            </small>
+                          )}
                         </button>
                         <ParticipantMediaIndicators
                           participant={participant}
@@ -5855,24 +6040,26 @@ export default function Home() {
         </div>
       )}
       {voiceMenu && (
-        <div
-          className="messageContextMenu"
-          ref={memberContextMenu}
-          role="menu"
-          style={{ left: voiceMenu.x, top: voiceMenu.y }}
-        >
-          <button
-            className="danger"
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              void kickVoiceParticipant(voiceMenu.userId, voiceMenu.channelId);
-              setVoiceMenu(null);
-            }}
-          >
-            Kick {voiceMenu.name} from voice
-          </button>
-        </div>
+        <VoiceParticipantMenu
+          key={`${voiceMenu.channelId}:${voiceMenu.userId}:${voiceMenu.x}:${voiceMenu.y}`}
+          x={voiceMenu.x}
+          y={voiceMenu.y}
+          channels={channels.filter(
+            (channel) =>
+              channel.type !== "text" && channel.id !== voiceMenu.channelId,
+          )}
+          onClose={() => setVoiceMenu(null)}
+          onKick={() =>
+            void kickVoiceParticipant(voiceMenu.userId, voiceMenu.channelId)
+          }
+          onMove={(destinationId) =>
+            void moveVoiceParticipant(
+              voiceMenu.userId,
+              voiceMenu.channelId,
+              destinationId,
+            )
+          }
+        />
       )}
       {messageContextDropdown}
       {deleteServerOpen && (

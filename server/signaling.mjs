@@ -8,6 +8,7 @@ import { verifySignalingToken } from "./signaling-auth.mjs";
 export function createSignalingServer({
   port = 3001,
   maxPeers = 2,
+  pendingVoiceTimeoutMs = 30_000,
   authSecret = process.env.AUTH_SECRET,
   internalSecret = process.env.SIGNALING_INTERNAL_SECRET ?? authSecret,
 } = {}) {
@@ -217,6 +218,77 @@ export function createSignalingServer({
         .catch(() => response.writeHead(400).end("Invalid JSON"));
       return;
     }
+    if (request.method === "POST" && request.url === "/internal/move-voice") {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret))
+        return response.writeHead(401).end("Unauthorized");
+      readJsonBody(request)
+        .then((body) => {
+          const channel = body.channel;
+          if (
+            typeof body.userId !== "string" ||
+            typeof body.roomId !== "string" ||
+            !channel ||
+            typeof channel.id !== "string" ||
+            typeof channel.name !== "string" ||
+            typeof channel.serverId !== "string" ||
+            !["voice_direct", "voice_group"].includes(channel.type) ||
+            channel.id === body.roomId ||
+            body.roomId.startsWith("friend:") ||
+            channel.id.startsWith("friend:")
+          )
+            return response.writeHead(400).end("Invalid voice move");
+          const present =
+            [...(rooms.get(body.roomId) ?? [])].some(
+              (client) =>
+                client.identity.sub === body.userId &&
+                client.readyState === WebSocket.OPEN,
+            ) ||
+            [...ws.clients].some(
+              (client) =>
+                client.identity.sub === body.userId &&
+                client.readyState === WebSocket.OPEN &&
+                client.groupPresence?.has(body.roomId),
+            );
+          if (
+            !present ||
+            deletedChannels.has(body.roomId) ||
+            deletedChannels.has(channel.id)
+          )
+            return response
+              .writeHead(404)
+              .end("Participant or channel unavailable");
+          const occupants = [...(rooms.get(channel.id) ?? [])].filter(
+            (client) =>
+              client.readyState === WebSocket.OPEN &&
+              client.identity.sub !== body.userId,
+          );
+          if (channel.type === "voice_direct" && occupants.length >= maxPeers)
+            return response.writeHead(409).end("Destination full");
+          const recipients = [...ws.clients].filter(
+            (client) =>
+              client.identity.sub === body.userId &&
+              client.readyState === WebSocket.OPEN &&
+              client.subscribedWorkspace &&
+              client.allowedChannelIds.has(body.roomId) &&
+              client.allowedChannelIds.has(channel.id),
+          );
+          if (!recipients.length)
+            return response.writeHead(409).end("Recipient unavailable");
+          const event = JSON.stringify({
+            type: "voice-move",
+            roomId: body.roomId,
+            channel,
+          });
+          recipients.forEach((client) => client.send(event));
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     if (request.method === "POST" && request.url === "/internal/kick-voice") {
       const supplied = request.headers.authorization?.replace(
         /^Bearer\s+/i,
@@ -285,20 +357,57 @@ export function createSignalingServer({
     return rooms.get(roomId);
   };
 
-  const presenceFor = (roomId) => [
-    ...[...(rooms.get(roomId) ?? [])].map((peer) => ({
-      userId: peer.identity.sub,
-      name: peer.participantName ?? "Guest",
-      muted: Boolean(peer.mediaState?.muted),
-      deafened: Boolean(peer.mediaState?.deafened),
-      camera: Boolean(peer.mediaState?.camera),
-      screen: Boolean(peer.mediaState?.screen),
-      speaking: Boolean(peer.mediaState?.speaking),
-    })),
-    ...[...ws.clients]
-      .filter((client) => client.groupPresence?.has(roomId))
-      .map((client) => client.groupPresence.get(roomId)),
-  ];
+  const presenceFor = (roomId) => {
+    const connected = [
+      ...[...(rooms.get(roomId) ?? [])].map((peer) => ({
+        userId: peer.identity.sub,
+        name: peer.participantName ?? "Guest",
+        muted: Boolean(peer.mediaState?.muted),
+        deafened: Boolean(peer.mediaState?.deafened),
+        camera: Boolean(peer.mediaState?.camera),
+        screen: Boolean(peer.mediaState?.screen),
+        speaking: Boolean(peer.mediaState?.speaking),
+      })),
+      ...[...ws.clients]
+        .filter((client) => client.groupPresence?.has(roomId))
+        .map((client) => client.groupPresence.get(roomId)),
+    ];
+    const participants = [...connected];
+    for (const client of ws.clients) {
+      if (
+        client.pendingVoice?.roomId === roomId &&
+        client.readyState === WebSocket.OPEN &&
+        !participants.some((person) => person.userId === client.identity.sub)
+      )
+        participants.push({
+          userId: client.identity.sub,
+          name: client.identity.name,
+          muted: true,
+          camera: false,
+          screen: false,
+          speaking: false,
+          connecting: true,
+        });
+    }
+    return participants;
+  };
+
+  const clearPendingVoice = (client) => {
+    const roomId = client.pendingVoice?.roomId;
+    if (!roomId) return;
+    clearTimeout(client.pendingVoice.timer);
+    client.pendingVoice = null;
+    return roomId;
+  };
+
+  const completePendingVoice = (userId, roomId) => {
+    for (const client of ws.clients)
+      if (
+        client.identity.sub === userId &&
+        client.pendingVoice?.roomId === roomId
+      )
+        clearPendingVoice(client);
+  };
 
   const broadcastPresence = (roomId) => {
     const message = JSON.stringify({
@@ -605,6 +714,39 @@ export function createSignalingServer({
       }
 
       if (
+        message.type === "set-voice-pending" &&
+        typeof message.roomId === "string"
+      ) {
+        if (
+          !socket.allowedChannelIds.has(message.roomId) ||
+          deletedChannels.has(message.roomId)
+        ) {
+          rejectForbidden(message.roomId);
+          return;
+        }
+        if (
+          message.present !== true &&
+          socket.pendingVoice?.roomId !== message.roomId
+        )
+          return;
+        const previous = clearPendingVoice(socket);
+        if (message.present === true) {
+          const roomId = message.roomId;
+          const timer = setTimeout(() => {
+            if (socket.pendingVoice?.roomId !== roomId) return;
+            clearPendingVoice(socket);
+            broadcastPresence(roomId);
+          }, pendingVoiceTimeoutMs);
+          timer.unref();
+          socket.pendingVoice = { roomId, timer };
+        }
+        if (previous && previous !== message.roomId)
+          broadcastPresence(previous);
+        broadcastPresence(message.roomId);
+        return;
+      }
+
+      if (
         message.type === "set-group-presence" &&
         typeof message.roomId === "string"
       ) {
@@ -614,6 +756,7 @@ export function createSignalingServer({
         }
         socket.groupPresence ??= new Map();
         if (message.present) {
+          completePendingVoice(socket.identity.sub, message.roomId);
           const name = socket.identity.name;
           socket.groupPresence.set(message.roomId, {
             userId: socket.identity.sub,
@@ -666,6 +809,7 @@ export function createSignalingServer({
         socket.participantName = socket.identity.name;
         const hasPeer = peers.size > 0;
         peers.add(socket);
+        completePendingVoice(socket.identity.sub, joinedRoomId);
         socket.send(JSON.stringify({ type: "joined", initiator: !hasPeer }));
 
         for (const peer of peers) {
@@ -686,6 +830,8 @@ export function createSignalingServer({
     });
 
     socket.on("close", () => {
+      const pendingRoom = clearPendingVoice(socket);
+      if (pendingRoom) broadcastPresence(pendingRoom);
       if (
         ![...ws.clients].some(
           (client) =>

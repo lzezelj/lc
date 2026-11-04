@@ -1,5 +1,3 @@
-Actual screen sharing
-TURN for the direct-call implementation
 Securing/authenticating the custom signaling WebSocket
 Real-time text delivery instead of two-second polling
 Reconnection handling and connection health
@@ -10,7 +8,4 @@ Browser/device testing
 Automated tests for permissions and authorization
 Monitoring and structured logs
 
-
-
-New users dont get a real username
-Changing from a call to server ends the call
+Kick doesnt go away when klicked outside of the menu

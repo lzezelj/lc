@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { revealSettingsSection } from "./settings-reveal";
 
@@ -29,15 +36,50 @@ export function SettingsModal({
   children,
   navigation,
   className = "",
+  closeLabel,
+  movable = false,
+  layers,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   navigation?: ReactNode;
   className?: string;
+  closeLabel?: string;
+  movable?: boolean;
+  layers?: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const drag = useRef<{
+    pointer: number;
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+  } | null>(null);
+  const moveTo = useCallback((left: number, top: number) => {
+    const element = dialog.current;
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    element.style.setProperty(
+      "--dialog-left",
+      `${Math.max(12, Math.min(left, innerWidth - rect.width - 12))}px`,
+    );
+    element.style.setProperty(
+      "--dialog-top",
+      `${Math.max(12, Math.min(top, innerHeight - Math.min(rect.height, innerHeight - 24) - 12))}px`,
+    );
+  }, []);
+  useEffect(() => {
+    if (!movable) return;
+    const clamp = () => {
+      const rect = dialog.current?.getBoundingClientRect();
+      if (rect) moveTo(rect.left, rect.top);
+    };
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [movable, moveTo]);
   useEffect(() => {
     const element = dialog.current;
     const previousFocus = document.activeElement;
@@ -64,6 +106,108 @@ export function SettingsModal({
     };
   }, []);
 
+  const content = (
+    <>
+      <header
+        tabIndex={movable ? 0 : undefined}
+        aria-label={
+          movable ? `Move ${title} window. Drag or use arrow keys.` : undefined
+        }
+        onKeyDown={(event) => {
+          if (
+            !movable ||
+            event.target !== event.currentTarget ||
+            !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+              event.key,
+            )
+          )
+            return;
+          event.preventDefault();
+          const rect = dialog.current!.getBoundingClientRect();
+          const amount = event.shiftKey ? 40 : 10;
+          moveTo(
+            rect.left +
+              (event.key === "ArrowRight"
+                ? amount
+                : event.key === "ArrowLeft"
+                  ? -amount
+                  : 0),
+            rect.top +
+              (event.key === "ArrowDown"
+                ? amount
+                : event.key === "ArrowUp"
+                  ? -amount
+                  : 0),
+          );
+        }}
+        onPointerDown={(event) => {
+          if (
+            !movable ||
+            event.button !== 0 ||
+            (event.target as Element).closest("button")
+          )
+            return;
+          event.preventDefault();
+          const rect = dialog.current!.getBoundingClientRect();
+          drag.current = {
+            pointer: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            left: rect.left,
+            top: rect.top,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          event.currentTarget.setAttribute("data-dragging", "true");
+        }}
+        onPointerMove={(event) => {
+          const current = drag.current;
+          if (current && current.pointer === event.pointerId)
+            moveTo(
+              current.left + event.clientX - current.x,
+              current.top + event.clientY - current.y,
+            );
+        }}
+        onPointerUp={(event) => {
+          drag.current = null;
+          event.currentTarget.removeAttribute("data-dragging");
+          if (event.currentTarget.hasPointerCapture(event.pointerId))
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          drag.current = null;
+          event.currentTarget.removeAttribute("data-dragging");
+        }}
+        onLostPointerCapture={(event) => {
+          drag.current = null;
+          event.currentTarget.removeAttribute("data-dragging");
+        }}
+      >
+        <h2 id={titleId}>{title}</h2>
+        {movable && <small className="modalDragHint">Drag to move</small>}
+        <button
+          type="button"
+          className="settingsClose"
+          aria-label={
+            closeLabel ??
+            (title === "User profile" ? "Close profile" : "Close settings")
+          }
+          onClick={onClose}
+        >
+          ×
+        </button>
+      </header>
+      {navigation ? (
+        <div className="settingsLayout">
+          <nav className="settingsNavigation" aria-label={`${title} sections`}>
+            {navigation}
+          </nav>
+          <div className="settingsContent">{children}</div>
+        </div>
+      ) : (
+        <div className="settingsActions">{children}</div>
+      )}
+    </>
+  );
   return createPortal(
     <dialog
       ref={dialog}
@@ -85,28 +229,11 @@ export function SettingsModal({
           onClose();
       }}
     >
-      <header>
-        <h2 id={titleId}>{title}</h2>
-        <button
-          type="button"
-          className="settingsClose"
-          aria-label={
-            title === "User profile" ? "Close profile" : "Close settings"
-          }
-          onClick={onClose}
-        >
-          ×
-        </button>
-      </header>
-      {navigation ? (
-        <div className="settingsLayout">
-          <nav className="settingsNavigation" aria-label={`${title} sections`}>
-            {navigation}
-          </nav>
-          <div className="settingsContent">{children}</div>
-        </div>
+      {layers}
+      {movable ? (
+        <div className="settingsModalSurface">{content}</div>
       ) : (
-        <div className="settingsActions">{children}</div>
+        content
       )}
     </dialog>,
     document.body,

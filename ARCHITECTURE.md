@@ -226,9 +226,13 @@ Group playback and microphone processing share the gesture-unlocked audio contex
 The optional `npm run test:webrtc-browser -- --microphone` check feeds generated
 audio through the actual gate in headless Edge and verifies quiet blocking,
 speech passage, live threshold changes and output-track cleanup.
-Server navigation fetches the destination channels and members before swapping
-the visible workspace, leaving the current screen usable instead of covering it
-with an intermediate loading overlay.
+Server selection updates the visible workspace immediately and clears the old
+channel list and messages. One effect loads destination channels and members
+independently; channel selection and history loading do not wait for members.
+Loading indicators stay inside the workspace, keeping navigation and active
+calls mounted. Switching again aborts obsolete list requests and ignores their
+responses. Text-channel clicks clear previous history immediately and show the
+selected channel's loading state until its authorized history arrives.
 
 ### Server and channel activity
 
@@ -708,6 +712,43 @@ Communication, Privacy and Session. Opening camera or
 microphone previews and expanding settings details scrolls the dialog's content
 pane toward the newly opened section's top, clamped to the available scroll range;
 the workspace behind the modal does not scroll.
+The header's circled-question-mark Help control reopens an informational,
+step-by-step LC introduction. The guide shares the native modal component and
+lives beside the persistent call layer, so workspace navigation and guidance
+do not remount media or start capture. It automatically opens after workspace
+startup unless `lc.help.dismissed:{userId}` is true in localStorage. Next/Back
+navigate the guide; Skip and modal dismissal offer a final preference prompt.
+The final step and skip prompt both offer Do not show again; confirming saves
+that choice per account/browser. Manual Help always works, and unchecking the
+preference enables future automatic display. This preference is not synced
+between browsers/devices; unavailable storage leaves the tour usable.
+Each guide step maps to visible workspace controls. A viewport-aligned SVG mask
+inside the native dialog dims the surroundings and outlines the targets; the
+guide card holds a fixed position across steps and can be moved by dragging its
+header or using arrow keys on the focused header. It stays within the viewport
+on resize; longer steps scroll inside the card instead of moving it. Resize, scroll, layout
+and visibility changes update the outlines. Touching/overlapping target boxes
+merge into one frame so adjacent channels and message/composer edges do not
+produce double borders. The Friends step temporarily opens the actual Friends
+list, preserving and restoring the previous conversation/workspace and call-view
+selection when advancing or skipping; the active call stays connected.
+Camera/screen/soundboard guidance includes a labelled connected-call example
+in the usual bottom-left call area, aligned with the visible profile panel.
+It uses disabled controls and no media capture or transport activity.
+The guide's opaque surface has its own stacking layer above the spotlight and
+call example, so dragging across highlighted controls cannot dim the card or
+draw outlines over its contents. The example reuses `DeviceMenu` and shared icons,
+shows the current profile/status, camera off, microphone/deafen and connection
+controls, and omits the channel name. Neither its action nor device menu buttons
+can start capture, open a selector or affect the actual call.
+Hidden/offscreen controls are clipped out; fallback targets and a location hint
+explain controls unavailable in the current view. Skipping, finishing or closing
+the guide removes the mask, observers and positioning. Calls stay mounted.
+Shared, non-interactive loading skeletons fill channel lists, both message
+histories and the six-tile soundboard grid while authorized responses are pending.
+Soundboard metadata loading is tracked separately from empty/error results and
+refreshes on reopening. Skeletons have an accessible loading status, honor
+reduced motion, and never stand in for clickable channels/messages/sounds.
 Personal message deletion confirms inline.
 My messages lists searchable server and direct-message destinations, with the
 current server first. Selecting one opens a separate settings window containing
@@ -734,6 +775,32 @@ creation. Deletion verifies server ownership, scopes the SQL delete to that serv
 and cascades channel messages. An authenticated internal channel-deleted event
 revokes channel permissions on existing signaling sockets, clears presence and
 closes direct peers in that channel; group deletion also removes its LiveKit room.
+Server owners' voice participant menus offer Kick and a Move submenu listing
+the server's other voice channels. The menu closes on outside click, Escape or
+outside scrolling; its destination list scrolls independently and fits the viewport.
+POST `/api/servers/{serverId}/voice-move` verifies owner authority, target membership,
+same-server voice source/destination and an account-level moderation rate limit.
+The authenticated internal `/internal/move-voice` command checks current source
+presence and available capacity in native two-person destinations, then sends a
+targeted event over the user's workspace socket. The client acts only while still
+in that source call, using the destination's server identity even while browsing
+another workspace. It leaves and rejoins through normal native/LiveKit flows,
+stopping old screen/soundboard capture and starting with camera off. Delivery is
+best effort: there is no durable queue or reservation of destination capacity,
+and a destination connection failure is shown by the recipient's normal call UI.
+This is a cooperative client move; Kick remains the server-enforced disconnect.
+An older signaling worker returns HTTP 426 for unknown internal commands; the
+move API reports that a service restart/update is needed instead of incorrectly
+reporting that the participant left. Local `dev:all` runs signaling with Node's
+watch mode; an already-running worker needs one manual restart to adopt it.
+Selecting a server voice channel inserts a local Connecting row immediately and
+sends authenticated `set-voice-pending` presence on the persistent workspace
+socket, so other members can see setup before microphone/SFU negotiation ends.
+Only signed server-channel access is accepted; the server supplies the identity.
+Pending presence is deduplicated against actual native/LiveKit occupants and
+cleared on successful membership, cancellation, failure or socket disconnect.
+Each server-side pending lease also expires after 30 seconds. These temporary
+rows show Connecting and cannot be moderated until membership is established.
 Clients clear only a matching active call and refresh the server's channel list.
 Stale 60-second signaling tokens are blocked for 65 seconds after deletion while
 the signaling service stays running. Media cleanup is best effort if a service

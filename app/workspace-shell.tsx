@@ -7,11 +7,13 @@ export function WorkspaceShell({
   call,
   className,
   style,
+  help,
 }: {
   children: ReactNode;
   call: ReactNode;
   className: string;
   style?: CSSProperties;
+  help?: ReactNode;
 }) {
   return (
     <main className={className} style={style}>
@@ -19,6 +21,7 @@ export function WorkspaceShell({
       <div className="persistentCallLayer" data-lc-persistent-call="">
         {call}
       </div>
+      {help}
     </main>
   );
 }

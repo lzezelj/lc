@@ -3,6 +3,17 @@
 Run `npm.cmd test` for the default suite. It needs no running application,
 database, or external media service. The signaling tests start local WebSocket
 servers; route and component tests use controlled dependencies.
+The workspace browser checks also cover the LC introduction's automatic launch,
+Next/Skip/Finish, opt-out persistence and manual reopening, account isolation,
+and accessible non-interactive loading skeletons on desktop and mobile.
+Tour checks also verify target outlines, viewport alignment, layout tracking,
+hidden-control fallback and highlight removal on Skip.
+`help-tour.test.mjs` covers merged highlight geometry and Friends-view restoration;
+browser checks also cover step notifications and the inactive connected-call example.
+The tour browser checks verify stable position between steps, keyboard and real
+pointer dragging, and the connected-call example's bottom-left placement.
+They also check the opaque guide's stacking above highlights/example controls
+and the connected example's shared device controls, profile and unnamed status.
 
 | Files | Coverage |
 | --- | --- |
@@ -15,7 +26,7 @@ servers; route and component tests use controlled dependencies.
 | `server-ownership.test.mjs` | Confirmed owner-only transfer, membership/ownership consistency, active recipient and server-limit rules |
 | `channel-management.test.mjs` | Server-scoped channel deletion, ownership, rate limits, cleanup ordering, and message grouping by stable server ID |
 | `server-message-deletion.test.mjs` | Account authorization, per-server message deletion, invalid-filter rejection, all-server compatibility, and deletion broadcasts |
-| `workspace-location.test.mjs` | Reload restoration through the app's startup effects, server/channel/friend validation, fresh-visit defaults, and account-scoped storage |
+| `workspace-location.test.mjs` | Immediate server/channel selection, independent channel/member loading, request cancellation and stale responses, reload restoration, destination validation, and account-scoped storage |
 | `workspace-activity.test.mjs` | Read baselines/cursors, duplicate and own messages, reconnect races, deletion/revocation, cross-tab markers, server voice summaries and API membership/privacy |
 | `call-context.test.mjs` | DM/server room separation, matching-conversation call layout, scoped cancellation/decline, DND badges/title/ringing, inline invitations and stable invitation expiry |
 | `message-pagination.test.mjs` | Latest-50 channel/direct history, stable timestamp ties, cursor validation, authorization, and history response races |
@@ -26,6 +37,7 @@ servers; route and component tests use controlled dependencies.
 | `media-tests.test.mjs` | Device-test capture races and cleanup |
 | `call-grid.test.mjs` | Group-call rendering/actions, source selection, leave races, hidden tiles, deafen, and selected workspace handlers |
 | `call-sounds.test.mjs` | Local mute/deafen/camera confirmations, failed capture, distinct tone envelopes and local-only output routing; LiveKit action success/failure is also covered in `call-grid.test.mjs` |
+| `voice-move.test.mjs` | Owner/membership authorization, source/destination scoping, moderation limits, service-version/delivery errors, stale-client guards and immediate local connecting rows; signaling tests cover authenticated pending presence, native/group completion, cancellation, disconnect, expiry and capacity; browser checks cover menu dismissal and destination scrolling |
 | `soundboard.test.mjs` | Empty boards, member/owner authorization, upload/removal, ten-second WAV and byte bounds, quota locking, client cooldown, account-wide playback permits, cache and cleanup (also runnable with `npm.cmd run test:soundboard`) |
 | `database.test.mjs` | PostgreSQL cascades, message foreign keys, voice-channel types and custom-sound migration/constraints in a rolled-back test schema |
 
@@ -40,9 +52,14 @@ npm.cmd run test:webrtc-browser -- --microphone
 npm.cmd run test:webrtc-browser -- --navigation
 npm.cmd run test:webrtc-browser -- --workspace-controls
 npm.cmd run test:webrtc-browser -- --workspace-controls --media-options-only
+npm.cmd run test:webrtc-browser -- --help-tour
 ```
 
 - Default: real browser peer connections and generated audio over local ICE.
+- `--help-tour`: focused desktop/mobile guide layout, layering, example controls,
+  preference persistence and drag checks without the broader audio-upload checks.
+The test browser launches with speaker output muted. Generated audio, Web Audio
+analysis and WebRTC transport still run, without playing test tones aloud.
 - `--microphone`: real Web Audio processing with generated input.
 - `--navigation`: actual workspace shell, group-call component, and media view
   lifecycle, with real generated audio and a mocked LiveKit room.

@@ -28,7 +28,13 @@ const ast = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 const effects = [];
+const navigationHandlers = new Map();
 function visit(node) {
+  if (
+    ts.isFunctionDeclaration(node) &&
+    ["switchServer", "selectTextChannel"].includes(node.name?.text)
+  )
+    navigationHandlers.set(node.name.text, node.getText(ast));
   if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect")
     effects.push(node.arguments[0].getText(ast));
   ts.forEachChild(node, visit);
@@ -63,11 +69,13 @@ function fixture({
     location: {},
     locationUser: { current: "" },
     pendingLocation: { current: null },
+    channelHistoryGeneration: { current: 0 },
     lastTextChannelId: { current: "" },
     performance: {
       getEntriesByType: () => [{ type: reload ? "reload" : "navigate" }],
     },
     window: { sessionStorage: storage },
+    AbortController,
     readWorkspaceLocation,
     saveWorkspaceLocation,
     restoredTextChannel,
@@ -105,9 +113,18 @@ function fixture({
     "ServersLoaded",
     "ErrorMessage",
     "Channels",
+    "ServerChannelsLoaded",
     "Members",
     "SelectedChannelId",
     "OnlineUserIds",
+    "Messages",
+    "ChannelHistoryLoaded",
+    "ReadableHistoryChannel",
+    "NextMessageCursor",
+    "LoadingMoreMessages",
+    "CallViewOpen",
+    "ReplyingTo",
+    "MessageMenu",
   ]) {
     const key = name[0].toLowerCase() + name.slice(1);
     context[`set${name}`] = (value) => {
@@ -142,6 +159,92 @@ test("reload restores the authorized server and its selected text channel before
   assert.equal(f.context.selectedChannelId, "second");
   assert.equal(f.context.navigationReady, true);
   assert.equal(f.context.pendingLocation.current, null);
+});
+
+function invokeNavigation(fixture, name, id) {
+  return vm.runInNewContext(
+    ts.transpile(`(${navigationHandlers.get(name)})(${JSON.stringify(id)});`, {
+      target: ts.ScriptTarget.ES2022,
+    }),
+    fixture.context,
+  );
+}
+
+test("server selection changes immediately without fetching or waiting for destination data", () => {
+  const f = fixture();
+  Object.assign(f.context, {
+    selectedServerId: "one",
+    selectedChannelId: "old",
+    channels: [{ id: "old" }],
+    members: [{ id: "person" }],
+    messages: [{ id: "message" }],
+    callViewOpen: true,
+  });
+  f.context.fetch = () => {
+    throw new Error("Only the server data effect should fetch");
+  };
+  invokeNavigation(f, "switchServer", "two");
+  assert.equal(f.context.selectedServerId, "two");
+  assert.equal(f.context.selectedChannelId, "");
+  assert.equal(f.context.channels.length, 0);
+  assert.equal(f.context.members.length, 0);
+  assert.equal(f.context.messages.length, 0);
+  assert.equal(f.context.callViewOpen, false);
+  assert.equal(f.context.channelHistoryGeneration.current, 1);
+});
+
+test("server channels load without waiting for members; obsolete responses are ignored and aborted", async () => {
+  const f = fixture();
+  f.context.selectedServerId = "one";
+  const requests = [];
+  f.context.fetch = (url, options) =>
+    new Promise((resolve) => requests.push({ url, options, resolve }));
+  const cleanup = f.run(loadChannels);
+  assert.equal(requests.length, 2, "one request each for channels and members");
+  requests[0].resolve({
+    ok: true,
+    json: async () => [{ id: "text-one", type: "text" }],
+  });
+  await settle();
+  assert.equal(f.context.selectedChannelId, "text-one");
+  assert.equal(f.context.serverChannelsLoaded, "one");
+  assert.equal(f.context.navigationReady, true);
+  cleanup();
+  assert.ok(requests.every((request) => request.options.signal.aborted));
+  invokeNavigation(f, "switchServer", "two");
+  f.run(loadChannels);
+  requests[2].resolve({
+    ok: true,
+    json: async () => [{ id: "text-two", type: "text" }],
+  });
+  requests[3].resolve({ ok: true, json: async () => [{ id: "new-member" }] });
+  await settle();
+  requests[1].resolve({ ok: true, json: async () => [{ id: "old-member" }] });
+  await settle();
+  assert.equal(f.context.selectedChannelId, "text-two");
+  assert.equal(f.context.members[0].id, "new-member");
+});
+
+test("channel selection clears stale history immediately and reselecting the same channel preserves it", () => {
+  const f = fixture();
+  Object.assign(f.context, {
+    selectedChannelId: "old",
+    channelHistoryLoaded: "old",
+    readableHistoryChannel: "old",
+    messages: [{ id: "previous-message" }],
+    nextMessageCursor: { beforeId: "cursor" },
+  });
+  invokeNavigation(f, "selectTextChannel", "new");
+  assert.equal(f.context.selectedChannelId, "new");
+  assert.equal(f.context.channelHistoryLoaded, "");
+  assert.equal(f.context.readableHistoryChannel, "");
+  assert.equal(f.context.messages.length, 0);
+  assert.equal(f.context.nextMessageCursor, null);
+  assert.equal(f.context.channelHistoryGeneration.current, 1);
+  f.context.messages = [{ id: "new-message" }];
+  invokeNavigation(f, "selectTextChannel", "new");
+  assert.equal(f.context.messages[0].id, "new-message");
+  assert.equal(f.context.channelHistoryGeneration.current, 1);
 });
 test("fresh visits and inaccessible saved servers open Friends", async () => {
   for (const options of [{ reload: false }, { servers: [{ id: "one" }] }]) {

@@ -14,8 +14,11 @@ const useTurn = process.argv.includes("--turn");
 const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
-const workspaceControls = process.argv.includes("--workspace-controls");
-const mediaOptionsOnly = process.argv.includes("--media-options-only");
+const helpTourOnly = process.argv.includes("--help-tour");
+const workspaceControls =
+  process.argv.includes("--workspace-controls") || helpTourOnly;
+const mediaOptionsOnly =
+  process.argv.includes("--media-options-only") || helpTourOnly;
 const supportedFlags = new Set([
   "--turn",
   "--direct-ip",
@@ -23,6 +26,7 @@ const supportedFlags = new Set([
   "--microphone",
   "--workspace-controls",
   "--media-options-only",
+  "--help-tour",
 ]);
 if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
   throw new Error("Unsupported browser test option");
@@ -160,6 +164,10 @@ if (navigation || workspaceControls) {
     );
     for (const name of [
       "settings-modal",
+      "help-tour",
+      "help-call-preview",
+      "help-spotlight",
+      "loading-skeleton",
       "settings-navigation",
       "personal-messages",
       "account-deletion",
@@ -174,6 +182,7 @@ if (navigation || workspaceControls) {
       "soundboard",
       "sound-manager",
       "server-nav-button",
+      "voice-participant-menu",
       "incoming-call-notice",
       "screen-audio",
       "screen-share-options",
@@ -242,6 +251,7 @@ if (navigation || workspaceControls) {
           "workspace-activity",
           "use-workspace-activity",
           "call-context",
+          "help-geometry",
           "voice-activity",
           "audio-output",
           "soundboard-catalog",
@@ -304,6 +314,7 @@ const browser = spawn(
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
   [
     "--headless",
+    "--mute-audio",
     "--autoplay-policy=no-user-gesture-required",
     "--disable-gpu",
     "--no-first-run",
@@ -562,19 +573,38 @@ try {
             { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
             sessionId,
           );
-        const optionsCheck = await call(
-          "Runtime.evaluate",
-          {
-            expression:
-              "(async () => { await window.verifyWorkspaceAdditions(); await window.verifySoundboard(); await window.verifyWorkspaceActivity(); await window.verifyCallContext(); })()",
-            awaitPromise: true,
-            userGesture: true,
-            returnByValue: true,
-          },
-          sessionId,
-        );
-        if (optionsCheck.exceptionDetails)
-          throw new Error(JSON.stringify(optionsCheck.exceptionDetails));
+        for (const verification of helpTourOnly
+          ? ["verifyHelpAndSkeletons"]
+          : [
+              "verifyWorkspaceAdditions",
+              "verifySoundboard",
+              "verifyWorkspaceActivity",
+              "verifyCallContext",
+              "verifyVoiceParticipantMenu",
+              "verifyHelpAndSkeletons",
+            ]) {
+          console.log(
+            `Checking ${verification} (${mobile ? "mobile" : "desktop"})`,
+          );
+          for (const type of ["keyDown", "keyUp"])
+            await call(
+              "Input.dispatchKeyEvent",
+              { type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+              sessionId,
+            );
+          const optionsCheck = await call(
+            "Runtime.evaluate",
+            {
+              expression: `window.${verification}()`,
+              awaitPromise: true,
+              userGesture: true,
+              returnByValue: true,
+            },
+            sessionId,
+          );
+          if (optionsCheck.exceptionDetails)
+            throw new Error(JSON.stringify(optionsCheck.exceptionDetails));
+        }
       }
       console.log("Media options desktop/mobile checks passed");
       const mounted = await call(
@@ -644,6 +674,66 @@ try {
           { expression: "window.cleanupServerTooltipTest()" },
           sessionId,
         );
+      }
+      const evaluateTour = async (expression) => {
+        const result = await call(
+          "Runtime.evaluate",
+          { expression, awaitPromise: true, returnByValue: true },
+          sessionId,
+        );
+        if (result.exceptionDetails)
+          throw new Error(JSON.stringify(result.exceptionDetails));
+        return result.result.value;
+      };
+      const dragHelp = await evaluateTour("window.mountMovableHelpTest()");
+      try {
+        const point = { x: dragHelp.x, y: dragHelp.y };
+        await call(
+          "Input.dispatchMouseEvent",
+          { type: "mouseMoved", ...point },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          { type: "mousePressed", ...point, button: "left", clickCount: 1 },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseMoved",
+            x: point.x,
+            y: point.y + 60,
+            button: "left",
+            buttons: 1,
+          },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseReleased",
+            x: point.x,
+            y: point.y + 60,
+            button: "left",
+            clickCount: 1,
+          },
+          sessionId,
+        );
+        const moved = await evaluateTour("window.readMovableHelpTest()");
+        assert.ok(
+          moved.top > dragHelp.top + 40,
+          "Dragging the guide header must move the window",
+        );
+        const advanced = await evaluateTour("window.advanceMovableHelpTest()");
+        assert.deepEqual(
+          advanced,
+          moved,
+          "The guide must retain the dragged position after Next",
+        );
+        console.log("Movable guide pointer checks passed");
+      } finally {
+        await evaluateTour("window.cleanupMovableHelpTest()");
       }
     } else {
       const checked = await call(

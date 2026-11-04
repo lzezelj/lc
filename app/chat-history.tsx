@@ -1,4 +1,5 @@
 "use client";
+import { LoadingSkeleton } from "./loading-skeleton";
 
 import {
   Children,
@@ -181,7 +182,7 @@ export function ChatHistory({
             {loadingOlder ? "Loading…" : "Load 50 older messages"}
           </button>
         )}
-        {!ready && <p className="empty">Loading messages…</p>}
+        {!ready && <LoadingSkeleton kind="messages" />}
         {ready
           ? Children.map(children, (child) => {
               if (

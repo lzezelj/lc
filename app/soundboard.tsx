@@ -1,4 +1,5 @@
 "use client";
+import { LoadingSkeleton } from "./loading-skeleton";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { monitorVoiceActivity, prepareVoiceActivity } from "./voice-activity";
@@ -142,6 +143,8 @@ export function SoundboardButton({
   publish: PublishSound;
 }) {
   const [sounds, setSounds] = useState<Sound[]>([]);
+  const [loadedFor, setLoadedFor] = useState("");
+  const loading = loadedFor !== serverId;
   const [error, setError] = useState("");
   const [playing, setPlaying] = useState(false);
   const [search, setSearch] = useState("");
@@ -189,10 +192,17 @@ export function SoundboardButton({
         if (!abort.signal.aborted) {
           setSounds(items.sounds);
           setCanManage(items.canManage);
+          setError("");
+          setLoadedFor(serverId);
         }
       })
       .catch((error: Error) => {
-        if (!abort.signal.aborted) setError(error.message);
+        if (!abort.signal.aborted) {
+          setError(error.message);
+          setSounds([]);
+          setCanManage(false);
+          setLoadedFor(serverId);
+        }
       });
     return () => abort.abort();
   }, [board.open, serverId]);
@@ -255,6 +265,7 @@ export function SoundboardButton({
         }
         onClick={() => {
           setError("");
+          if (!board.open) setLoadedFor("");
           board.setOpen(!board.open);
         }}
       >
@@ -279,44 +290,46 @@ export function SoundboardButton({
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-          <div className="soundboardClips">
-            {sounds
-              .filter(
-                (sound) =>
-                  sound.serverId === serverId &&
-                  sound.name
-                    .toLowerCase()
-                    .includes(search.trim().toLowerCase()),
-              )
-              .map((sound) => (
-                <div className="soundboardClip" key={sound.id}>
-                  <button
-                    className="soundboardPlay"
-                    disabled={disabled || playing || board.playBlocked}
-                    aria-label={`Play ${sound.name} for everyone`}
-                    title={
-                      board.playBlocked
-                        ? "One sound per second"
-                        : "Play for everyone"
-                    }
-                    onClick={() => void play(sound)}
-                  >
-                    {sound.name}
-                  </button>
-                  <div className="soundboardClipActions">
+          <div className="soundboardClips" aria-busy={loading}>
+            {loading && <LoadingSkeleton kind="sounds" />}
+            {!loading &&
+              sounds
+                .filter(
+                  (sound) =>
+                    sound.serverId === serverId &&
+                    sound.name
+                      .toLowerCase()
+                      .includes(search.trim().toLowerCase()),
+                )
+                .map((sound) => (
+                  <div className="soundboardClip" key={sound.id}>
                     <button
-                      disabled={playing}
-                      aria-label={`Preview ${sound.name}`}
-                      title="Preview only for you"
-                      onClick={() => void play(sound, true)}
+                      className="soundboardPlay"
+                      disabled={disabled || playing || board.playBlocked}
+                      aria-label={`Play ${sound.name} for everyone`}
+                      title={
+                        board.playBlocked
+                          ? "One sound per second"
+                          : "Play for everyone"
+                      }
+                      onClick={() => void play(sound)}
                     >
-                      <SoundPreviewIcon />
+                      {sound.name}
                     </button>
+                    <div className="soundboardClipActions">
+                      <button
+                        disabled={playing}
+                        aria-label={`Preview ${sound.name}`}
+                        title="Preview only for you"
+                        onClick={() => void play(sound, true)}
+                      >
+                        <SoundPreviewIcon />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
           </div>
-          {sounds.length === 0 && (
+          {!loading && !error && sounds.length === 0 && (
             <p className="soundboardEmpty">
               No sounds yet.{" "}
               {canManage
@@ -324,7 +337,9 @@ export function SoundboardButton({
                 : "Ask the server owner to add sounds."}
             </p>
           )}
-          {sounds.length > 0 &&
+          {!loading &&
+            !error &&
+            sounds.length > 0 &&
             !sounds.some(
               (sound) =>
                 sound.serverId === serverId &&
@@ -332,7 +347,7 @@ export function SoundboardButton({
             ) && (
               <p className="soundboardEmpty">No sounds match your search.</p>
             )}
-          {canManage && (
+          {!loading && canManage && (
             <button
               type="button"
               className="soundboardAdd"
