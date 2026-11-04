@@ -144,7 +144,11 @@ export function PersonalMessages({
                     {message.channelName ? `#${message.channelName} · ` : ""}
                     {new Date(message.createdAt).toLocaleString()}
                   </small>
-                  <p>{message.deletedAt ? "Deleted message" : message.text}</p>
+                  <p>
+                    {message.deletedAt
+                      ? "Deleted message"
+                      : message.text || "Attachment"}
+                  </p>
                   <MessageDeleteAction
                     label="Delete permanently"
                     confirmation="Permanently delete this message?"

@@ -138,6 +138,57 @@ export function createSignalingServer({
     }
     if (
       request.method === "POST" &&
+      request.url === "/internal/message-edited"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret)) {
+        response.writeHead(401).end("Unauthorized");
+        return;
+      }
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.channelId !== "string" ||
+            typeof body.edit?.id !== "string" ||
+            typeof body.edit.text !== "string" ||
+            body.edit.text.length > 4000 ||
+            typeof body.edit.editedAt !== "string" ||
+            !Number.isFinite(Date.parse(body.edit.editedAt))
+          ) {
+            response.writeHead(400).end("Invalid edit");
+            return;
+          }
+          for (const client of ws.clients) {
+            if (client.readyState !== WebSocket.OPEN) continue;
+            if (client.subscribedTextChannelId === body.channelId)
+              client.send(
+                JSON.stringify({
+                  type: "message-edited",
+                  channelId: body.channelId,
+                  edit: body.edit,
+                }),
+              );
+            if (
+              client.subscribedWorkspace &&
+              client.allowedChannelIds.has(body.channelId)
+            )
+              client.send(
+                JSON.stringify({
+                  type: "channel-history-changed",
+                  channelId: body.channelId,
+                }),
+              );
+          }
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
+    if (
+      request.method === "POST" &&
       request.url === "/internal/message-deleted"
     ) {
       const supplied = request.headers.authorization?.replace(

@@ -1,8 +1,10 @@
 import {
-  AnyPgColumn,
+  type AnyPgColumn,
   customType,
+  boolean,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -11,6 +13,9 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { MessageAttachment } from "../app/attachment-types";
+import type { Mention } from "../app/notification-types";
+import { sql } from "drizzle-orm";
 
 export const userRole = pgEnum("user_role", ["owner", "member", "demo"]);
 export const friendshipStatus = pgEnum("friendship_status", [
@@ -194,6 +199,11 @@ export const messages = pgTable(
       onDelete: "set null",
     }),
     content: text("content").notNull(),
+    mentions: jsonb("mentions").$type<Mention[]>().default([]).notNull(),
+    attachments: jsonb("attachments")
+      .$type<MessageAttachment[]>()
+      .default([])
+      .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -244,7 +254,12 @@ export const directMessages = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
     kind: text("kind").default("message").notNull(),
+    attachments: jsonb("attachments")
+      .$type<MessageAttachment[]>()
+      .default([])
+      .notNull(),
     callDurationSeconds: integer("call_duration_seconds"),
+    editedAt: timestamp("edited_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -257,4 +272,113 @@ export const directMessages = pgTable(
       table.createdAt,
     ),
   ],
+);
+
+export const messageAttachments = pgTable(
+  "message_attachments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    uploaderId: uuid("uploader_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    messageId: uuid("message_id").references(() => messages.id, {
+      onDelete: "cascade",
+    }),
+    directMessageId: uuid("direct_message_id").references(
+      () => directMessages.id,
+      { onDelete: "cascade" },
+    ),
+    data: bytea("data").notNull(),
+  },
+  (table) => [
+    index("message_attachments_uploader_idx").on(table.uploaderId),
+    index("message_attachments_message_idx").on(table.messageId),
+    index("message_attachments_direct_idx").on(table.directMessageId),
+  ],
+);
+
+export const messageMentions = pgTable(
+  "message_mentions",
+  {
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    notifiedAt: timestamp("notified_at", { withTimezone: true })
+      .default(sql`clock_timestamp()`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.messageId, table.userId] }),
+    index("message_mentions_user_idx").on(table.userId, table.notifiedAt),
+  ],
+);
+
+export const channelReads = pgTable(
+  "channel_reads",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channelId: uuid("channel_id")
+      .notNull()
+      .references(() => channels.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true }).defaultNow().notNull(),
+    messageAt: timestamp("message_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    messageId: uuid("message_id").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.channelId] })],
+);
+export const directReads = pgTable(
+  "direct_reads",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    friendId: uuid("friend_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true }).defaultNow().notNull(),
+    messageAt: timestamp("message_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    messageId: uuid("message_id").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.friendId] })],
+);
+export const serverNotifications = pgTable(
+  "server_notifications",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    serverId: uuid("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    messages: boolean("messages").default(true).notNull(),
+    mentions: boolean("mentions").default(true).notNull(),
+    messageMuteUntil: timestamp("message_mute_until", { withTimezone: true }),
+    mentionMuteUntil: timestamp("mention_mute_until", { withTimezone: true }),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.serverId] })],
+);
+export const directNotifications = pgTable(
+  "direct_notifications",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    friendId: uuid("friend_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    messages: boolean("messages").default(true).notNull(),
+    calls: boolean("calls").default(true).notNull(),
+    messageMuteUntil: timestamp("message_mute_until", { withTimezone: true }),
+    callMuteUntil: timestamp("call_mute_until", { withTimezone: true }),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.friendId] })],
 );

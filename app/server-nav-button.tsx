@@ -1,10 +1,12 @@
 "use client";
 import { useId, type MouseEvent } from "react";
+import { UnreadIndicator } from "./unread-indicator";
 
 export function ServerNavButton({
   server,
   active,
   unread,
+  mentions = 0,
   voiceUsers,
   onClick,
   onContextMenu,
@@ -12,6 +14,7 @@ export function ServerNavButton({
   server: { id: string; name: string };
   active?: boolean;
   unread?: boolean;
+  mentions?: number;
   voiceUsers: { userId?: string; name: string }[];
   onClick: () => void;
   onContextMenu: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -36,13 +39,13 @@ export function ServerNavButton({
     >
       <button
         className={`workspaceButton ${active ? "active" : ""}`}
-        aria-label={`${server.name}${unread ? ", unread messages" : ""}${voiceUsers.length ? `, ${voiceUsers.length} in voice` : ""}`}
+        aria-label={`${server.name}${unread ? ", unread messages" : ""}${mentions ? `, ${mentions} unread mentions` : ""}${voiceUsers.length ? `, ${voiceUsers.length} in voice` : ""}`}
         aria-describedby={tooltip}
         onClick={onClick}
         onContextMenu={onContextMenu}
       >
         {server.name[0]?.toUpperCase()}
-        {unread && <span className="serverUnreadDot" aria-hidden="true" />}
+        <UnreadIndicator unread={unread} mentions={mentions} server />
         {voiceUsers.length > 0 && (
           <span className="serverVoiceBadge" aria-hidden="true">
             <svg

@@ -10,6 +10,17 @@ import { UserProfile } from "./user-profile.js";
 import { ChannelManager } from "./channel-manager.js";
 import { MessageDeleteAction } from "./message-delete-action.js";
 import { ChatHistory } from "./chat-history.js";
+import { MessageComposer } from "./message-composer.js";
+import { UnreadIndicator } from "./unread-indicator.js";
+import { MentionText } from "./mention-text.js";
+import {
+  NotificationSettings,
+  NotificationMuteMenu,
+} from "./notification-settings.js";
+import { useNotificationInbox } from "./use-notification-inbox.js";
+import { ConversationSearch } from "./conversation-search.js";
+import { WorkspaceLinks } from "./workspace-links.js";
+import { MessageAttachments } from "./message-attachments.js";
 import { ParticipantMediaIndicators } from "./participant-media-indicators.js";
 import { PanelToggle } from "./panel-toggle.js";
 import { ServerInvites } from "./server-invites.js";
@@ -57,6 +68,1274 @@ const h = React.createElement;
 const wait = () => new Promise((resolve) => setTimeout(resolve, 60));
 const check = (value, message) => {
   if (!value) throw new Error(message);
+};
+
+window.verifyMessageComposer = async () => {
+  const container = document.createElement("section");
+  container.className = "chat";
+  container.style.cssText =
+    "position:fixed;inset:20px;z-index:10000;display:block";
+  document.body.append(container);
+  const root = createRoot(container);
+  let setText;
+  let submitted = 0;
+  function Fixture() {
+    const [value, onChange] = useState("");
+    const [files, onFiles] = useState([]);
+    useEffect(() => {
+      setText = onChange;
+    }, [onChange]);
+    return h(
+      "form",
+      {
+        onSubmit: (event) => {
+          event.preventDefault();
+          submitted++;
+        },
+      },
+      h(MessageComposer, {
+        value,
+        onChange,
+        files,
+        onFiles,
+        placeholder: "Message test",
+        progress: null,
+      }),
+      h("button", { type: "submit" }, "Send"),
+    );
+  }
+  try {
+    flushSync(() => root.render(h(Fixture)));
+    const textarea = container.querySelector("textarea");
+    const height = () => textarea.getBoundingClientRect().height;
+    const initial = height();
+    for (const [value, lines] of [
+      ["one\ntwo", 2],
+      ["one\ntwo\nthree", 3],
+      ["one\ntwo\nthree\nfour", 3],
+      ["one\ntwo", 2],
+      ["", 1],
+    ]) {
+      flushSync(() => setText(value));
+      check(
+        Math.abs(height() - (initial + 20 * (lines - 1))) < 1,
+        `Composer did not resize to ${lines} rows`,
+      );
+      check(
+        getComputedStyle(textarea).overflowY ===
+          (value.includes("four") ? "auto" : "hidden"),
+        "Composer scrolling does not match overflow",
+      );
+    }
+    flushSync(() => setText("long text ".repeat(180)));
+    check(
+      height() === initial + 40 &&
+        textarea.scrollHeight > textarea.clientHeight,
+      "Wrapped text did not cap at three rows",
+    );
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        shiftKey: true,
+        bubbles: true,
+      }),
+    );
+    check(submitted === 0, "Shift+Enter submitted a message");
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    check(submitted === 1, "Enter did not submit a message");
+    const transfer = new DataTransfer();
+    transfer.items.add(
+      new File(["%PDF-1.7"], "dropped.pdf", { type: "application/pdf" }),
+    );
+    container.querySelector(".messageComposer").dispatchEvent(
+      new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      }),
+    );
+    await wait();
+    check(
+      container
+        .querySelector(".pendingAttachments")
+        ?.textContent.includes("dropped.pdf"),
+      "Dropped attachment was not staged",
+    );
+    container.querySelector('[aria-label="Remove dropped.pdf"]').click();
+    await wait();
+    check(
+      !container.querySelector(".pendingAttachments"),
+      "Attachment removal failed",
+    );
+    const picker = container.querySelector('input[type="file"]');
+    picker.files = transfer.files;
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait();
+    check(
+      container
+        .querySelector(".pendingAttachments")
+        ?.textContent.includes("dropped.pdf"),
+      "File picker did not stage attachment",
+    );
+    return {
+      growShrink: true,
+      wrappedText: true,
+      threeRowScroll: true,
+      enter: true,
+      drop: true,
+      picker: true,
+      remove: true,
+    };
+  } finally {
+    root.unmount();
+    container.remove();
+  }
+};
+window.verifyAttachmentPreview = async () => {
+  const container = document.createElement("section");
+  container.className = "chat";
+  container.style.cssText =
+    "position:fixed;inset:20px;z-index:10000;display:block";
+  document.body.append(container);
+  const root = createRoot(container);
+  const file = {
+    id: "image-test",
+    name: `A very long image filename ${"example ".repeat(30)}.png`,
+    type: "image/png",
+    size: 512000,
+  };
+  const pdf = {
+    id: "pdf-test",
+    name: "Report.pdf",
+    type: "application/pdf",
+    size: 1258291,
+  };
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 800;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#78a4ff";
+  context.fillRect(0, 0, 1200, 800);
+  const render = (deleted = false) =>
+    flushSync(() =>
+      root.render(
+        h(
+          "article",
+          { className: "messageOwn" },
+          h(MessageAttachments, { files: [file, pdf], deleted }),
+        ),
+      ),
+    );
+  const modal = () => document.querySelector(".attachmentPreviewModal");
+  const open = async () => {
+    const trigger = container.querySelector(".attachmentThumbnail");
+    trigger.focus();
+    trigger.click();
+    await wait();
+    check(modal()?.open, "Image click did not open an in-app modal");
+    check(
+      modal().getAttribute("aria-labelledby"),
+      "Preview dialog has no accessible title",
+    );
+    return trigger;
+  };
+  try {
+    render();
+    check(
+      container.querySelectorAll(".attachmentDownload").length === 2,
+      "Each file needs a separate download icon",
+    );
+    check(
+      container.querySelectorAll(".attachmentThumbnail").length === 1,
+      "PDF must not open an image preview",
+    );
+    check(
+      !container.querySelector('[target="_blank"]'),
+      "Attachment opens a new tab",
+    );
+    const download = container.querySelector(".attachmentDownload");
+    check(
+      download.getAttribute("href") ===
+        "/api/attachments/image-test?download=1" &&
+        download.getAttribute("download") === file.name,
+      "Download does not use authenticated endpoint/original filename",
+    );
+    check(
+      download.getAttribute("aria-label") === `Download ${file.name}` &&
+        download.querySelector("svg"),
+      "Download icon needs an accessible label",
+    );
+    check(
+      container.textContent.includes("500 KB") &&
+        container.textContent.includes("1.2 MB"),
+      "Attachment size formatting is wrong",
+    );
+    const name = container.querySelector(".attachmentDetails strong");
+    check(
+      getComputedStyle(name).textOverflow === "ellipsis",
+      "Long filename is not truncated",
+    );
+    check(
+      container.querySelector(".messageAttachment").scrollWidth <=
+        container.querySelector(".messageAttachment").clientWidth,
+      "Filename overflows attachment card",
+    );
+    const trigger = await open();
+    const image = modal().querySelector(".attachmentPreviewStage img");
+    image.src = canvas.toDataURL("image/png");
+    await image.decode();
+    await wait();
+    check(
+      !image.hidden &&
+        modal()
+          .querySelector(".attachmentPreviewStage")
+          .getAttribute("aria-busy") === "false",
+      "Decoded preview did not leave loading state",
+    );
+    check(
+      modal().getBoundingClientRect().width <= innerWidth &&
+        modal().scrollWidth <= modal().clientWidth,
+      "Preview exceeds viewport width",
+    );
+    check(
+      modal().getBoundingClientRect().height <= innerHeight,
+      "Preview exceeds viewport height",
+    );
+    check(
+      container.querySelector(".attachmentThumbnail") === trigger,
+      "Opening a preview replaced the chat",
+    );
+    modal().querySelector('[aria-label="Close image preview"]').click();
+    await wait();
+    check(
+      !modal() && document.activeElement === trigger,
+      "Close did not restore thumbnail focus",
+    );
+    await open();
+    modal()
+      .querySelector(".attachmentPreviewStage img")
+      .dispatchEvent(new Event("error"));
+    await wait();
+    check(
+      modal()
+        .querySelector('[role="alert"]')
+        ?.textContent.includes("could not be loaded"),
+      "Unavailable image has no error feedback",
+    );
+    modal().dispatchEvent(new Event("cancel", { cancelable: true }));
+    await wait();
+    check(!modal(), "Escape/cancel did not dismiss preview");
+    await open();
+    modal().dispatchEvent(
+      new MouseEvent("click", { bubbles: true, clientX: -1, clientY: -1 }),
+    );
+    await wait();
+    check(!modal(), "Backdrop did not dismiss preview");
+    await open();
+    render(true);
+    await wait();
+    check(
+      !modal() && !container.querySelector(".messageAttachments"),
+      "Deleted message retained its preview",
+    );
+    return {
+      fileDetails: true,
+      separateDownload: true,
+      inAppPreview: true,
+      viewportBounds: true,
+      focusRestored: true,
+      errorFeedback: true,
+      cancel: true,
+      backdrop: true,
+      deletion: true,
+    };
+  } finally {
+    root.unmount();
+    container.remove();
+  }
+};
+window.verifyChatTools = async () => {
+  verifyWorkspaceHeaderLayout();
+  const container = document.createElement("div");
+  container.style.cssText = "position:fixed;inset:0;z-index:10000";
+  document.body.append(container);
+  const root = createRoot(container),
+    originalFetch = window.fetch;
+  const searches = [],
+    selected = [],
+    legal = [];
+  let help = 0,
+    resolveSlow;
+  const rows = Array.from({ length: 51 }, (_, index) => ({
+    id: `message-${index + 1}`,
+    authorId: "actor",
+    author: "Actor",
+    text: `Context ${index + 1}`,
+    createdAt: "2026-11-04T12:00:00Z",
+  }));
+  window.fetch = async (url, options) => {
+    if (!String(url).startsWith("/api/message-search"))
+      return originalFetch(url, options);
+    const params = new URL(url, "http://localhost").searchParams;
+    searches.push(params);
+    if (params.get("q") === "slow")
+      return new Promise((resolve) => {
+        resolveSlow = () =>
+          resolve(Response.json({ messages: [rows[0]], nextCursor: null }));
+      });
+    if (params.get("contextId"))
+      return Response.json({ messages: rows, nextCursor: null });
+    return Response.json({
+      messages: params.has("beforeId") ? [rows[10]] : [rows[25]],
+      nextCursor: params.has("beforeId")
+        ? null
+        : { beforeId: "cursor", beforeCreatedAt: rows[0].createdAt },
+    });
+  };
+  function Fixture() {
+    const [editing, setEditing] = useState(false),
+      [draft, setDraft] = useState("Unsent draft"),
+      [editDraft, setEditDraft] = useState("Original message"),
+      [saved, setSaved] = useState(null),
+      [context, setContext] = useState(null),
+      [section, setSection] = useState("account");
+    const links = h(WorkspaceLinks, {
+      onLegal: (value) => legal.push(value),
+      onHelp: () => help++,
+    });
+    const visible = context
+      ? rows
+      : [{ ...rows[50], text: saved ?? "Original message" }];
+    return h(
+      "div",
+      { className: "workspace" },
+      h("aside", { className: "workspaceRail" }),
+      h("aside", { className: "channelSidebar" }),
+      h(
+        "section",
+        { className: "room" },
+        h(
+          "header",
+          { className: "roomHeader" },
+          h("strong", null, "General"),
+          h(ConversationSearch, {
+            channelId: "channel-test",
+            onResult: (messages, target) => {
+              selected.push(target);
+              setContext({ messages, target });
+            },
+          }),
+        ),
+        h(
+          "section",
+          { className: "chat" },
+          h(
+            ChatHistory,
+            {
+              key: context ? "context" : "latest",
+              threadId: context ? "context" : "latest",
+              messages: visible,
+              ready: true,
+              hasMore: false,
+              loadingOlder: false,
+              onLoadOlder: async () => {},
+              ownUserId: "actor",
+              focusMessageId: context?.target,
+              onJumpToPresent: context ? () => setContext(null) : undefined,
+              contextNotice: context
+                ? h(
+                    "div",
+                    { className: "searchContextNotice" },
+                    h("span", null, "Viewing search context"),
+                  )
+                : null,
+            },
+            visible.map((row) =>
+              h(
+                "article",
+                {
+                  key: row.id,
+                  "data-message-id": row.id,
+                  "data-search-match": row.id === context?.target || undefined,
+                  style: { minHeight: 65 },
+                },
+                h(MessageHeader, {
+                  name: "Actor",
+                  time: "12:00",
+                  edited: !!saved,
+                  onProfile() {},
+                }),
+                h("p", null, row.text),
+              ),
+            ),
+          ),
+          h(
+            "form",
+            {
+              onSubmit: (event) => {
+                event.preventDefault();
+                if (editing) {
+                  setSaved(editDraft);
+                  setEditing(false);
+                }
+              },
+            },
+            h(MessageComposer, {
+              value: editing ? editDraft : draft,
+              onChange: editing ? setEditDraft : setDraft,
+              files: [],
+              onFiles() {},
+              placeholder: "Message general",
+              progress: null,
+              editId: editing ? "edited-message" : undefined,
+              onCancelEdit: () => setEditing(false),
+            }),
+            h(
+              "button",
+              { type: "submit", "data-chat-send": true },
+              editing ? "Edit" : "Send",
+            ),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              "data-start-edit": true,
+              onClick: () => setEditing(true),
+            },
+            "Edit message",
+          ),
+        ),
+      ),
+      h(
+        "aside",
+        { className: "memberSidebar" },
+        h("div", { className: "memberScroll" }),
+        links,
+      ),
+      h("div", { className: "compactWorkspaceLinks" }, links),
+      h(
+        "div",
+        {
+          className: "testOwnerNavigation",
+          style: {
+            position: "fixed",
+            left: 0,
+            top: 80,
+            width: 180,
+            display: "none",
+          },
+        },
+        h(SettingsNavigation, {
+          account: true,
+          owner: true,
+          selected: section,
+          onSelect: setSection,
+        }),
+      ),
+      h(
+        "div",
+        { className: "testMemberNavigation", style: { display: "none" } },
+        h(SettingsNavigation, {
+          account: true,
+          owner: false,
+          selected: "account",
+          onSelect() {},
+        }),
+      ),
+    );
+  }
+  const input = () => container.querySelector(".conversationSearch input");
+  async function typeSearch(value) {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(input(), value);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+  }
+  try {
+    flushSync(() => root.render(h(Fixture)));
+    container.querySelector("[data-start-edit]").click();
+    await wait();
+    const textarea = container.querySelector("textarea");
+    check(
+      textarea.value === "Original message" &&
+        document.activeElement === textarea,
+      "Edit did not transfer text/focus into composer",
+    );
+    check(
+      container.querySelector("[data-chat-send]").textContent === "Edit",
+      "Edit button did not replace Send",
+    );
+    check(
+      container.querySelector('[aria-label="Add attachment"]').disabled,
+      "Editing allowed new attachments",
+    );
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    check(
+      textarea.value === "Unsent draft" &&
+        container.querySelector("[data-chat-send]").textContent === "Send",
+      "Escape did not restore the original draft",
+    );
+    container.querySelector("[data-start-edit]").click();
+    await wait();
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    ).set.call(textarea, "Corrected message");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    container.querySelector("[data-chat-send]").click();
+    await wait();
+    check(
+      container.querySelector(".messageEdited")?.textContent === "(edited)" &&
+        container
+          .querySelector(".chatLog")
+          .textContent.includes("Corrected message"),
+      "Saved edit lacks text/edited label",
+    );
+    check(
+      container
+        .querySelector(".testOwnerNavigation")
+        .textContent.includes("Demo accounts") &&
+        !container
+          .querySelector(".testMemberNavigation")
+          .textContent.includes("Demo accounts"),
+      "Demo settings visibility is not owner-only",
+    );
+    const helpButton = [...container.querySelectorAll(".helpTrigger")].find(
+      (button) => button.getBoundingClientRect().width > 0,
+    );
+    check(
+      helpButton?.closest(".appLegalLinks") &&
+        helpButton.getBoundingClientRect().bottom <= innerHeight,
+      "Help is not visible beside legal links",
+    );
+    helpButton.click();
+    check(help === 1, "Footer Help did not open the guide");
+    await typeSearch("needle");
+    container
+      .querySelector('.conversationSearch button[type="submit"]')
+      .click();
+    await wait();
+    check(
+      searches[0].get("channelId") === "channel-test" &&
+        searches[0].get("q") === "needle",
+      "Search request has wrong scope",
+    );
+    const bounds = container
+      .querySelector(".messageSearchResults")
+      .getBoundingClientRect();
+    check(
+      bounds.left >= 0 && bounds.right <= innerWidth,
+      "Search results exceed viewport",
+    );
+    const resultRow = container.querySelector(".messageSearchResult");
+    const resultName = resultRow.querySelector("strong"),
+      resultTime = resultRow.querySelector("time"),
+      resultText = resultRow.querySelector("p");
+    check(
+      Math.abs(
+        resultName.getBoundingClientRect().left -
+          resultText.getBoundingClientRect().left,
+      ) < 1,
+      "Search author and text are not left-aligned",
+    );
+    check(
+      getComputedStyle(resultRow.querySelector("span")).justifyContent ===
+        "flex-start" && getComputedStyle(resultText).textAlign === "left",
+      "Search metadata or text remains centered/right-aligned",
+    );
+    check(
+      resultTime.getBoundingClientRect().left >=
+        resultName.getBoundingClientRect().left,
+      "Search timestamp does not follow left-aligned metadata",
+    );
+    container.querySelector(".loadSearchResults").click();
+    await wait();
+    check(
+      container.querySelectorAll(".messageSearchResult").length === 2,
+      "Search pagination failed",
+    );
+    container.querySelector(".messageSearchResult").click();
+    await wait();
+    check(
+      selected[0] === "message-26" &&
+        !container.querySelector(".messageSearchResults"),
+      "Search did not open selected context",
+    );
+    const target = container.querySelector('[data-search-match="true"]'),
+      log = container.querySelector(".chatLog");
+    check(
+      container.querySelectorAll('[data-search-match="true"]').length === 1,
+      "Search selection is duplicated",
+    );
+    check(
+      target &&
+        target.getBoundingClientRect().top >= log.getBoundingClientRect().top &&
+        target.getBoundingClientRect().bottom <=
+          log.getBoundingClientRect().bottom,
+      "Search target did not scroll into view",
+    );
+    log.scrollTop = log.scrollHeight;
+    log.dispatchEvent(new Event("scroll"));
+    await wait();
+    check(
+      !container.querySelector(".searchContextNotice button"),
+      "Search context retained a redundant return button",
+    );
+    check(
+      container.querySelector(".jumpToPresent"),
+      "Down arrow disappeared at the bottom of search context",
+    );
+    container.querySelector(".jumpToPresent").click();
+    await wait();
+    check(
+      !container.querySelector(".searchContextNotice") &&
+        container.querySelectorAll(".chatLog article").length === 1,
+      "Down arrow did not exit search context and restore current history",
+    );
+    await typeSearch("slow");
+    container
+      .querySelector('.conversationSearch button[type="submit"]')
+      .click();
+    await wait();
+    container.querySelector('[aria-label="Close search results"]').click();
+    resolveSlow();
+    await wait();
+    check(
+      !container.querySelector(".messageSearchResults") &&
+        selected.length === 1,
+      "Dismissed search reopened from a stale response",
+    );
+    return {
+      editComposer: true,
+      cancelRestoresDraft: true,
+      editedLabel: true,
+      ownerSettings: true,
+      footerHelp: true,
+      searchPaging: true,
+      resultContext: true,
+      returnToLatest: true,
+      staleSearchIgnored: true,
+    };
+  } finally {
+    window.fetch = originalFetch;
+    root.unmount();
+    container.remove();
+  }
+};
+window.verifyNotifications = async () => {
+  const container = document.createElement("div");
+  container.style.cssText =
+    "position:fixed;inset:0;z-index:10000;background:#1b2030;overflow:auto";
+  document.body.append(container);
+  const root = createRoot(container),
+    originalFetch = window.fetch;
+  const actor = "actor",
+    friend = "friend",
+    server = "server",
+    channel = "channel",
+    reads = [],
+    writes = [],
+    submitted = [],
+    profiles = [];
+  let state = {
+    channels: [
+      {
+        id: channel,
+        serverId: server,
+        unread: true,
+        mentions: 2,
+        firstUnreadId: "51",
+        latestMessageId: "60",
+      },
+    ],
+    direct: [
+      { id: friend, unread: 1, firstUnreadId: "dm", latestMessageId: "dm" },
+    ],
+    preferences: [],
+  };
+  window.fetch = async (url, options = {}) => {
+    if (url === "/api/notifications" && options.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      writes.push(body);
+      let pref = state.preferences.find(
+        (pref) => pref.scope === body.scope && pref.targetId === body.targetId,
+      );
+      if (!pref) {
+        pref = {
+          scope: body.scope,
+          targetId: body.targetId,
+          messages: true,
+          mentions: true,
+          calls: true,
+          messageMuteUntil: null,
+        };
+        state.preferences.push(pref);
+      }
+      pref[body.kind] = body.mode !== "off";
+      const timeKey =
+        body.kind === "messages"
+          ? "messageMuteUntil"
+          : body.kind === "calls"
+            ? "callMuteUntil"
+            : "mentionMuteUntil";
+      pref[timeKey] = ["on", "off"].includes(body.mode)
+        ? null
+        : new Date(Date.now() + Number(body.mode) * 60000).toISOString();
+      return Response.json({ ok: true });
+    }
+    if (url === "/api/notifications/read") {
+      reads.push(JSON.parse(options.body));
+      state = {
+        ...state,
+        channels: state.channels.map((row) => ({
+          ...row,
+          unread: false,
+          mentions: 0,
+          firstUnreadId: null,
+        })),
+      };
+      return Response.json({ ok: true });
+    }
+    if (url === "/api/notifications") return Response.json(state);
+    return originalFetch(url, options);
+  };
+  let refresh;
+  const people = [
+    { id: "bob", name: "Bob Smith", handle: "bob.1234" },
+    { id: "alice", name: "Alice", handle: "alice.5678" },
+  ];
+  function Fixture() {
+    const [draft, setDraft] = useState(""),
+      [latest, setLatest] = useState(false),
+      [readEnabled, setReadEnabled] = useState(false),
+      [muteTarget, setMuteTarget] = useState(null);
+    const inbox = useNotificationInbox(
+      actor,
+      "access",
+      readEnabled && latest
+        ? {
+            scope: "channel",
+            targetId: channel,
+            messageId: "60",
+            canRead: () => latest,
+          }
+        : null,
+    );
+    useEffect(() => {
+      refresh = inbox.refresh;
+    }, [inbox.refresh]);
+    const channelState = inbox.channels[0],
+      allowedMessage = inbox.allowed("server", server, "messages"),
+      allowedMention = inbox.allowed("server", server, "mentions"),
+      allowedCall = inbox.allowed("direct", friend, "calls");
+    return h(
+      "div",
+      {
+        style: {
+          display: "grid",
+          gridTemplateColumns: innerWidth < 650 ? "1fr" : "minmax(0,1fr) 320px",
+          gap: 16,
+          padding: 16,
+        },
+      },
+      h(
+        "section",
+        { className: "chat", style: { height: 400, minHeight: 400 } },
+        h(
+          ChatHistory,
+          {
+            threadId: "notifications",
+            messages: Array.from({ length: 60 }, (_, i) => ({
+              id: String(i + 1),
+              authorId: friend,
+            })),
+            ready: inbox.ready,
+            hasMore: false,
+            loadingOlder: false,
+            onLoadOlder: async () => {},
+            ownUserId: actor,
+            firstUnreadId: "51",
+            focusMessageId: inbox.ready ? "51" : undefined,
+            onLatestVisibilityChange: (value) => {
+              setLatest((current) => (current === value ? current : value));
+            },
+          },
+          Array.from({ length: 60 }, (_, i) =>
+            h(
+              "article",
+              {
+                key: i,
+                "data-message-id": String(i + 1),
+                style: { minHeight: 60 },
+              },
+              `Message ${i + 1}`,
+            ),
+          ),
+        ),
+        h(
+          "form",
+          {
+            onSubmit: (event) => {
+              event.preventDefault();
+              submitted.push(draft);
+            },
+          },
+          h(MessageComposer, {
+            value: draft,
+            onChange: setDraft,
+            files: [],
+            onFiles() {},
+            placeholder: "Message server",
+            progress: null,
+            mentionMembers: people,
+          }),
+          h("button", { type: "submit", "data-chat-send": true }, "Send"),
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            "data-enable-read": true,
+            onClick: () => setReadEnabled(true),
+          },
+          "Open conversation",
+        ),
+      ),
+      h(
+        "section",
+        null,
+        h(
+          "div",
+          { className: "notificationBadgeProbe" },
+          h(
+            "button",
+            {
+              className: "workspaceButton",
+              "data-server-badge": true,
+              onContextMenu(event) {
+                event.preventDefault();
+                setMuteTarget({
+                  scope: "server",
+                  id: server,
+                  name: "Test server",
+                  x: 8,
+                  y: 8,
+                });
+              },
+            },
+            "S",
+            h(UnreadIndicator, {
+              server: true,
+              unread: allowedMessage && channelState?.unread,
+              mentions: allowedMention ? channelState?.mentions : 0,
+            }),
+          ),
+          h(
+            "div",
+            { className: "channelRow" },
+            h(
+              "button",
+              { className: "channel", "data-channel-badge": true },
+              h("span", { className: "channelName" }, "General"),
+              h(UnreadIndicator, {
+                unread: allowedMessage && channelState?.unread,
+                mentions: allowedMention ? channelState?.mentions : 0,
+              }),
+            ),
+          ),
+        ),
+        h(
+          "p",
+          { className: "mentionRenderProbe" },
+          h(MentionText, {
+            text: "Hi @bob.1234",
+            mentions: [{ userId: "bob", name: "Bob Smith", start: 3, end: 12 }],
+            onProfile: (user) => profiles.push(user),
+          }),
+        ),
+        h(NotificationSettings, {
+          servers: [{ id: server, name: "Test server" }],
+          friends: [{ id: friend, name: "Friend" }],
+          preferences: inbox.preferences,
+          onSave: inbox.save,
+        }),
+        h(
+          "button",
+          {
+            "data-person-mute": true,
+            onContextMenu(event) {
+              event.preventDefault();
+              setMuteTarget({
+                scope: "direct",
+                id: friend,
+                name: "Friend",
+                x: 8,
+                y: 8,
+              });
+            },
+          },
+          "Friend",
+        ),
+        muteTarget &&
+          h(NotificationMuteMenu, {
+            target: muteTarget,
+            preferences: inbox.preferences,
+            onSave: inbox.save,
+            onClose: () => setMuteTarget(null),
+          }),
+        h(
+          "div",
+          { className: "callNotificationProbe" },
+          h(IncomingCallNotice, {
+            call: {
+              fromUserId: friend,
+              fromName: "Friend",
+              roomId: "friend:actor:friend",
+            },
+            status: allowedCall ? "online" : "dnd",
+            onAnswer() {},
+            onDecline() {},
+          }),
+        ),
+        h(
+          "div",
+          { className: "inlineCallNotificationProbe" },
+          h(IncomingCallNotice, {
+            call: {
+              fromUserId: friend,
+              fromName: "Friend",
+              roomId: "friend:actor:friend",
+            },
+            conversationUserId: friend,
+            inline: true,
+            status: allowedCall ? "online" : "dnd",
+            onAnswer() {},
+            onDecline() {},
+          }),
+        ),
+      ),
+    );
+  }
+  async function type(value) {
+    const textarea = container.querySelector("textarea");
+    textarea.focus();
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    ).set.call(textarea, value);
+    textarea.setSelectionRange(value.length, value.length);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    return textarea;
+  }
+  async function preference(label, mode) {
+    const category = label.endsWith("Friend") ? "People" : "Servers";
+    const categoryButton = [
+      ...container.querySelectorAll(".notificationSettings button"),
+    ].find((button) => button.textContent === category);
+    categoryButton.click();
+    await wait();
+    const control = container.querySelector(`select[aria-label="${label}"]`);
+    control.value = mode;
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait();
+  }
+  try {
+    flushSync(() => root.render(h(Fixture)));
+    await wait();
+    await wait();
+    async function searchSettings(query) {
+      const input = container.querySelector(
+        '.notificationSettings input[type="search"]',
+      );
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      ).set.call(input, query);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait();
+    }
+    await searchSettings("missing");
+    check(
+      !container.querySelector(
+        ".notificationSettings .notificationPreference",
+      ) &&
+        container
+          .querySelector(".notificationSettings")
+          .textContent.includes("No matches found"),
+      "Server notification search did not filter",
+    );
+    await searchSettings("test");
+    check(
+      container.querySelector(
+        ".notificationSettings .notificationPreference strong",
+      )?.textContent === "Test server",
+      "Server search did not match case insensitively",
+    );
+    [...container.querySelectorAll(".notificationSettings button")]
+      .find((button) => button.textContent === "People")
+      .click();
+    await wait();
+    check(
+      !container.querySelector(
+        'select[aria-label="mentions notifications for Test server"]',
+      ) &&
+        container.querySelector(
+          'select[aria-label="calls notifications for Friend"]',
+        ),
+      "People and server controls were not separated",
+    );
+    await searchSettings("missing");
+    check(
+      !container.querySelector(".notificationSettings .notificationPreference"),
+      "People notification search did not filter",
+    );
+    await searchSettings("");
+    [...container.querySelectorAll(".notificationSettings button")]
+      .find((button) => button.textContent === "Servers")
+      .click();
+    await wait();
+    check(
+      container.querySelector(".notificationSettings input").value === "test",
+      "Switching categories lost the server search",
+    );
+    await searchSettings("");
+    const label = container
+      .querySelector("[data-channel-badge] .channelName")
+      .getBoundingClientRect();
+    const indicator = container
+      .querySelector("[data-channel-badge] .activityIndicator")
+      .getBoundingClientRect();
+    check(
+      Math.abs(
+        label.top + label.height / 2 - (indicator.top + indicator.height / 2),
+      ) < 1 && indicator.left - label.right <= 7,
+      "Channel indicator is not centered next to its label",
+    );
+    check(
+      container.querySelectorAll(".newMessagesDivider").length === 1,
+      "New messages divider is missing or duplicated",
+    );
+    check(
+      reads.length === 0,
+      "Opening unread history acknowledged messages before reaching the bottom",
+    );
+    check(
+      container.querySelectorAll(".activityMentionCount").length === 2,
+      "Channel/server mention counts do not share a badge position",
+    );
+    check(
+      container.querySelector("[data-server-badge] .activityDot") &&
+        container.querySelector("[data-channel-badge] .activityDot"),
+      "Mention counts have no underlying generic indicator",
+    );
+    let textarea = await type("@");
+    check(
+      container.querySelectorAll('[role="option"]').length === 2,
+      "@ must list all other server members",
+    );
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    check(
+      textarea.value === "@bob.1234 " && submitted.length === 0,
+      "Mention selection submitted instead of inserting a unique handle",
+    );
+    await type("@Ali");
+    check(
+      container.querySelectorAll('[role="option"]').length === 1,
+      "Mention filtering is wrong",
+    );
+    container.querySelector('[role="option"]').click();
+    await wait();
+    check(textarea.value === "@alice.5678 ", "Mouse mention selection failed");
+    await type("hello @Bob Smith");
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    container.querySelector("[data-chat-send]").click();
+    await wait();
+    check(
+      submitted[0] === "hello @Bob Smith",
+      "Manually typed mention text was not sent",
+    );
+    container.querySelector(".messageMention").click();
+    check(
+      profiles[0].id === "bob",
+      "Mention did not open the selected user's profile",
+    );
+    await preference("messages notifications for Test server", "off");
+    check(
+      container.querySelector("[data-server-badge] .activityMentionCount")
+        ?.textContent === "2",
+      "Disabling normal messages suppressed mentions",
+    );
+    await preference("messages notifications for Friend", "off");
+    check(
+      container.querySelector(".callNotificationProbe .incomingCall"),
+      "Disabling DM messages suppressed calls",
+    );
+    await preference("calls notifications for Friend", "off");
+    check(
+      !container.querySelector(".callNotificationProbe .incomingCall") &&
+        container.querySelector(".inlineCallNotificationProbe .incomingCall"),
+      "Call mute did not silence popup while preserving inline Answer",
+    );
+    await preference("mentions notifications for Test server", "off");
+    check(
+      !container.querySelector(".activityIndicator"),
+      "Fully muted server retained alert badges",
+    );
+    await preference("messages notifications for Test server", "on");
+    check(
+      container.querySelector("[data-server-badge] .activityDot") &&
+        !container.querySelector("[data-server-badge] .activityMentionCount"),
+      "Normal unread messages should have only a generic mark",
+    );
+    await preference("calls notifications for Friend", "60");
+    check(
+      container.querySelector(
+        'select[aria-label="calls notifications for Friend"]',
+      ).value === "muted",
+      "Temporary mute did not persist",
+    );
+    for (const [selector, name, scope] of [
+      ["[data-server-badge]", "Test server", "server"],
+      ["[data-person-mute]", "Friend", "direct"],
+    ]) {
+      container
+        .querySelector(selector)
+        .dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        );
+      await wait();
+      const menu = container.querySelector(".notificationMuteMenu");
+      check(
+        menu?.getAttribute("aria-label") === `Mute notifications for ${name}`,
+        "Right-click did not open the correct mute options",
+      );
+      const control = menu.querySelector(
+        `select[aria-label="messages notifications for ${name}"]`,
+      );
+      control.value = "60";
+      control.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait();
+      check(
+        writes.some(
+          (write) =>
+            write.scope === scope &&
+            write.kind === "messages" &&
+            write.mode === "60",
+        ),
+        "Context mute was not persisted through the normal settings API",
+      );
+      check(
+        menu.querySelector(
+          `select[aria-label="messages notifications for ${name}"]`,
+        ).value === "muted",
+        "Context mute did not refresh saved preferences",
+      );
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      await wait();
+      check(
+        !container.querySelector(".notificationMuteMenu"),
+        "Escape did not close mute options",
+      );
+    }
+    container.querySelector("[data-enable-read]").click();
+    await wait();
+    check(reads.length === 0, "Older visible messages cleared unseen activity");
+    const log = container.querySelector(".chatLog");
+    log.scrollTop = log.scrollHeight;
+    log.dispatchEvent(new Event("scroll"));
+    await wait();
+    await wait();
+    check(
+      reads.length === 1 &&
+        reads[0].scope === "channel" &&
+        reads[0].messageId === "60",
+      "Reaching latest did not acknowledge the visible conversation exactly once",
+    );
+    check(
+      !container.querySelector(".activityIndicator"),
+      "Read acknowledgement did not clear indicators",
+    );
+    state = {
+      ...state,
+      channels: state.channels.map((row) => ({
+        ...row,
+        unread: true,
+        mentions: 1,
+      })),
+    };
+    refresh();
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    check(
+      writes.some(
+        (write) => write.scope === "direct" && write.kind === "calls",
+      ) &&
+        writes.some(
+          (write) => write.scope === "direct" && write.kind === "messages",
+        ),
+      "DM message/call controls were not independent requests",
+    );
+    return {
+      mentionPicker: true,
+      keyboardSelection: true,
+      typedMentions: true,
+      mentionProfile: true,
+      newDivider: true,
+      overlaidBadges: true,
+      separateDmControls: true,
+      temporaryMute: true,
+      readAtLatest: true,
+      notificationSearch: true,
+      separateCategories: true,
+      centeredChannelBadge: true,
+      contextMutes: true,
+    };
+  } finally {
+    root.unmount();
+    window.fetch = originalFetch;
+    container.remove();
+  }
 };
 window.verifyHelpAndSkeletons = async () => {
   const container = document.createElement("div");
@@ -700,7 +1979,7 @@ window.verifyWorkspaceActivity = async () => {
     root.render(h(ActivityFixture));
     await wait();
     check(
-      !container.querySelector(".serverUnreadDot"),
+      !container.querySelector(".serverActivityIndicator"),
       "Existing history must not start unread on first visit",
     );
     activity.handle({
@@ -712,7 +1991,7 @@ window.verifyWorkspaceActivity = async () => {
     });
     await wait();
     check(
-      container.querySelectorAll(".serverUnreadDot").length === 1 &&
+      container.querySelectorAll(".serverActivityIndicator").length === 1 &&
         container.querySelector(".channelUnreadDot"),
       "New activity must badge the server and channel",
     );
@@ -751,7 +2030,7 @@ window.verifyWorkspaceActivity = async () => {
     container.querySelector(".channel").click();
     await wait();
     check(
-      !container.querySelector(".serverUnreadDot") &&
+      !container.querySelector(".serverActivityIndicator") &&
         !container.querySelector(".channelUnreadDot"),
       "Reading the visible channel must clear its notifications",
     );
@@ -768,7 +2047,7 @@ window.verifyWorkspaceActivity = async () => {
     });
     await wait();
     check(
-      container.querySelector(".serverUnreadDot"),
+      container.querySelector(".serverActivityIndicator"),
       "A hidden tab must retain unread activity in its selected channel",
     );
     Object.defineProperty(document, "visibilityState", {
@@ -778,7 +2057,7 @@ window.verifyWorkspaceActivity = async () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await wait();
     check(
-      !container.querySelector(".serverUnreadDot"),
+      !container.querySelector(".serverActivityIndicator"),
       "Returning to the visible channel must clear unread activity",
     );
     check(
@@ -1595,7 +2874,7 @@ function verifyWorkspaceHeaderLayout() {
   probe.className = "workspace";
   probe.style.cssText =
     "position:fixed;inset:0;z-index:1000;pointer-events:none";
-  probe.innerHTML = `<aside class="workspaceRail"></aside><aside class="channelSidebar"><header class="workspaceName"><strong>Test server</strong><button class="serverInviteButton">+</button><div class="serverActions"><button class="accountMenuTrigger">Cog</button></div></header></aside><section class="room"><header class="roomHeader"><nav class="panelControls"><button>Servers</button><button>Channels</button><button>Users</button></nav><strong>General</strong><div class="accountMenu demoAccountsMenu"><button class="accountMenuTrigger">Manage demo accounts</button></div></header><section class="chat"><form><input/><button data-chat-send>Send</button></form></section></section>`;
+  probe.innerHTML = `<aside class="workspaceRail"></aside><aside class="channelSidebar"><header class="workspaceName"><strong>Test server</strong><button class="serverInviteButton">+</button><div class="serverActions"><button class="accountMenuTrigger">Cog</button></div></header></aside><section class="room"><header class="roomHeader"><nav class="panelControls"><button>Servers</button><button>Channels</button><button>Users</button></nav><strong>General</strong><div class="conversationSearch"><form><input placeholder="Search messages"/><button>Search</button></form></div></header><section class="chat"><form><input/><button data-chat-send>Send</button></form></section></section>`;
   document.body.append(probe);
   const channel = probe
     .querySelector(".panelControls > button:nth-child(2)")
@@ -1610,11 +2889,13 @@ function verifyWorkspaceHeaderLayout() {
     channel.right < invite.left && invite.right < settings.left,
     "Invite must sit between hide channels and server settings without overlap",
   );
-  const menu = probe.querySelector(".demoAccountsMenu").getBoundingClientRect();
+  const menu = probe
+    .querySelector(".conversationSearch")
+    .getBoundingClientRect();
   const send = probe.querySelector("[data-chat-send]").getBoundingClientRect();
   check(
     innerWidth <= 920 || Math.abs(menu.right - send.right) < 2,
-    `Demo accounts and Send must share the same right margin (menu ${menu.right}, send ${send.right})`,
+    `Search and Send must share the same right margin (search ${menu.right}, send ${send.right})`,
   );
   const users = probe
     .querySelector(".panelControls > button:nth-child(3)")
@@ -1622,7 +2903,7 @@ function verifyWorkspaceHeaderLayout() {
   check(
     Math.abs(users.right - (innerWidth - 12)) < 2 &&
       (menu.right <= users.left || users.bottom <= menu.top),
-    "User-list toggle must not overlap demo accounts",
+    "User-list toggle must not overlap search",
   );
   probe.classList.add("friendsScreen");
   probe.querySelector(".serverInviteButton").remove();
@@ -3061,6 +4342,7 @@ window.verifyWorkspaceControlsTest = async () => {
   );
   management.querySelector(".settingsClose").click();
   await wait();
+  await window.verifyMessageComposer();
   await window.verifySettingsAndProfileLayout();
   const info = document.querySelector(".diagnosticsIndicator");
   info.focus();

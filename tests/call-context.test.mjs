@@ -167,11 +167,13 @@ test("actual call notice renders local Answer/Decline controls only in the corre
   );
 });
 
-test("DND masks badge/title notifications without deleting accumulated unread state", () => {
+test("LC badge/title count only direct activity; server mentions stay on their server", () => {
   const unreadDirectMessages = { alice: 4 };
   const base = {
     incomingFriendRequestCount: 2,
     unreadMessageCount: 4,
+    mentionNotificationCount: 7,
+    notificationInbox: { ready: false, allowed: () => true },
     workspaceActivity: {
       channels: [{ id: "text", serverId: "server" }],
       unread: { text: true },
@@ -198,6 +200,47 @@ test("DND masks badge/title notifications without deleting accumulated unread st
   assert.deepEqual(unreadDirectMessages, { alice: 4 });
 });
 
+test("hanging up cancels the receiver's invitation before outcome recording clears the partner", () => {
+  const functions = new Map();
+  function find(node) {
+    if (ts.isFunctionDeclaration(node) && node.name)
+      functions.set(node.name.text, node.getText(ast));
+    ts.forEachChild(node, find);
+  }
+  find(ast);
+  for (const readyState of [1, 3]) {
+    const sent = [],
+      events = [];
+    const partner = { current: "alice" };
+    vm.runInNewContext(
+      ts.transpile(
+        `${functions.get("cancelFriendInvitation")}\n${functions.get("endFriendCall")}\nendFriendCall();`,
+      ),
+      {
+        friendCallPartnerId: partner,
+        presenceSocket: {
+          current: {
+            readyState,
+            send: (payload) => sent.push(JSON.parse(payload)),
+          },
+        },
+        WebSocket: { OPEN: 1 },
+        send: (payload) => events.push(payload.type),
+        recordCallOutcome: () => {
+          partner.current = "";
+          events.push("record");
+        },
+        returnToPreviousTextChannel: () => events.push("leave"),
+      },
+    );
+    assert.deepEqual(
+      sent,
+      readyState === 1 ? [{ type: "call-cancel", targetUserId: "alice" }] : [],
+    );
+    assert.deepEqual(events, ["hangup", "record", "leave"]);
+  }
+});
+
 test("DND suppresses ringing and status changes do not restart the invitation expiry", () => {
   const ringing = effects.find((source) =>
     source.includes('playVoiceSound("ring")'),
@@ -209,6 +252,7 @@ test("DND suppresses ringing and status changes do not restart the invitation ex
     expired = 0;
   const timers = [];
   const fixture = {
+    callsNotificationAllowed: true,
     incomingCall: call,
     prepareVoiceSounds() {},
     playVoiceSound: () => rings++,
@@ -230,6 +274,11 @@ test("DND suppresses ringing and status changes do not restart the invitation ex
   });
   stop();
   vm.runInNewContext(`(${ringing})()`, { ...fixture, userStatus: "dnd" });
+  vm.runInNewContext(`(${ringing})()`, {
+    ...fixture,
+    userStatus: "online",
+    callsNotificationAllowed: false,
+  });
   assert.equal(rings, 1);
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 20000);

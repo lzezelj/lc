@@ -26,6 +26,93 @@ database migration, package upgrade or infrastructure change was performed.
 
 ## Architecture preserved
 
+Notification/call follow-up: explicit friend-call hangup now cancels the incoming
+invitation over authenticated presence before outcome recording clears the peer.
+This reaches a ringing receiver who has not joined the voice room. Disconnect
+also recognizes friend calls before media setup, and obsolete animation-frame
+joins cannot restart a call after immediate hangup. Channel indicators align
+vertically beside their names; server mentions no longer increment the LC badge
+or browser title. Notifications settings has searchable Servers/People categories
+with per-category queries. Server context menus and accepted-friend context
+actions expose shared persisted message/mention or message/call mute controls.
+Owner member moderation remains available alongside friend mute actions.
+Formatting, all 219 default tests, production build, muted desktop/mobile
+notification checks and muted call-navigation passed. One notification run
+passed desktop then timed out at Runtime.evaluate during mobile; a sequential
+rerun passed both sizes, without establishing the timeout's cause. New regressions
+cover actual hangup ordering, real authenticated cancellation delivery to a
+receiver outside the media room, badge isolation, searches, geometry and context
+mute persistence. No schema, production infrastructure or deployment changed.
+
+The mentions/notification follow-up adds a server-member @ picker, typed name or
+handle resolution enforced on the backend, and atomic persisted mention records.
+Generic unread dots and overlaid mention counts share a position on channels and
+servers. Personal read cursors persist across devices; a New messages divider
+separates previously read history from new messages. Acknowledgements require the
+foreground conversation to be at its latest messages, outside search and overlays.
+These are personal unread markers, not sender-visible read receipts. User settings
+now persist independent server message/mention and DM message/call preferences,
+including indefinite and timed mutes; DND remains an overall override.
+
+Local migrations `0015_mentions_notifications` and
+`0016_mention_deletion_cleanup` were applied, and the five new tables, mention
+metadata column and soft-deletion cleanup trigger were verified. A disposable
+PostgreSQL instance passed migrations twice and all seven database tests,
+including actual message/edit, mention, read and preferences queries and access
+denials, then was removed. Formatting, all 218 default tests, production build
+and muted desktop/mobile notification checks passed. Muted navigation passed
+stable direct audio and preserved group calls on rerun; the initial concurrent
+run failed with a browser play() AbortError caused by a new load request. The
+underlying trigger remains unproven. Browser checks use controlled network/auth
+fixtures; a live authenticated two-account session was not exercised. No
+production migration, deployment, commit or infrastructure change was performed.
+
+Search-result follow-up: a reported duplicate was reproduced in disposable
+PostgreSQL with `created_at` values containing microseconds. The initial search
+test used whole-millisecond timestamps and missed that JavaScript Date truncation
+placed the selected row among its own newer neighbors. Search now preserves the
+exact UTC timestamp for context comparisons and cursor paging. Database regressions
+cover unique context IDs, single target occurrence, sub-millisecond neighbors and
+full-precision cursor ties in channels and DMs. Search result metadata/text are
+left-aligned, with desktop/mobile geometry assertions. Formatting, all 211 default
+tests, six disposable database tests, focused muted browser checks and build pass.
+No schema or production infrastructure changed for this correction.
+
+The requested edit/search and navigation follow-up is complete. Messages edit
+through the normal composer, retain attachments, show edited timestamps and
+propagate committed changes through authenticated signaling without unread
+increments. Conversation search pages stored text/attachment names and opens a
+bounded surrounding-message view. Owner demo actions now start in User settings;
+Help is beside the legal links, including a compact footer when the member panel
+is hidden. Existing demo dialogs are shared across Friends/server branches.
+Deletion closes matching editors and clears search context; late edits cannot
+restore deleted rows or overwrite a newer known revision. Local migration
+`0014_direct_message_edits` was applied and its column verified. Formatting,
+all 211 default tests, the production build, muted desktop/mobile chat-tool
+checks and muted call-preserving navigation passed. A disposable PostgreSQL 17
+instance passed the migration runner twice and all six database tests, including
+the actual Drizzle edit/search queries, then was removed. Browser network/auth
+fixtures and real WebSocket regressions are separate from a live authenticated
+two-account browser session; no production deployment was performed.
+
+The subsequent attachment feature adds private image/PDF uploads to channel
+messages and friend DMs, plus a shared textarea composer that grows/shrinks up
+to three lines and then scrolls. See `ARCHITECTURE.md` for storage, permissions,
+quota and deletion details. Verification passed formatting, all 201 default
+tests and the production build. A disposable PostgreSQL 17 container passed
+the migration runner twice and all five database tests, including soft-delete
+byte cleanup and permanent cascades; it was then removed. No existing LC database
+or production infrastructure was changed. Muted focused composer checks passed
+desktop and mobile/reduced-motion layout, wrapped lines, keyboard submission,
+file picking, drag/drop and removal. Two broader standard workspace attempts
+failed: one at the existing profile request's pending-state assertion, another
+with the combined workspace Runtime.evaluate deadline after media preflight.
+Their causes remain unproven; focused composer success does not establish that
+the complete workspace run passes. Live two-account upload/download verification
+remains separate from these route, browser-component and database regressions.
+The muted navigation browser check also passed stable direct audio and retained
+group-room/audio across Friends/server navigation.
+
 Follow-up requested after this audit: the Friends-list history scan described
 below has now been removed. `/api/friends` returns only friendship/profile
 metadata and activity timestamps. Message previews are no longer fetched for the

@@ -10,6 +10,15 @@ import {
   rateLimitMessage,
 } from "../../../../../server/rate-limit";
 
+export async function PATCH(
+  request: Request,
+  context: { params: Promise<{ messageId: string; userId: string }> },
+) {
+  const { editDirectMessage } =
+    await import("../../../../../server/edit-message");
+  return editDirectMessage(request, context);
+}
+
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ userId: string; messageId: string }> },

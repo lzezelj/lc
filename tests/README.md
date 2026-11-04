@@ -1,5 +1,56 @@
 # Test coverage
 
+`notifications.test.mjs` covers typed mention boundaries/ambiguity, independent
+notification preferences, expiry, actor/access checks, validated settings and
+read acknowledgements. `notifications.database.test.mjs` runs the actual channel
+message and edit paths with PostgreSQL: atomic mention persistence, one notification
+per recipient/message, edits, durable counts, monotonic reads, independent DM
+message/call preferences, membership/friendship checks and deletion cleanup.
+`npm.cmd run test:db` includes both database files; use a disposable migrated
+database. Fixtures roll back their own data.
+`node tests/direct-webrtc.browser.mjs --notifications` runs muted desktop/mobile
+checks for @ completion, keyboard/mouse/manual mentions, profile shortcuts,
+the new-message divider, same-position generic/numbered indicators, independent
+DM alerts, temporary mutes and acknowledgement only after reaching latest.
+It also checks separate searchable Servers/People categories, retained search
+queries, vertical channel-badge alignment, and right-click mute persistence for
+both servers and people through the shared preference controls.
+Call-context regressions execute the actual hangup/cancellation handlers and
+verify LC badge/title isolation from server mentions. Real WebSocket signaling
+tests verify cancellation reaches a ringing receiver outside the media room,
+reject forged identity/room fields and deny cancellation to non-friends.
+The mobile run retains reduced-motion emulation. These fixture checks remain
+separate from a live authenticated two-device session.
+
+`message-editing.test.mjs` covers author/access boundaries, deleted/call entries,
+attachment preservation, text/rate limits, persistence-before-notification,
+search scope/paging/literal matching/context, and the actual Home edit submission
+handlers. Signaling tests exercise real WebSocket edit delivery and authorized
+cache invalidation without unread activity. The PostgreSQL suite executes the
+actual Drizzle edit/search queries in a rolled-back transaction, including JSON
+filename matching, tied timestamps and private conversations.
+`node tests/direct-webrtc.browser.mjs --chat-tools` runs muted desktop/mobile
+checks for edit composer focus/cancel/labels, owner navigation, footer Help,
+search results/paging, centered result context, the down arrow returning to live
+history even from the bottom of search context, and dismissed
+request rejection. Mobile runs with reduced motion. Browser fixtures use controlled
+authentication/network responses; they do not prove live two-account authorization.
+
+Run `node tests/direct-webrtc.browser.mjs --message-composer` for focused desktop
+and mobile (reduced-motion) composer and attachment-preview checks without the
+other workspace probes. Attachment checks cover filename overflow, size labels,
+separate authenticated downloads, in-app image rendering/error feedback, dialog
+bounds, focus restoration, cancellation/backdrop dismissal and message deletion.
+
+`message-attachments.test.mjs` covers bounded multipart parsing, file signatures,
+filename cleanup, per-account quota transaction ordering/failure, and private
+download membership/friendship/participant checks. The muted standard workspace
+browser check exercises the shared composer: one-to-three-row growth/shrinkage,
+wrapped-text scrolling, Enter/Shift+Enter, file picking, drag/drop and removal.
+The database suite tests attachment soft-delete cleanup and permanent cascades
+in an isolated transactional schema. These do not replace live authenticated
+two-account upload/download verification.
+
 Run `npm.cmd test` for the default suite. It needs no running application,
 database, or external media service. The signaling tests start local WebSocket
 servers; route and component tests use controlled dependencies.

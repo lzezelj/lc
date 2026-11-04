@@ -1,6 +1,10 @@
 import { and, desc, eq, lt, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../auth";
+import {
+  readMessageRequest,
+  saveAttachedMessage,
+} from "../../../../server/message-attachments";
 import { db } from "../../../../db";
 import { directMessages, friendships, users } from "../../../../db/schema";
 import { areFriends } from "../../../../server/friends";
@@ -40,6 +44,8 @@ export async function GET(
     .select({
       id: directMessages.id,
       text: directMessages.content,
+      attachments: directMessages.attachments,
+      editedAt: directMessages.editedAt,
       createdAt: directMessages.createdAt,
       authorId: directMessages.senderId,
       author: users.name,
@@ -78,7 +84,10 @@ export async function GET(
   const page = rows.slice(0, 50);
   const oldest = page.at(-1);
   return NextResponse.json({
-    messages: page.reverse(),
+    messages: page.reverse().map((message) => ({
+      ...message,
+      attachments: message.deletedAt ? [] : message.attachments,
+    })),
     nextCursor:
       hasMore && oldest
         ? {
@@ -114,11 +123,8 @@ export async function POST(
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
       },
     );
-  const body = (await request.json()) as {
-    text?: string;
-    event?: "call-ended" | "call-declined" | "user-unavailable";
-    durationSeconds?: number;
-  };
+  const body = await readMessageRequest(request);
+  if (body instanceof Response) return body;
   const isCallEvent = Boolean(body.event);
   const durationSeconds = isCallEvent
     ? Math.max(0, Math.min(86_400, Math.round(body.durationSeconds ?? 0)))
@@ -130,22 +136,38 @@ export async function POST(
         ? "User unavailable"
         : body.event === "call-ended"
           ? "Call ended"
-          : body.text?.trim();
-  if (!text || text.length > 4000)
+          : (body.text?.trim() ?? "");
+  if ((!text && !body.files.length) || text.length > 4000)
     return NextResponse.json(
-      { error: "Message must be 1-4000 characters" },
+      {
+        error:
+          "Add text or an attachment. Text can contain up to 4000 characters.",
+      },
       { status: 400 },
     );
-  const [message] = await db
-    .insert(directMessages)
-    .values({
-      senderId: session.user.id,
-      recipientId: userId,
-      content: text,
-      kind: isCallEvent ? "call" : "message",
-      callDurationSeconds: durationSeconds,
-    })
-    .returning({ id: directMessages.id, createdAt: directMessages.createdAt });
+  const message = await saveAttachedMessage(
+    session.user.id,
+    body.files,
+    true,
+    async (connection, attachments) => {
+      const [saved] = await connection
+        .insert(directMessages)
+        .values({
+          senderId: session.user.id,
+          recipientId: userId,
+          content: text,
+          attachments,
+          kind: isCallEvent ? "call" : "message",
+          callDurationSeconds: durationSeconds,
+        })
+        .returning({
+          id: directMessages.id,
+          createdAt: directMessages.createdAt,
+        });
+      return saved;
+    },
+  );
+  if (message instanceof Response) return message;
   await db
     .update(friendships)
     .set({ lastActivityAt: message.createdAt })
@@ -164,6 +186,7 @@ export async function POST(
   const canonicalMessage = {
     ...message,
     text,
+    attachments: body.files.map((file) => file.metadata),
     authorId: session.user.id,
     author: session.user.name ?? "User",
     kind: isCallEvent ? "call" : "message",

@@ -92,6 +92,34 @@
       "when": 1793664000001,
       "tag": "0012_sound_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793740800000,
+      "tag": "0013_message_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793740800001,
+      "tag": "0014_direct_message_edits",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793740800002,
+      "tag": "0015_mentions_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793740800003,
+      "tag": "0016_mention_deletion_cleanup",
+      "breakpoints": true
     }
   ]
 }

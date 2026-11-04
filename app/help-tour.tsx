@@ -72,7 +72,7 @@ export const helpSteps = [
   {
     title: "Messages",
     location: "Conversation → message box",
-    text: "Right-click a message for available actions, such as replying or deleting your own message.",
+    text: "Right-click a message to reply, edit or delete your own message. Editing puts its text in the message box; choose Edit to save or Escape to cancel. Search the current conversation from its header to find older messages and attachments.",
   },
   {
     title: "Joining and controlling voice",
@@ -91,8 +91,8 @@ export const helpSteps = [
   },
   {
     title: "You're ready",
-    location: "Help is always in the header",
-    text: "Use the circled question mark in the top-right header whenever you want to reopen this introduction. Privacy and Impressum are available at the bottom of the workspace. Choose below whether this tour should appear automatically next time.",
+    location: "Help, Privacy and Impressum → workspace footer",
+    text: "Choose Help & introduction beside Privacy and Impressum at the bottom of the workspace to reopen this guide. Choose below whether this tour should appear automatically next time.",
   },
 ];
 

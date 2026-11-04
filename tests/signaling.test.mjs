@@ -386,12 +386,32 @@ test("call invitations require an accepted friend in the signaling token", async
     roomId: "friend:test-Ada:test-Grace",
   });
 
+  // The receiver is only ringing and has never joined the voice room.
+  const cancellation = nextMessage(grace);
+  ada.send(
+    JSON.stringify({
+      type: "call-cancel",
+      targetUserId: "test-Grace",
+      fromUserId: "forged",
+      roomId: "forged",
+    }),
+  );
+  assert.deepEqual(await cancellation, {
+    type: "call-cancel",
+    fromUserId: "test-Ada",
+    fromName: "Ada",
+    roomId: "friend:test-Ada:test-Grace",
+  });
+
   const forbidden = nextMessage(grace);
   grace.send(JSON.stringify({ type: "call-invite", targetUserId: "stranger" }));
   assert.deepEqual(await forbidden, {
     type: "forbidden",
     channelId: "stranger",
   });
+  const forbiddenCancel = nextMessage(grace);
+  grace.send(JSON.stringify({ type: "call-cancel", targetUserId: "stranger" }));
+  assert.equal((await forbiddenCancel).type, "forbidden");
 });
 
 test("legacy server presence authorizes subscriptions and broadcasts connections and departures", async () => {
@@ -1343,6 +1363,53 @@ test("persisted text messages are delivered only to channel subscribers", async 
     message,
   });
   await outsiderStayedQuiet;
+});
+
+test("persisted edits reach text subscribers and invalidate authorized caches without unread activity", async () => {
+  const url = await startServer();
+  const reader = await connect(url, "Edit reader", ["general"]);
+  const outsider = await connect(url, "Edit outsider", ["random"]);
+  const observer = await connect(url, "Edit observer", ["general"]);
+  const subscribed = nextMessage(reader);
+  reader.send(JSON.stringify({ type: "subscribe-text", channelId: "general" }));
+  await subscribed;
+  observer.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const endpoint = `${url.replace("ws://", "http://")}/internal/message-edited`;
+  const edit = {
+    id: "message-1",
+    text: "corrected",
+    editedAt: "2026-11-04T12:00:00Z",
+  };
+  const post = (body, authorized = true) =>
+    fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(authorized ? { Authorization: `Bearer ${authSecret}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await post({ channelId: "general", edit }, false)).status, 401);
+  assert.equal(
+    (await post({ channelId: "general", edit: { ...edit, editedAt: "bad" } }))
+      .status,
+    400,
+  );
+  const incoming = nextMessage(reader),
+    invalidated = nextMessage(observer),
+    quiet = expectNoMessage(outsider);
+  assert.equal((await post({ channelId: "general", edit })).status, 204);
+  assert.deepEqual(await incoming, {
+    type: "message-edited",
+    channelId: "general",
+    edit,
+  });
+  assert.deepEqual(await invalidated, {
+    type: "channel-history-changed",
+    channelId: "general",
+  });
+  await quiet;
 });
 
 test("persisted message deletions are delivered only to channel subscribers", async () => {

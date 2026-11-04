@@ -15,8 +15,15 @@ const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
 const helpTourOnly = process.argv.includes("--help-tour");
+const messageComposerOnly = process.argv.includes("--message-composer");
+const chatToolsOnly = process.argv.includes("--chat-tools");
+const notificationsOnly = process.argv.includes("--notifications");
 const workspaceControls =
-  process.argv.includes("--workspace-controls") || helpTourOnly;
+  process.argv.includes("--workspace-controls") ||
+  helpTourOnly ||
+  messageComposerOnly ||
+  chatToolsOnly ||
+  notificationsOnly;
 const mediaOptionsOnly =
   process.argv.includes("--media-options-only") || helpTourOnly;
 const supportedFlags = new Set([
@@ -27,6 +34,9 @@ const supportedFlags = new Set([
   "--workspace-controls",
   "--media-options-only",
   "--help-tour",
+  "--message-composer",
+  "--chat-tools",
+  "--notifications",
 ]);
 if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
   throw new Error("Unsupported browser test option");
@@ -189,6 +199,13 @@ if (navigation || workspaceControls) {
       "camera-resolution",
       "empty-state",
       "use-message-cooldown",
+      "message-composer",
+      "conversation-search",
+      "workspace-links",
+      "unread-indicator",
+      "mention-text",
+      "notification-settings",
+      "message-attachments",
       "message-header",
       "user-profile",
       "sidebar-resizer",
@@ -251,6 +268,10 @@ if (navigation || workspaceControls) {
           "workspace-activity",
           "use-workspace-activity",
           "call-context",
+          "attachment-types",
+          "mentions",
+          "notification-types",
+          "use-notification-inbox",
           "help-geometry",
           "voice-activity",
           "audio-output",
@@ -510,7 +531,41 @@ try {
   if (result.exceptionDetails)
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
-  if (workspaceControls) {
+  if (messageComposerOnly || chatToolsOnly || notificationsOnly) {
+    for (const mobile of [false, true]) {
+      if (mobile) {
+        await call(
+          "Emulation.setDeviceMetricsOverride",
+          { width: 390, height: 844, deviceScaleFactor: 1, mobile: true },
+          sessionId,
+        );
+        await call(
+          "Emulation.setEmulatedMedia",
+          { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+          sessionId,
+        );
+      }
+      const checked = await call(
+        "Runtime.evaluate",
+        {
+          expression: notificationsOnly
+            ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+            : chatToolsOnly
+              ? "window.verifyChatTools()"
+              : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      if (checked.exceptionDetails)
+        throw new Error(JSON.stringify(checked.exceptionDetails));
+      console.log(
+        `Message composer ${mobile ? "mobile" : "desktop"} passed:`,
+        JSON.stringify(checked.result.value),
+      );
+    }
+  } else if (workspaceControls) {
     await call(
       "Input.dispatchMouseEvent",
       { type: "mouseMoved", x: data.x, y: data.y },
@@ -844,7 +899,7 @@ try {
         "Runtime.evaluate",
         {
           expression:
-            "(async () => { await window.verifySettingsAndProfileLayout(); await window.verifyChatHistory(); await window.verifyWorkspaceAdditions(); return window.verifyMicrophonePosition(); })()",
+            "(async () => { await window.verifyMessageComposer(); await window.verifySettingsAndProfileLayout(); await window.verifyChatHistory(); await window.verifyWorkspaceAdditions(); return window.verifyMicrophonePosition(); })()",
           awaitPromise: true,
           returnByValue: true,
         },

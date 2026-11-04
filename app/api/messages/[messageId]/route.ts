@@ -4,6 +4,15 @@ import { auth } from "../../../../auth";
 import { db } from "../../../../db";
 import { messages, users } from "../../../../db/schema";
 
+export async function PATCH(
+  request: Request,
+  context: { params: Promise<{ messageId: string }> },
+) {
+  const { editChannelMessage } =
+    await import("../../../../server/edit-message");
+  return editChannelMessage(request, context);
+}
+
 export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ messageId: string }> },

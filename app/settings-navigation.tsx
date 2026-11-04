@@ -4,15 +4,23 @@ export function SettingsNavigation({
   account,
   selected,
   onSelect,
+  owner = false,
 }: {
   account: boolean;
   selected: string;
   onSelect: (section: string) => void;
+  owner?: boolean;
 }) {
   const groups = account
     ? [
         { label: "Account", items: [["account", "My account"]] },
-        { label: "Communication", items: [["media", "Voice & video"]] },
+        {
+          label: "Communication",
+          items: [
+            ["media", "Voice & video"],
+            ["notifications", "Notifications"],
+          ],
+        },
         {
           label: "Privacy",
           items: [
@@ -20,6 +28,9 @@ export function SettingsNavigation({
             ["delete-account", "Delete account"],
           ],
         },
+        ...(owner
+          ? [{ label: "Administration", items: [["demos", "Demo accounts"]] }]
+          : []),
         { label: "Session", items: [["logout", "Log out"]] },
       ]
     : [

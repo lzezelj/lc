@@ -4,6 +4,10 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { ConversationCache, SessionCache } from "../app/conversation-cache.ts";
+import {
+  applyMessageEdit,
+  applyMessageRemoval,
+} from "../app/message-updates.ts";
 
 const actor = "10000000-0000-4000-8000-000000000001";
 const friend = "10000000-0000-4000-8000-000000000002";
@@ -89,6 +93,7 @@ function fixture({
     [`${prefix}server/friends`]: { areFriends: async () => authorized },
     [`${prefix}server/rate-limit`]: {},
     [`${prefix}server/notify-user`]: {},
+    [`${prefix}server/message-attachments`]: {},
     [`${prefix}db`]: {
       db: {
         select: () => ({
@@ -292,6 +297,7 @@ function historyFixture(channel = false) {
     nextMessageCursor: null,
     loadingMoreMessages: false,
     workspaceActivityRef: { current: { handle() {} } },
+    notificationInboxRef: { current: { refresh() {} } },
     presenceHasConnected: { current: false },
     pendingVoiceChannel: { current: "" },
     voiceChannelIdsRef: { current: [] },
@@ -310,6 +316,10 @@ function historyFixture(channel = false) {
     directMessages: [],
     directMessageCursor: null,
     loadingOlderDirect: false,
+    historyContext: null,
+    editingMessage: null,
+    applyMessageEdit,
+    applyMessageRemoval,
     URLSearchParams,
     AbortController,
     fetch: (url, options = {}) =>
@@ -335,6 +345,8 @@ function historyFixture(channel = false) {
     "ChannelHistoryLoaded",
     "ReadableHistoryChannel",
     "UnreadDirectMessages",
+    "HistoryContext",
+    "EditingMessage",
   ]) {
     const state = key[0].toLowerCase() + key.slice(1);
     context[`set${key}`] = (value) => {
@@ -467,6 +479,58 @@ test("visited DM and channel histories reuse loaded older pages and cursors acro
       null,
     );
   }
+});
+
+test("live edit events update loaded DM histories/search context without unread changes and deletion cancels editing", () => {
+  const f = historyFixture();
+  const row = {
+    id: uuid(1),
+    text: "before",
+    attachments: [{ id: "file" }],
+    editedAt: null,
+    deleted: false,
+  };
+  f.context.directMessages = [row];
+  f.context.historyContext = {
+    key: `${actor}:direct:${friend}`,
+    messages: [row],
+  };
+  f.context.editingMessage = { message: row };
+  f.cache.set(actor, `direct:${friend}`, { messages: [row], nextCursor: null });
+  const unread = JSON.stringify(f.context.unreadDirectMessages);
+  f.event({
+    type: "direct-message-edited",
+    fromUserId: friend,
+    edit: { id: row.id, text: "corrected", editedAt: "2026-11-04T12:00:00Z" },
+  });
+  assert.equal(f.context.directMessages[0].text, "corrected");
+  assert.equal(f.context.historyContext.messages[0].text, "corrected");
+  assert.equal(
+    f.cache.get(actor, `direct:${friend}`).messages[0].text,
+    "corrected",
+  );
+  assert.equal(JSON.stringify(f.context.unreadDirectMessages), unread);
+  f.event({
+    type: "direct-message-edited",
+    fromUserId: "unopened",
+    edit: { id: uuid(9), text: "no cache", editedAt: "2026-11-04T12:00:00Z" },
+  });
+  assert.equal(f.cache.get(actor, "direct:unopened"), undefined);
+  f.event({
+    type: "direct-message-deleted",
+    fromUserId: friend,
+    messageId: row.id,
+  });
+  assert.equal(f.context.editingMessage, null);
+  assert.equal(f.context.historyContext.messages[0].deleted, true);
+  assert.deepEqual(f.context.historyContext.messages[0].attachments, []);
+  f.cache.set(actor, "channel:channel-a", {
+    messages: [row],
+    nextCursor: null,
+  });
+  f.event({ type: "channel-history-changed", channelId: "channel-a" });
+  assert.equal(f.cache.get(actor, "channel:channel-a"), undefined);
+  assert.equal(JSON.stringify(f.context.unreadDirectMessages), unread);
 });
 
 test("live events update only previously opened DM caches and invalidate changed/deleted channel histories", async () => {

@@ -259,14 +259,73 @@ snapshot. Generation guards retain live events arriving during a fetch and rejec
 responses from obsolete requests/accounts. Server-update events refresh signaling
 credentials so new channels join the authorized workspace subscription.
 
-Read cursors are stored locally per account and merged across tabs. The first
-visit establishes the current latest messages as a baseline rather than flagging
-all old history. A channel clears only after its history successfully loads and
-it is visible in a foreground tab, outside Friends, the call grid, legal pages
-or user/server settings. Hidden tabs retain unread markers. These are unread
-indicators, not exact message counts, and are not synchronized across devices.
-Revoked/deleted channels disappear from snapshots and their local read markers
-are pruned. No database migration is required for this browser-local read state.
+Migration `0015_mentions_notifications` adds account-scoped PostgreSQL read
+positions (`channel_reads`, `direct_reads`), per-server and per-friend notification
+preferences, mention metadata on messages, and a unique message/recipient mention
+table. Existing history is baselined as read at rollout. New memberships/channels
+start at the later of membership and channel creation; new friend read positions
+start at acceptance when their read position is first initialized. IDs and full PostgreSQL timestamps form monotonic read
+cursors; an older acknowledgement cannot move a cursor backward. These are personal
+read positions, not sender-visible delivery/read receipts.
+
+GET `/api/notifications` returns only the authenticated account's accessible text
+channels, accepted direct conversations and preferences. It reports a generic
+unread flag per channel, unread mention counts per channel, unread DM counts and
+the first unread message ID. Channel/server marks use the same location: ordinary
+activity is a plain dot, while a numbered mention badge overlays that dot. Server
+counts sum their channels. Mention counts are per message/recipient, so repeating
+the same tag cannot inflate them. Muting changes alerts, not stored unread state.
+The existing latest-message workspace tracker remains a browser-local fallback
+for generic server activity while the durable inbox is unavailable; durable counts
+take precedence once loaded. Voice presence still uses its existing snapshot.
+
+POST `/api/notifications/read` checks current membership or the exact accepted DM
+pair and acknowledges through a real message in that conversation. SQL retains
+timestamp precision and updates the mention acknowledgement time independently,
+so a new mention added by an edit can notify even when the original message was
+read. The client acknowledges only while the current, loaded live conversation
+is visible in a foreground tab and scrolled to its latest messages. Search context,
+older scrolling, legal/profile/settings overlays and background tabs do not clear
+activity. A synchronous layout visibility guard avoids acknowledging while the
+history is positioning at its first unread message. New messages are separated
+by a retained divider for the current visit; unread boundaries outside the loaded
+pages have a notice instead of forcing all history to load. Reaching latest treats
+the conversation through that point as read; individual rows are not tracked.
+Read changes and preference changes emit an authenticated per-user refresh event
+to other tabs/devices. Focus/reconnect reloads recover missed events.
+
+User settings → Notifications separates searchable Servers and People tabs,
+with independent server message/mention and DM message/call controls. Searches
+filter names locally and retain each tab's query while switching categories.
+Right-clicking a server opens Mute notifications; right-clicking an accepted
+friend in the conversation list, Friends list or member list exposes the same
+saved preferences. Both entry points reuse the same notification controls and
+authenticated preferences API. Server mentions count on their server/channel
+badges, while the LC badge and browser title count only direct/friend activity.
+Each control supports enable, disable indefinitely,
+or mute for 1, 8 or 24 hours. Preferences are backend-authorized and persisted per
+account; expiry refreshes the client automatically. Do not disturb remains the
+global override that hides alerts without discarding counts. Silenced DM
+calls retain an inline Answer action in the matching conversation while suppressing
+ringing and the global popup. No OS notification permission, push service or
+production infrastructure is introduced. Exact count queries are appropriate for
+the private project; large histories/membership fan-out would need profiling and
+potential aggregation before scaling.
+
+Typing `@` in a server composer lists other active server members, filtered by
+display name or unique handle. Mouse, Arrow keys, Enter and Tab select a handle;
+Escape dismisses completion. Full display names can also be typed directly;
+ambiguous duplicate names require a unique handle. The backend resolves only
+current, active server members from the text and excludes the author, unknown
+names, partial names and email addresses. Clients cannot supply authoritative
+recipient IDs. Message text, mention offsets and unique recipients commit together,
+including attachment sends. New mentions emit per-user events after persistence;
+unchanged edit recipients do not receive duplicate notifications, removed tags
+remove their records, and newly added edit recipients are notified. Migration
+`0016_mention_deletion_cleanup` clears mention metadata/records on soft deletion,
+including bulk/account paths, and permanent deletion cascades mention records.
+Tags render as profile shortcuts; messages mentioning the viewer visually
+mark their row.
 
 The workspace subscription also receives initial and live direct/group voice
 presence for every authorized server channel, independently of navigation.
@@ -481,6 +540,14 @@ while in Do not disturb. Outside DND that same inline banner replaces the popup
 when the matching DM is open. Invitations still expire after 20 seconds; changing
 status affects ringing/presentation without restarting the expiry. Away is
 manually selected rather than automatic.
+Explicit friend-call hangup also sends an authenticated `call-cancel` through
+the account's presence socket before recording the outcome clears its partner.
+The receiver has not joined the media room while ringing, so room-only `hangup`
+cannot dismiss that invitation. The server derives cancellation identity and
+room from the signed caller and accepted friend; receivers match both caller and
+room before clearing the invitation. Disconnect uses the selected active call
+even before its media socket is ready, and delayed animation-frame joins check
+the voice session so an immediate hangup cannot start capture afterward.
 The browser saves the preference locally and supplies it on reconnect, so an
 invisible account is not briefly announced online. In-memory server status lasts
 until the final socket closes; no database migration or authorization change is
@@ -694,6 +761,101 @@ this is not a hard SFU admission guarantee against deliberate token replay.
 See [LiveKit token lifecycle](https://docs.livekit.io/frontends/reference/tokens-grants/).
 
 ## Text-message flow
+
+Authors can edit their own live channel/DM messages from the context menu.
+`PATCH /api/messages/{id}` and `PATCH /api/direct-messages/{userId}/{id}`
+recheck author identity and current membership/friendship, reject deleted messages
+and call events, enforce the shared message rate limit and the 4,000-character
+bound, and update PostgreSQL before notifying clients. Attachments and reply
+relationships remain unchanged; an attachment caption can become empty.
+Migration `0014_direct_message_edits` adds the DM edit timestamp; channel messages
+already have one. No edit history is retained. The composer displays the selected
+text, an Editing message banner, an Edit submit button and an Escape/cancel action.
+The prior unsent draft, attachments and reply remain available after editing.
+Editor state is scoped to the account and conversation. Deleted messages close
+the matching editor and clear content/media in open search context as well.
+
+The authenticated internal `message-edited` endpoint broadcasts committed channel
+edits to subscribed text sockets and a body-free `channel-history-changed` cache
+invalidation to authorized workspace sockets. Direct edits use per-user
+`direct-message-edited` events for both participants, including other tabs. Clients
+patch existing rows and cached pages, update visible reply snippets, and show an
+edited label without adding unread counts or reordering the conversation. Deleted
+rows are never resurrected by delayed edits. Reconnect reloads recover missed edits.
+
+The shared conversation search occupies the chat header for all accounts, replacing
+the owner demo menu. GET `/api/message-search` accepts exactly one channel/friend
+scope, rechecks current access, and returns up to 50 matches with timestamp/ID
+cursors. Search is a parameterized, case-insensitive literal substring match on
+text and attachment filenames; deleted rows and DM call entries are excluded.
+Queries require 2–100 characters and are limited to 60 requests per account/minute.
+This scans stored history in the selected conversation rather than only cached
+pages; no full-text/trigram index is added for the small private deployment.
+Selecting a result requests a separately authorized `contextId` window (up to 25
+messages before and after the target). The UI centers/highlights the target; the
+existing down arrow restores the live history instead of a separate return button.
+The arrow stays available even at the bottom of the bounded context (or after
+all context rows are removed). This context is separate from normal loaded pages
+and caches; new arrivals still update the live history while viewing old context.
+Search context bounds and cursor values preserve PostgreSQL's full microsecond
+timestamps as UTC strings; converting them to JavaScript Date would truncate
+precision, include the selected row again among newer neighbors and skip tied
+search results on later pages. Display timestamps remain ordinary browser dates.
+Search requests are canceled on replacement, dismissal and unmount, and late
+responses are ignored. Context is a snapshot and does not provide continuous
+forward/backward paging; the down arrow resumes the normal history view.
+
+Demo creation/management now starts from User settings → Demo accounts, visible
+only for the existing authenticated owner role assigned from `OWNER_EMAIL`.
+Backend owner authorization remains in place. Shared management overlays render
+in Friends and server workspaces so those actions work from either view. Help &
+introduction now sits beside Impressum and Privacy in the shared workspace footer.
+A compact footer keeps these actions available when the member sidebar is hidden,
+including mobile, without covering the composer or unmounting calls.
+
+Channel chats and friend DMs share `MessageComposer`. Its textarea retains the
+single-line height, grows and shrinks with explicit or wrapped lines up to three
+rows, then scrolls vertically. Enter sends; Shift+Enter inserts a newline; IME
+composition does not send. A left attachment button and drop target stage up to
+four PNG/JPEG/GIF/WebP images or PDFs, at 10 MiB per file. Uploads show progress,
+prevent duplicate sends, and retain staged files/draft on failure or rate limiting.
+Staged files are scoped to the account and destination, so navigation cannot
+attach them to another conversation.
+
+Message POST endpoints accept JSON for text/call events and multipart for files.
+Session and membership/friendship checks precede body parsing. The server bounds
+the streamed body before parsing, checks signatures rather than trusting MIME
+claims, and sanitizes filenames. `server/message-attachments.ts` locks the
+uploader's user row and checks a shared 100 MiB account quota across channels
+and DMs, then atomically inserts the message, JSON metadata and private bytea
+payloads in PostgreSQL. Concurrent uploads serialize quota checks. No separate
+upload step leaves orphaned files. Only metadata travels through message history,
+bounded memory caches and signaling. `MessageAttachments` renders lazy image
+previews and a file-details row with a separate download icon. Clicking an image
+opens an in-app `SettingsModal` preview, preserving the mounted workspace/call,
+with Escape/backdrop/close-button dismissal, focus restoration, loading/error
+feedback and the same authenticated download link. Preview content disappears
+when its message is deleted. PDFs download rather than embedding document content.
+
+Migration `0013_message_attachments` adds message metadata and a separate
+`message_attachments` table. Message foreign keys cascade permanent removal;
+database triggers release bytes and clear metadata on soft deletion, including
+bulk/account paths. GET `/api/attachments/{id}` rechecks current server membership
+or exact DM participation and accepted friendship before loading bytes. Deleted
+messages are inaccessible. Responses use private/no-store, nosniff, a sandbox CSP
+and encoded filenames; there is no public file directory or image optimizer URL.
+This storage choice increases PostgreSQL backup size and upload memory use (up
+to roughly 40 MiB plus parser/copy overhead per concurrent request). Signatures
+identify formats; uploads are not malware-scanned or fully decoded/sanitized.
+Object storage and streaming uploads remain future scaling work. No storage
+service or production infrastructure change is required, but the migration must
+run before this application version starts.
+
+Attachment regressions cover parser limits/signatures, quota transaction order
+and failure, private-download permissions, and isolated migration cleanup. The
+muted workspace browser test exercises the actual composer for explicit/wrapped
+line growth and shrinkage, three-row scrolling, Enter/Shift+Enter, file picker,
+drag/drop and removal. Mocked API checks do not prove a live two-account transfer.
 
 ```mermaid
 sequenceDiagram

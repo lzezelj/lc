@@ -2,6 +2,10 @@ import { and, desc, eq, inArray, lt, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
+import {
+  readMessageRequest,
+  saveAttachedMessage,
+} from "../../../../../server/message-attachments";
 import { db } from "../../../../../db";
 import {
   channels,
@@ -59,6 +63,9 @@ export async function GET(
     .select({
       id: messages.id,
       text: messages.content,
+      attachments: messages.attachments,
+      editedAt: messages.editedAt,
+      mentions: messages.mentions,
       createdAt: messages.createdAt,
       author: users.name,
       authorId: users.id,
@@ -119,6 +126,8 @@ export async function GET(
       ...message,
       text: message.deletedAt ? "Deleted message" : message.text,
       deleted: Boolean(message.deletedAt),
+      mentions: message.deletedAt ? [] : message.mentions,
+      attachments: message.deletedAt ? [] : message.attachments,
       replyTo: message.replyToId
         ? (replies.get(message.replyToId) ?? null)
         : null,
@@ -158,11 +167,15 @@ export async function POST(
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
       },
     );
-  const body = (await request.json()) as { text?: string; replyToId?: string };
-  const text = body.text?.trim();
-  if (!text || text.length > 4000)
+  const body = await readMessageRequest(request);
+  if (body instanceof Response) return body;
+  const text = body.text?.trim() ?? "";
+  if ((!text && !body.files.length) || text.length > 4000)
     return NextResponse.json(
-      { error: "Message must be 1-4000 characters" },
+      {
+        error:
+          "Add text or an attachment. Text can contain up to 4000 characters.",
+      },
       { status: 400 },
     );
   let replyTo: { id: string; text: string; author: string } | null = null;
@@ -191,18 +204,42 @@ export async function POST(
       author: parent.author,
     };
   }
-  const [message] = await db
-    .insert(messages)
-    .values({
-      channelId,
-      authorId: session.user.id,
-      content: text,
-      replyToId: replyTo?.id,
-    })
-    .returning({ id: messages.id, createdAt: messages.createdAt });
+  const mentionTools = text.includes("@")
+    ? await import("../../../../../server/mentions")
+    : null;
+  const mentions = mentionTools
+    ? await mentionTools.serverMentions(channelId, text, session.user.id)
+    : [];
+  const message = await saveAttachedMessage(
+    session.user.id,
+    body.files,
+    false,
+    async (connection, attachments) => {
+      const [saved] = await connection
+        .insert(messages)
+        .values({
+          channelId,
+          authorId: session.user.id,
+          content: text,
+          mentions,
+          attachments,
+          replyToId: replyTo?.id,
+        })
+        .returning({ id: messages.id, createdAt: messages.createdAt });
+      return saved;
+    },
+    mentions.length
+      ? async (connection, saved) => {
+          await mentionTools!.storeMentions(connection, saved.id, mentions);
+        }
+      : undefined,
+  );
+  if (message instanceof Response) return message;
   const canonicalMessage = {
     ...message,
     text,
+    mentions,
+    attachments: body.files.map((file) => file.metadata),
     author: session.user.name ?? "User",
     authorId: session.user.id,
     deleted: false,
@@ -226,5 +263,10 @@ export async function POST(
       // The message remains safely stored; reconnecting clients reload history.
     }
   }
+  if (mentions.length)
+    await mentionTools!.notifyMentions(
+      [...new Set(mentions.map((mention) => mention.userId))],
+      { messageId: message.id, channelId, author: session.user.name ?? "User" },
+    );
   return NextResponse.json(canonicalMessage, { status: 201 });
 }

@@ -7,7 +7,7 @@ import { useState } from "react";
 export type ProfileUser = {
   id: string;
   name: string;
-  handle?: string;
+  handle?: string | null;
   role?: string;
 };
 

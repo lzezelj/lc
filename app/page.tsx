@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -11,7 +12,7 @@ import {
 import { signOut, useSession } from "next-auth/react";
 import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
 import { VoiceParticipantMenu } from "./voice-participant-menu";
-import { HelpIcon, HelpTour } from "./help-tour";
+import { HelpTour } from "./help-tour";
 import { LoadingSkeleton } from "./loading-skeleton";
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { ParticipantMediaIndicators } from "./participant-media-indicators";
@@ -19,6 +20,7 @@ import { PanelToggle } from "./panel-toggle";
 import { DeviceSelection } from "./device-selection";
 import { GroupCall } from "./group-call";
 import { WorkspaceShell } from "./workspace-shell";
+import { WorkspaceLinks } from "./workspace-links";
 import { VoiceTransferDialog } from "./voice-transfer-dialog";
 import {
   HideTileButton,
@@ -54,6 +56,15 @@ import { ChannelManager } from "./channel-manager";
 import { groupMessagesByServer } from "./message-groups";
 import { MessageDeleteAction } from "./message-delete-action";
 import { ChatHistory } from "./chat-history";
+import { ConversationSearch, type SearchMessage } from "./conversation-search";
+import {
+  applyMessageEdit,
+  applyMessageRemoval,
+  type MessageEdit,
+} from "./message-updates";
+import { MessageComposer, sendMessageRequest } from "./message-composer";
+import { MessageAttachments } from "./message-attachments";
+import type { MessageAttachment } from "./attachment-types";
 import { ServerInvites } from "./server-invites";
 import { PersonalMessages } from "./personal-messages";
 import { AccountDeletion } from "./account-deletion";
@@ -63,6 +74,15 @@ import { SoundManager } from "./sound-manager";
 import { useWorkspaceActivity } from "./use-workspace-activity";
 import { serverVoiceUsers } from "./workspace-activity";
 import { ServerNavButton } from "./server-nav-button";
+import { UnreadIndicator } from "./unread-indicator";
+import { MentionText } from "./mention-text";
+import {
+  NotificationSettings,
+  NotificationMuteMenu,
+  type NotificationTarget,
+} from "./notification-settings";
+import { useNotificationInbox } from "./use-notification-inbox";
+import type { Mention } from "./notification-types";
 import {
   friendCallRoom,
   isFriendCall,
@@ -118,6 +138,9 @@ type ChatMessage = {
   replyTo: { id: string; text: string; author: string } | null;
   kind: "message" | "call";
   callDurationSeconds: number | null;
+  attachments?: MessageAttachment[];
+  editedAt?: string | null;
+  mentions?: Mention[];
 };
 
 type MessageCursor = { beforeCreatedAt: string; beforeId: string };
@@ -154,6 +177,7 @@ type Channel = {
 type Member = {
   id: string;
   name: string;
+  handle?: string | null;
   image: string | null;
   role: "owner" | "member";
 };
@@ -199,6 +223,7 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  author?: string;
   sessionId?: string;
   channel?: Channel;
   authorId?: string;
@@ -225,6 +250,7 @@ type Signal = {
   messageId?: string;
   permanent?: boolean;
   message?: Parameters<typeof toChatMessage>[0];
+  edit?: MessageEdit;
 };
 
 const fallbackIceServers: RTCIceServer[] = [
@@ -366,7 +392,6 @@ export default function Home() {
   const [chooseInviteServer, setChooseInviteServer] = useState(false);
   const [inviteUrl, setInviteUrl] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [demoMenuOpen, setDemoMenuOpen] = useState(false);
   const [serverListToggled, setServerListToggled] = useState(false);
   const [channelsHidden, setChannelsHidden] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState<number | null>(() => {
@@ -388,6 +413,25 @@ export default function Home() {
     y: number;
   } | null>(null);
   const serverContextRef = useRef<HTMLDivElement>(null);
+  const [notificationTarget, setNotificationTarget] =
+    useState<NotificationTarget | null>(null);
+  const closeNotificationMute = useCallback(
+    () => setNotificationTarget(null),
+    [],
+  );
+  function openNotificationMute(
+    event: { clientX: number; clientY: number; preventDefault: () => void },
+    scope: "server" | "direct",
+    item: { id: string; name: string },
+  ) {
+    event.preventDefault();
+    setNotificationTarget({
+      scope,
+      ...item,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 368)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 320)),
+    });
+  }
   const [channelContext, setChannelContext] = useState<{
     channel: Channel;
     x: number;
@@ -437,6 +481,66 @@ export default function Home() {
   const [permanentMessageDeletion, setPermanentMessageDeletion] =
     useState(false);
   const [draft, setDraft] = useState("");
+  const composerKey = `${session?.user.id}:${friendsView ? `direct:${selectedFriend?.id}` : `channel:${selectedChannelId}`}`;
+  const [historyAtLatest, setHistoryAtLatest] = useState({
+    key: "",
+    visible: false,
+  });
+  const historyVisibilityRef = useRef({ key: "", visible: false });
+  function updateLatestVisibility(visible: boolean) {
+    historyVisibilityRef.current = { key: composerKey, visible };
+    setHistoryAtLatest((current) =>
+      current.key === composerKey && current.visible === visible
+        ? current
+        : { key: composerKey, visible },
+    );
+  }
+  const [editingMessage, setEditingMessage] = useState<{
+    key: string;
+    message: ChatMessage;
+    userId?: string;
+    channelId?: string;
+  } | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const activeEdit =
+    editingMessage?.key === composerKey ? editingMessage : null;
+  const [historyContext, setHistoryContext] = useState<{
+    key: string;
+    targetId: string;
+    messages: ChatMessage[];
+  } | null>(null);
+  const activeContext =
+    historyContext?.key === composerKey ? historyContext : null;
+  useEffect(() => {
+    void Promise.resolve().then(() => setHistoryContext(null));
+  }, [historyRefreshKey]);
+  const shownDirectMessages = activeContext?.messages ?? directMessages;
+  const shownChannelMessages = activeContext?.messages ?? messages;
+  function showSearchResult(rows: SearchMessage[], targetId: string) {
+    setHistoryContext({
+      key: composerKey,
+      targetId,
+      messages: rows.map(toChatMessage),
+    });
+  }
+  function updateContext(edit: MessageEdit, key: string) {
+    setHistoryContext((current) =>
+      current?.key === key
+        ? { ...current, messages: applyMessageEdit(current.messages, edit) }
+        : current,
+    );
+  }
+  const [pendingFiles, setPendingFiles] = useState<{
+    key: string;
+    files: File[];
+  }>({ key: "", files: [] });
+  const files = pendingFiles.key === composerKey ? pendingFiles.files : [];
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const sendingMessageRef = useRef(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  function changeFiles(next: File[]) {
+    setPendingFiles({ key: composerKey, files: next });
+  }
   const [status, setStatus] = useState("Not connected");
   const [joined, setJoined] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -570,7 +674,6 @@ export default function Home() {
   > | null>(null);
   const screenStream = useRef<MediaStream | null>(null);
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
-  const demoMenu = useRef<HTMLDivElement>(null);
   const messageContextMenu = useRef<HTMLDivElement>(null);
   const memberContextMenu = useRef<HTMLDivElement>(null);
   const lastTextChannelId = useRef("");
@@ -610,6 +713,92 @@ export default function Home() {
   const stopSpeechMonitor = useRef<(() => void) | null>(null);
   const stopRemoteSpeechMonitor = useRef<(() => void) | null>(null);
   const stopDirectStats = useRef<(() => void) | null>(null);
+  const canReadConversation =
+    historyAtLatest.key === composerKey &&
+    historyAtLatest.visible &&
+    !activeContext &&
+    !accountMenuOpen &&
+    !serverSettingsOpen &&
+    !legalDocument &&
+    !profileUser &&
+    !form &&
+    (!callViewOpen ||
+      (friendsView &&
+        conversationHasCall(
+          activeVoiceChannelId,
+          session?.user.id,
+          selectedFriend?.id,
+        )));
+  const readMessageId = (friendsView ? directMessages : messages).at(-1)?.id;
+  const notificationInbox = useNotificationInbox(
+    authStatus === "authenticated" ? session?.user.id : undefined,
+    servers
+      .map((server) => server.id)
+      .sort()
+      .join(",") +
+      friends
+        .map((friend) => `${friend.id}:${friend.status}`)
+        .sort()
+        .join(","),
+    canReadConversation &&
+      readMessageId &&
+      (friendsView
+        ? directHistoryLoaded === selectedFriend?.id
+        : channelHistoryLoaded === selectedChannelId)
+      ? {
+          scope: friendsView ? "direct" : "channel",
+          targetId: friendsView ? selectedFriend!.id : selectedChannelId,
+          messageId: readMessageId,
+          canRead: () =>
+            historyVisibilityRef.current.key === composerKey &&
+            historyVisibilityRef.current.visible,
+        }
+      : null,
+  );
+  const notificationInboxRef = useRef(notificationInbox);
+  const notificationPolicyRef = useRef({
+    enabled: notificationsEnabled,
+    channelId: "",
+  });
+  useEffect(() => {
+    notificationInboxRef.current = notificationInbox;
+    notificationPolicyRef.current = {
+      enabled: notificationsEnabled,
+      channelId: canReadConversation && !friendsView ? selectedChannelId : "",
+    };
+  });
+  const callsNotificationAllowed =
+    !incomingCall ||
+    (notificationInbox.ready &&
+      notificationInbox.allowed("direct", incomingCall.fromUserId, "calls"));
+  const currentChannelStatus = notificationInbox.channels.find(
+    (channel) => channel.id === selectedChannelId,
+  );
+  const currentDirectStatus = notificationInbox.direct.find(
+    (friend) => friend.id === selectedFriend?.id,
+  );
+  const firstUnreadId =
+    (friendsView ? currentDirectStatus : currentChannelStatus)?.firstUnreadId ??
+    null;
+  const [unreadBoundary, setUnreadBoundary] = useState<{
+    key: string;
+    id: string | null;
+    captured: boolean;
+  }>({ key: "", id: null, captured: false });
+  const conversationUnreadId =
+    unreadBoundary.key === composerKey && unreadBoundary.captured
+      ? unreadBoundary.id
+      : firstUnreadId;
+  useEffect(() => {
+    if (notificationInbox.ready)
+      void Promise.resolve().then(() =>
+        setUnreadBoundary((current) =>
+          current.key === composerKey && current.captured
+            ? current
+            : { key: composerKey, id: firstUnreadId, captured: true },
+        ),
+      );
+  }, [composerKey, notificationInbox.ready, firstUnreadId]);
   const workspaceActivity = useWorkspaceActivity(
     authStatus === "authenticated" ? session?.user.id : undefined,
     servers
@@ -617,6 +806,7 @@ export default function Home() {
       .sort()
       .join(","),
     !friendsView &&
+      canReadConversation &&
       !callViewOpen &&
       !accountMenuOpen &&
       !serverSettingsOpen &&
@@ -633,9 +823,55 @@ export default function Home() {
   const unreadServerIds = new Set(
     workspaceActivity.channels
       .filter(() => notificationsEnabled)
-      .filter((channel) => workspaceActivity.unread[channel.id])
+      .filter(
+        (channel) =>
+          (notificationInbox.ready
+            ? notificationInbox.channels.some(
+                (item) => item.id === channel.id && item.unread,
+              )
+            : workspaceActivity.unread[channel.id]) &&
+          notificationInbox.allowed("server", channel.serverId, "messages"),
+      )
       .map((channel) => channel.serverId),
   );
+  const channelMentionCounts = Object.fromEntries(
+    notificationInbox.channels.map((channel) => [
+      channel.id,
+      notificationsEnabled &&
+      notificationInbox.allowed("server", channel.serverId, "mentions")
+        ? channel.mentions
+        : 0,
+    ]),
+  );
+  const serverMentionCounts = notificationInbox.channels.reduce<
+    Record<string, number>
+  >((counts, channel) => {
+    counts[channel.serverId] =
+      (counts[channel.serverId] ?? 0) + (channelMentionCounts[channel.id] ?? 0);
+    return counts;
+  }, {});
+  const channelUnread = Object.fromEntries(
+    workspaceActivity.channels.map((channel) => [
+      channel.id,
+      notificationsEnabled &&
+        notificationInbox.allowed("server", channel.serverId, "messages") &&
+        (notificationInbox.ready
+          ? notificationInbox.channels.some(
+              (item) => item.id === channel.id && item.unread,
+            )
+          : !!workspaceActivity.unread[channel.id]),
+    ]),
+  );
+  const visibleDirectCounts = notificationInbox.ready
+    ? Object.fromEntries(
+        notificationInbox.direct.map((friend) => [
+          friend.id,
+          notificationInbox.allowed("direct", friend.id, "messages")
+            ? friend.unread
+            : 0,
+        ]),
+      )
+    : unreadDirectMessages;
 
   useEffect(() => {
     if (localVideo.current)
@@ -836,7 +1072,7 @@ export default function Home() {
   const incomingFriendRequestCount = friends.filter(
     (friend) => friend.status === "pending" && friend.incoming,
   ).length;
-  const unreadMessageCount = Object.values(unreadDirectMessages).reduce(
+  const unreadMessageCount = Object.values(visibleDirectCounts).reduce(
     (total, count) => total + count,
     0,
   );
@@ -873,14 +1109,15 @@ export default function Home() {
   }, [incomingCall]);
 
   useEffect(() => {
-    if (!incomingCall || userStatus === "dnd") return;
+    if (!incomingCall || userStatus === "dnd" || !callsNotificationAllowed)
+      return;
     prepareVoiceSounds();
     playVoiceSound("ring");
     const interval = window.setInterval(() => playVoiceSound("ring"), 1600);
     return () => {
       window.clearInterval(interval);
     };
-  }, [incomingCall, userStatus]);
+  }, [incomingCall, userStatus, callsNotificationAllowed]);
 
   useEffect(() => {
     if (!activeVoiceChannelId.startsWith("friend:") || callPeerPresent) return;
@@ -1053,7 +1290,7 @@ export default function Home() {
 
   async function friendAction(
     action: "request" | "accept" | "decline",
-    friend: { id: string; handle?: string },
+    friend: { id: string; handle?: string | null },
   ) {
     const response = await fetch("/api/friends", {
       method: "POST",
@@ -1076,28 +1313,52 @@ export default function Home() {
 
   async function sendDirectMessage(event: FormEvent) {
     event.preventDefault();
-    if (messageCooldown.blocked()) return;
+    if (activeEdit) {
+      await saveMessageEdit();
+      return;
+    }
+    if (messageCooldown.blocked() || sendingMessageRef.current) return;
     const text = draft.trim();
-    if (!selectedFriend || !text) return;
-    const response = await fetch(`/api/direct-messages/${selectedFriend.id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (messageCooldown.handleResponse(response)) return;
-    const message = await response.json();
-    if (!response.ok)
-      return setErrorMessage(message.error ?? "Message could not be sent.");
-    conversationCache.current.delete(
-      session?.user.id,
-      `direct:${selectedFriend.id}`,
-    );
-    if (selectedFriendId.current === selectedFriend.id)
-      setDirectMessages((current) =>
-        mergeChatMessages(current, [toChatMessage(message)]),
+    if (!selectedFriend || (!text && !files.length)) return;
+    const generation = directHistoryGeneration.current;
+    sendingMessageRef.current = true;
+    setSendingMessage(true);
+    try {
+      const response = await sendMessageRequest(
+        `/api/direct-messages/${selectedFriend.id}`,
+        { text },
+        files,
+        setUploadProgress,
       );
-    await loadFriends();
-    setDraft("");
+      if (messageCooldown.handleResponse(response)) return;
+      const message = await response.json();
+      if (!response.ok)
+        return setErrorMessage(message.error ?? "Message could not be sent.");
+      conversationCache.current.delete(
+        session?.user.id,
+        `direct:${selectedFriend.id}`,
+      );
+      if (selectedFriendId.current === selectedFriend.id)
+        setDirectMessages((current) =>
+          mergeChatMessages(current, [toChatMessage(message)]),
+        );
+      setPendingFiles((current) =>
+        current === pendingFiles ? { key: "", files: [] } : current,
+      );
+      if (generation === directHistoryGeneration.current) setDraft("");
+      setHistoryContext((current) =>
+        current?.key === composerKey ? null : current,
+      );
+      await loadFriends();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Message could not be sent.",
+      );
+    } finally {
+      sendingMessageRef.current = false;
+      setSendingMessage(false);
+      setUploadProgress(null);
+    }
   }
 
   async function startFriendCall(friend: Friend) {
@@ -1153,20 +1414,25 @@ export default function Home() {
   recordCallOutcomeRef.current = (event) => void recordCallOutcome(event);
 
   function endFriendCall() {
+    cancelFriendInvitation();
     send({ type: "hangup" });
     void recordCallOutcome("call-ended");
     returnToPreviousTextChannel();
   }
 
   function markUserUnavailable() {
+    cancelFriendInvitation();
+    void recordCallOutcome("user-unavailable");
+    returnToPreviousTextChannel();
+  }
+
+  function cancelFriendInvitation() {
     const partnerId = friendCallPartnerId.current;
     if (partnerId && presenceSocket.current?.readyState === WebSocket.OPEN) {
       presenceSocket.current.send(
         JSON.stringify({ type: "call-cancel", targetUserId: partnerId }),
       );
     }
-    void recordCallOutcome("user-unavailable");
-    returnToPreviousTextChannel();
   }
   unavailableCallRef.current = markUserUnavailable;
 
@@ -1444,17 +1710,6 @@ export default function Home() {
   refreshAccessRef.current = () => void refreshAccess();
 
   useEffect(() => {
-    if (!demoMenuOpen) return;
-    const closeAccountMenu = (event: PointerEvent) => {
-      if (!demoMenu.current?.contains(event.target as Node)) {
-        setDemoMenuOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", closeAccountMenu);
-    return () => document.removeEventListener("pointerdown", closeAccountMenu);
-  }, [demoMenuOpen]);
-
-  useEffect(() => {
     if (!messageMenu) return;
     const closeMessageMenu = (event: PointerEvent) => {
       if (!messageContextMenu.current?.contains(event.target as Node)) {
@@ -1641,12 +1896,46 @@ export default function Home() {
           message?: Parameters<typeof toChatMessage>[0];
           messageId?: string;
           permanent?: boolean;
+          edit?: MessageEdit;
         };
+        if (
+          incoming.type === "message-edited" &&
+          incoming.channelId === selectedChannelId &&
+          incoming.edit
+        ) {
+          const edit = incoming.edit;
+          setMessages((current) => applyMessageEdit(current, edit));
+          setHistoryContext((current) =>
+            current?.key === `${session?.user.id}:channel:${selectedChannelId}`
+              ? {
+                  ...current,
+                  messages: applyMessageEdit(current.messages, edit),
+                }
+              : current,
+          );
+          return;
+        }
         if (
           incoming.type === "message-deleted" &&
           incoming.channelId === selectedChannelId &&
           incoming.messageId
         ) {
+          const removedId = incoming.messageId;
+          setHistoryContext((current) =>
+            current?.key === `${session?.user.id}:channel:${selectedChannelId}`
+              ? {
+                  ...current,
+                  messages: applyMessageRemoval(
+                    current.messages,
+                    removedId,
+                    !!incoming.permanent,
+                  ),
+                }
+              : current,
+          );
+          setEditingMessage((current) =>
+            current?.message.id === removedId ? null : current,
+          );
           setMessages((current) =>
             current
               .filter(
@@ -1743,6 +2032,7 @@ export default function Home() {
             }),
           );
         void workspaceActivityRef.current.refresh();
+        notificationInboxRef.current.refresh();
         openedSocket.send(JSON.stringify({ type: "subscribe-user-presence" }));
         openedSocket.send(
           JSON.stringify({
@@ -1767,6 +2057,39 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (
+          [
+            "channel-activity",
+            "channel-activity-changed",
+            "channel-history-changed",
+            "direct-message",
+            "direct-message-edited",
+            "direct-message-deleted",
+            "notifications-changed",
+            "server-mention",
+            "access-changed",
+            "server-updated",
+            "friendship-changed",
+          ].includes(message.type)
+        )
+          notificationInboxRef.current.refresh();
+        if (message.type === "server-mention" && message.channelId) {
+          const inbox = notificationInboxRef.current,
+            serverId =
+              message.serverId ??
+              inbox.channels.find((channel) => channel.id === message.channelId)
+                ?.serverId;
+          if (
+            inbox.ready &&
+            serverId &&
+            notificationPolicyRef.current.enabled &&
+            inbox.allowed("server", serverId, "mentions") &&
+            notificationPolicyRef.current.channelId !== message.channelId
+          )
+            setNoticeMessage(
+              `${message.author ?? "Someone"} mentioned you in a server message.`,
+            );
+        }
         if (message.type === "voice-replaced") {
           handleVoiceReplacement(message.sessionId);
           return;
@@ -1783,6 +2106,7 @@ export default function Home() {
           [
             "channel-activity",
             "channel-activity-changed",
+            "channel-history-changed",
             "channel-deleted",
           ].includes(message.type)
         ) {
@@ -1804,6 +2128,8 @@ export default function Home() {
           setUserStatus(message.status);
         }
         if (message.type === "access-changed") {
+          setHistoryContext(null);
+          setEditingMessage(null);
           conversationCache.current.clear();
           serverViewCache.current.clear();
           setHistoryRefreshKey((current) => current + 1);
@@ -1899,10 +2225,50 @@ export default function Home() {
           setSignalingRefreshKey((current) => current + 1);
         }
         if (
+          message.type === "direct-message-edited" &&
+          message.fromUserId &&
+          message.edit
+        ) {
+          const edit = message.edit,
+            key = `direct:${message.fromUserId}`;
+          const cached = conversationCache.current.get(currentUserId, key);
+          if (cached)
+            conversationCache.current.set(currentUserId, key, {
+              ...cached,
+              messages: applyMessageEdit(cached.messages, edit),
+            });
+          if (selectedFriendId.current === message.fromUserId)
+            setDirectMessages((current) => applyMessageEdit(current, edit));
+          setHistoryContext((current) =>
+            current?.key === `${currentUserId}:${key}`
+              ? {
+                  ...current,
+                  messages: applyMessageEdit(current.messages, edit),
+                }
+              : current,
+          );
+        }
+        if (
           message.type === "direct-message-deleted" &&
           message.fromUserId &&
           message.messageId
         ) {
+          const removedId = message.messageId;
+          setHistoryContext((current) =>
+            current?.key === `${currentUserId}:direct:${message.fromUserId}`
+              ? {
+                  ...current,
+                  messages: applyMessageRemoval(
+                    current.messages,
+                    removedId,
+                    !!message.permanent,
+                  ),
+                }
+              : current,
+          );
+          setEditingMessage((current) =>
+            current?.message.id === removedId ? null : current,
+          );
           conversationCache.current.delete(
             currentUserId,
             `direct:${message.fromUserId}`,
@@ -3084,18 +3450,22 @@ export default function Home() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (messageCooldown.blocked()) return;
+    if (activeEdit) {
+      await saveMessageEdit();
+      return;
+    }
+    if (messageCooldown.blocked() || sendingMessageRef.current) return;
     const text = draft.trim();
-    if (!text || !selectedChannelId) return;
+    if ((!text && !files.length) || !selectedChannelId) return;
     const generation = channelHistoryGeneration.current;
+    sendingMessageRef.current = true;
+    setSendingMessage(true);
     try {
-      const response = await fetch(
+      const response = await sendMessageRequest(
         `/api/channels/${selectedChannelId}/messages`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, replyToId: replyingTo?.id }),
-        },
+        { text, replyToId: replyingTo?.id },
+        files,
+        setUploadProgress,
       );
       if (messageCooldown.handleResponse(response)) return;
       const message =
@@ -3105,8 +3475,14 @@ export default function Home() {
         session?.user.id,
         `channel:${selectedChannelId}`,
       );
+      setPendingFiles((current) =>
+        current === pendingFiles ? { key: "", files: [] } : current,
+      );
       if (generation !== channelHistoryGeneration.current) return;
       setDraft("");
+      setHistoryContext((current) =>
+        current?.key === composerKey ? null : current,
+      );
       setReplyingTo(null);
       const chatMessage = toChatMessage(message);
       setMessages((current) =>
@@ -3120,6 +3496,56 @@ export default function Home() {
           ? error.message
           : "The message could not be sent.",
       );
+    } finally {
+      sendingMessageRef.current = false;
+      setSendingMessage(false);
+      setUploadProgress(null);
+    }
+  }
+
+  async function saveMessageEdit() {
+    const editing = activeEdit;
+    if (!editing || sendingMessageRef.current || messageCooldown.blocked())
+      return;
+    sendingMessageRef.current = true;
+    setSendingMessage(true);
+    try {
+      const response = await fetch(
+        editing.userId
+          ? `/api/direct-messages/${editing.userId}/${editing.message.id}`
+          : `/api/messages/${editing.message.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: editDraft }),
+        },
+      );
+      if (messageCooldown.handleResponse(response)) return;
+      const edit = await readJsonResponse<MessageEdit>(response);
+      if (!response.ok) throw new Error(apiErrorMessage(edit));
+      const cacheKey = editing.userId
+        ? `direct:${editing.userId}`
+        : `channel:${editing.channelId}`;
+      const cached = conversationCache.current.get(session?.user.id, cacheKey);
+      if (cached)
+        conversationCache.current.set(session?.user.id, cacheKey, {
+          ...cached,
+          messages: applyMessageEdit(cached.messages, edit),
+        });
+      if (editing.userId) {
+        if (selectedFriendId.current === editing.userId)
+          setDirectMessages((current) => applyMessageEdit(current, edit));
+      } else if (lastTextChannelId.current === editing.channelId)
+        setMessages((current) => applyMessageEdit(current, edit));
+      updateContext(edit, editing.key);
+      setEditingMessage((current) => (current === editing ? null : current));
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Message could not be edited.",
+      );
+    } finally {
+      sendingMessageRef.current = false;
+      setSendingMessage(false);
     }
   }
 
@@ -3204,7 +3630,6 @@ export default function Home() {
 
   function openDemoAccount(serverId: string, chooseServer: boolean) {
     setAccountMenuOpen(false);
-    setDemoMenuOpen(false);
     setInviteServerId(serverId);
     setChooseInviteServer(chooseServer);
     setInviteUrl("");
@@ -3213,7 +3638,6 @@ export default function Home() {
 
   async function openDemoAccountManager() {
     setAccountMenuOpen(false);
-    setDemoMenuOpen(false);
     setRevokeCandidateId("");
     setForm("manage");
     const response = await fetch("/api/demo-accounts");
@@ -3532,6 +3956,22 @@ export default function Home() {
       return;
     }
     conversationCache.current.clear();
+    const removedKey = `${session?.user.id}:${candidate.conversationUserId ? `direct:${candidate.conversationUserId}` : `channel:${selectedChannelId}`}`;
+    setHistoryContext((current) =>
+      current?.key === removedKey
+        ? {
+            ...current,
+            messages: applyMessageRemoval(
+              current.messages,
+              candidate.id,
+              permanentMessageDeletion,
+            ),
+          }
+        : current,
+    );
+    setEditingMessage((current) =>
+      current?.message.id === candidate.id ? null : current,
+    );
     if (candidate.conversationUserId) {
       if (selectedFriendId.current === candidate.conversationUserId) {
         setDirectMessages((current) =>
@@ -3739,8 +4179,12 @@ export default function Home() {
     if (channel.type === "voice_direct") {
       if (channel.id.startsWith("friend:"))
         friendCallStartedAt.current = Date.now();
+      const joiningSession = voiceSessionId.current;
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => void joinRoom(channel.id));
+        requestAnimationFrame(() => {
+          if (voiceSessionId.current === joiningSession)
+            void joinRoom(channel.id);
+        });
       });
     }
   }
@@ -3858,7 +4302,7 @@ export default function Home() {
   const incomingCallOverlay = (
     <IncomingCallNotice
       call={incomingCall}
-      status={userStatus}
+      status={callsNotificationAllowed ? userStatus : "dnd"}
       conversationUserId={
         friendsView && (!callViewOpen || conversationCallActive)
           ? selectedFriend?.id
@@ -4007,7 +4451,7 @@ export default function Home() {
             aria-label="Disconnect"
             title="Disconnect"
             onClick={() => {
-              if (directRoomId.current.startsWith("friend:")) endFriendCall();
+              if (isFriendCall(activeVoiceChannel.id)) endFriendCall();
               else returnToPreviousTextChannel();
             }}
           >
@@ -4029,14 +4473,13 @@ export default function Home() {
   );
 
   const legalLinks = (
-    <footer className="appLegalLinks">
-      <button type="button" onClick={() => setLegalDocument("impressum")}>
-        Impressum
-      </button>
-      <button type="button" onClick={() => setLegalDocument("privacy")}>
-        Privacy
-      </button>
-    </footer>
+    <WorkspaceLinks
+      onLegal={setLegalDocument}
+      onHelp={() => setHelpRequest((value) => value + 1)}
+    />
+  );
+  const compactLegalLinks = (
+    <div className="compactWorkspaceLinks">{legalLinks}</div>
   );
   const legalOverlay = legalDocument && (
     <div
@@ -4072,6 +4515,15 @@ export default function Home() {
     </div>
   );
 
+  const notificationMuteMenu = notificationTarget && (
+    <NotificationMuteMenu
+      key={`${notificationTarget.scope}:${notificationTarget.id}`}
+      target={notificationTarget}
+      preferences={notificationInbox.preferences}
+      onSave={notificationInbox.save}
+      onClose={closeNotificationMute}
+    />
+  );
   const serverContextMenu = serverContext && (
     <div
       className="messageContextMenu"
@@ -4079,6 +4531,24 @@ export default function Home() {
       ref={serverContextRef}
       style={{ left: serverContext.x, top: serverContext.y }}
     >
+      <button
+        type="button"
+        role="menuitem"
+        onClick={(event) => {
+          openNotificationMute(
+            {
+              clientX: serverContext.x,
+              clientY: serverContext.y,
+              preventDefault: () => event.preventDefault(),
+            },
+            "server",
+            serverContext.server,
+          );
+          setServerContext(null);
+        }}
+      >
+        Mute notifications…
+      </button>
       <button
         className="danger"
         role="menuitem"
@@ -4363,6 +4833,7 @@ export default function Home() {
             </p>
             <SettingsNavigation
               account={accountMenuOpen}
+              owner={session.user.role === "owner"}
               selected={
                 accountMenuOpen ? userSettingsSection : serverSettingsSection
               }
@@ -4436,9 +4907,57 @@ export default function Home() {
                 {mediaSettingsContent}
               </>
             )}
+            {userSettingsSection === "notifications" &&
+              (notificationInbox.ready ? (
+                <NotificationSettings
+                  servers={servers}
+                  friends={friends.filter(
+                    (friend) => friend.status === "accepted",
+                  )}
+                  preferences={notificationInbox.preferences}
+                  onSave={notificationInbox.save}
+                />
+              ) : (
+                <p role="status">Loading notification settings…</p>
+              ))}
             {userSettingsSection === "messages" && (
               <PersonalMessages currentServerId={selectedServerId} />
             )}
+            {userSettingsSection === "demos" &&
+              session.user.role === "owner" && (
+                <>
+                  <h3>Demo accounts</h3>
+                  <p className="settingsDescription">
+                    Create invitations and manage demo accounts, access and
+                    messages.
+                  </p>
+                  <div className="demoSettingsActions">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openDemoAccount(
+                          selectedServerId || servers[0]?.id || "",
+                          true,
+                        )
+                      }
+                      disabled={!servers.length}
+                    >
+                      Create demo account
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void openDemoAccountManager()}
+                    >
+                      Manage demo accounts
+                    </button>
+                  </div>
+                  {!servers.length && (
+                    <p className="settingsDescription">
+                      Create a server before inviting a demo account.
+                    </p>
+                  )}
+                </>
+              )}
             {userSettingsSection === "delete-account" && (
               <AccountDeletion
                 onDeleted={() => {
@@ -4695,17 +5214,6 @@ export default function Home() {
       setCallViewOpen(previous.callView);
     }
   }
-  const helpButton = (
-    <button
-      className="helpTrigger"
-      type="button"
-      aria-label="Help and introduction"
-      title="Help and introduction"
-      onClick={() => setHelpRequest((value) => value + 1)}
-    >
-      <HelpIcon />
-    </button>
-  );
   const helpTour = session?.user.id && (
     <HelpTour
       key={session.user.id}
@@ -4767,7 +5275,6 @@ export default function Home() {
           <path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5" />
         </svg>
       </PanelToggle>
-      {helpButton}
     </nav>
   );
   const closeUserList = (
@@ -4960,6 +5467,7 @@ export default function Home() {
           type="button"
           role="menuitem"
           onClick={() => {
+            setEditingMessage(null);
             setReplyingTo(messageMenu.message);
             setMessageMenu(null);
           }}
@@ -4967,6 +5475,29 @@ export default function Home() {
           Reply
         </button>
       )}
+      {messageMenu.message.authorId === session.user.id &&
+        !messageMenu.message.deleted &&
+        messageMenu.message.kind !== "call" && (
+          <button
+            type="button"
+            role="menuitem"
+            disabled={sendingMessage}
+            onClick={() => {
+              setEditingMessage({
+                key: composerKey,
+                message: messageMenu.message,
+                userId: messageMenu.conversationUserId,
+                channelId: messageMenu.conversationUserId
+                  ? undefined
+                  : selectedChannelId,
+              });
+              setEditDraft(messageMenu.message.text);
+              setMessageMenu(null);
+            }}
+          >
+            Edit message
+          </button>
+        )}
       {messageMenu.message.authorId === session.user.id && (
         <button
           className="danger"
@@ -5012,1430 +5543,8 @@ export default function Home() {
     </div>
   );
 
-  if (friendsView) {
-    const acceptedFriends = friends.filter(
-      (friend) => friend.status === "accepted",
-    );
-    const recentFriends = [...acceptedFriends]
-      .filter((friend) => friend.lastActivityAt)
-      .sort(
-        (left, right) =>
-          new Date(right.lastActivityAt!).getTime() -
-          new Date(left.lastActivityAt!).getTime(),
-      );
-    const pendingRequests = friends.filter(
-      (friend) => friend.status === "pending",
-    );
-    const visibleFriends = acceptedFriends.filter((friend) =>
-      friendTab === "online"
-        ? onlineUserIds.includes(friend.id)
-        : !onlineUserIds.includes(friend.id),
-    );
-    return (
-      <WorkspaceShell
-        call={groupCall}
-        help={helpTour}
-        className={`workspace friendsScreen ${panelClasses}`}
-        style={sidebarStyle}
-      >
-        <aside className="workspaceRail">
-          <button
-            className="workspaceLogo friendsActive"
-            aria-label="Friends"
-            aria-current="page"
-            onClick={openFriendsHome}
-          >
-            LC
-            {notificationCount > 0 && (
-              <span className="notificationBadge">{notificationCount}</span>
-            )}
-          </button>
-          <nav
-            className="serverScroller"
-            aria-label="Servers"
-            style={{ height: Math.max(0, servers.length * 60 - 6) }}
-          >
-            {servers.map((server) => (
-              <ServerNavButton
-                key={server.id}
-                server={server}
-                active={false}
-                unread={unreadServerIds.has(server.id)}
-                voiceUsers={serverVoiceUsers(
-                  server.id,
-                  workspaceActivity.channels,
-                  voicePresence,
-                )}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setServerContext({
-                    server,
-                    x: Math.min(event.clientX, window.innerWidth - 200),
-                    y: Math.min(event.clientY, window.innerHeight - 64),
-                  });
-                }}
-                onClick={() => {
-                  if (server.id === selectedServerId) {
-                    setFriendsView(false);
-                    return;
-                  }
-                  void switchServer(server.id).then(() =>
-                    setFriendsView(false),
-                  );
-                }}
-              />
-            ))}
-          </nav>
-          {session.user.role !== "demo" && (
-            <div
-              className="serverButtonWrap addServerButton"
-              onPointerEnter={(event) =>
-                event.currentTarget.style.setProperty(
-                  "--server-tooltip-top",
-                  `${event.currentTarget.getBoundingClientRect().top + 23}px`,
-                )
-              }
-            >
-              <button
-                className="workspaceButton"
-                aria-label="Create server"
-                onClick={() => {
-                  setFriendsView(false);
-                  setForm("server");
-                }}
-              >
-                +
-              </button>
-              <span className="serverTooltip" role="tooltip">
-                Create a server
-              </span>
-            </div>
-          )}
-        </aside>
-        <aside className="channelSidebar friendsSidebar">
-          <header className="workspaceName">
-            <button
-              className={`friendsHomeButton ${!selectedFriend ? "active" : ""}`}
-              type="button"
-              aria-current={!selectedFriend ? "page" : undefined}
-              onClick={() => {
-                setSelectedFriend(null);
-                openFriendsHome();
-              }}
-            >
-              Friends
-            </button>
-          </header>
-          <nav>
-            {recentFriends.map((friend) => (
-              <button
-                className={`channel ${selectedFriend?.id === friend.id ? "active" : ""} ${notificationsEnabled && (unreadDirectMessages[friend.id] ?? 0) > 0 ? "unread" : ""}`}
-                key={friend.id}
-                onClick={() => openFriend(friend)}
-              >
-                <span className="friendConversationTitle">
-                  <i
-                    className={`statusDot status-${userStatuses[friend.id] ?? "offline"}`}
-                    title={
-                      onlineUserIds.includes(friend.id)
-                        ? statusLabels[userStatuses[friend.id] ?? "online"]
-                        : "Offline"
-                    }
-                  />
-                  <b>{friend.name}</b>
-                  {friend.lastActivityAt && (
-                    <time>
-                      {new Date(friend.lastActivityAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </time>
-                  )}
-                </span>
-                {notificationsEnabled &&
-                  (unreadDirectMessages[friend.id] ?? 0) > 0 && (
-                    <span className="conversationUnreadBadge">
-                      {unreadDirectMessages[friend.id]}
-                    </span>
-                  )}
-              </button>
-            ))}
-          </nav>
-          {profilePanel}
-          {sidebarResizer}
-        </aside>
-        <section className="room friendsRoom">
-          <header className="roomHeader">
-            {selectedFriend ? (
-              <button
-                className="profileLink"
-                type="button"
-                onClick={() => setProfileUser(selectedFriend)}
-              >
-                {selectedFriend.name}
-              </button>
-            ) : (
-              <strong>Friends</strong>
-            )}
-            {panelControls}
-          </header>
-          {!selectedFriend && (
-            <div className="friendsContent">
-              <form
-                className="friendSearchForm"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void searchFriends();
-                }}
-              >
-                <input
-                  value={friendSearch}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setFriendSearch(value);
-                    if (
-                      value.trim().length >= 3 ||
-                      value.includes(".") ||
-                      value.includes("(")
-                    ) {
-                      void searchFriends(value);
-                    } else {
-                      setFriendResults([]);
-                    }
-                  }}
-                  placeholder="Search friends"
-                />
-                <button>Search</button>
-              </form>
-              {friendResults
-                .filter(
-                  (result) =>
-                    !friends.some((friend) => friend.id === result.id),
-                )
-                .map((friend) => (
-                  <div className="friendRow" key={friend.id}>
-                    <span>
-                      <b>{friend.name}</b>
-                      <small>{formatUserHandle(friend.handle)}</small>
-                    </span>
-                    <button
-                      onClick={() => void friendAction("request", friend)}
-                    >
-                      Add friend
-                    </button>
-                  </div>
-                ))}
-              <div className="friendTabs">
-                <button
-                  className={friendTab === "online" ? "active" : ""}
-                  onClick={() => setFriendTab("online")}
-                >
-                  Online
-                </button>
-                <button
-                  className={friendTab === "offline" ? "active" : ""}
-                  onClick={() => setFriendTab("offline")}
-                >
-                  Offline
-                </button>
-                <button
-                  className={friendTab === "pending" ? "active" : ""}
-                  onClick={() => setFriendTab("pending")}
-                >
-                  Pending invites
-                  {incomingFriendRequestCount > 0 && (
-                    <span className="tabBadge">
-                      {incomingFriendRequestCount}
-                    </span>
-                  )}
-                </button>
-              </div>
-              {friendTab === "pending" ? (
-                <>
-                  <p className="sectionLabel">PENDING INVITES</p>
-                  {pendingRequests.length === 0 && (
-                    <EmptyState
-                      title="No pending invites"
-                      description="Friend requests you send or receive will appear here."
-                    />
-                  )}
-                  {pendingRequests.map((friend) => (
-                    <div className="friendRow" key={friend.id}>
-                      <span>
-                        <b>{friend.name}</b>
-                        <small>{formatUserHandle(friend.handle)}</small>
-                      </span>
-                      {friend.incoming ? (
-                        <>
-                          <button
-                            onClick={() => void friendAction("accept", friend)}
-                          >
-                            Accept
-                          </button>
-                          <button
-                            onClick={() => void friendAction("decline", friend)}
-                          >
-                            Decline
-                          </button>
-                        </>
-                      ) : (
-                        <small>Sent</small>
-                      )}
-                    </div>
-                  ))}
-                </>
-              ) : (
-                <>
-                  <p className="sectionLabel">{friendTab.toUpperCase()}</p>
-                  {visibleFriends.length === 0 && (
-                    <EmptyState
-                      title={
-                        friendTab === "online"
-                          ? "No friends online right now"
-                          : "No offline friends"
-                      }
-                      description={
-                        friendTab === "online"
-                          ? "When your friends come online, you’ll find them here. You can also search for someone to add."
-                          : "Friends who are offline will appear here. Everyone may already be online."
-                      }
-                    />
-                  )}
-                  {visibleFriends.map((friend) => (
-                    <button
-                      type="button"
-                      className="friendRow"
-                      data-status={userStatuses[friend.id] ?? "offline"}
-                      key={friend.id}
-                      onClick={() => setProfileUser(friend)}
-                    >
-                      <span className="friendListAvatar" aria-hidden="true">
-                        {friend.name[0]?.toUpperCase()}
-                        <i
-                          className={`friendStatusDot statusDot status-${userStatuses[friend.id] ?? "offline"}`}
-                        />
-                      </span>
-                      <span className="friendConversationLink">
-                        <b>{friend.name}</b>
-                        <small>
-                          {onlineUserIds.includes(friend.id)
-                            ? statusLabels[userStatuses[friend.id] ?? "online"]
-                            : "Offline"}{" "}
-                          · {formatUserHandle(friend.handle)}
-                        </small>
-                      </span>
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
-          )}
-          {selectedFriend && (!callViewOpen || conversationCallActive) && (
-            <section
-              className={`chat directMessages ${conversationCallActive ? "callActive" : ""} ${incomingCall?.fromUserId === selectedFriend.id ? "hasIncomingCall" : ""}`}
-            >
-              <IncomingCallNotice
-                call={incomingCall}
-                status={userStatus}
-                conversationUserId={selectedFriend.id}
-                inline
-                onAnswer={answerIncomingCall}
-                onDecline={declineIncomingCall}
-              />
-              <ChatHistory
-                key={selectedFriend.id}
-                threadId={selectedFriend.id}
-                messages={directMessages}
-                ready={directHistoryLoaded === selectedFriend.id}
-                hasMore={Boolean(directMessageCursor)}
-                loadingOlder={loadingOlderDirect}
-                onLoadOlder={loadOlderDirectMessages}
-                ownUserId={session.user.id}
-              >
-                {directHistoryLoaded === selectedFriend.id &&
-                  directMessages.length === 0 && (
-                    <EmptyState
-                      title={`Start a conversation with ${selectedFriend.name}`}
-                      description="Send the first message to get things started."
-                    />
-                  )}
-                {directMessages.map((message) => (
-                  <article
-                    className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.kind === "call" ? "callHistory" : ""} ${message.deleted ? "deletedMessage" : ""}`}
-                    key={message.id}
-                    data-message-id={message.id}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      if (message.authorId !== session.user.id) {
-                        setMessageMenu(null);
-                        return;
-                      }
-                      setMessageMenu({
-                        message,
-                        conversationUserId: selectedFriend.id,
-                        x: Math.max(
-                          0,
-                          Math.min(event.clientX, window.innerWidth - 190),
-                        ),
-                        y: Math.max(
-                          0,
-                          Math.min(event.clientY, window.innerHeight - 110),
-                        ),
-                      });
-                    }}
-                  >
-                    {message.kind === "call" && !message.deleted ? (
-                      <p>
-                        {message.text}
-                        {message.text === "Call ended" &&
-                          ` · ${formatCallDuration(message.callDurationSeconds)}`}
-                        <time>{message.time}</time>
-                      </p>
-                    ) : (
-                      <>
-                        <MessageHeader
-                          name={message.author}
-                          time={message.time}
-                          onProfile={() =>
-                            setProfileUser({
-                              id: message.authorId,
-                              name: message.author,
-                              ...friends.find(
-                                (friend) => friend.id === message.authorId,
-                              ),
-                            })
-                          }
-                        />
-                        <p>{message.text}</p>
-                      </>
-                    )}
-                  </article>
-                ))}
-              </ChatHistory>
-              <form onSubmit={sendDirectMessage}>
-                <input
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  placeholder={`Message ${selectedFriend.name}`}
-                />
-                <button
-                  data-chat-send
-                  disabled={messageCooldown.seconds > 0}
-                  title={
-                    messageCooldown.seconds
-                      ? "Message limit reached. Please wait before sending again."
-                      : undefined
-                  }
-                >
-                  {messageCooldown.seconds
-                    ? `Wait ${messageCooldown.seconds}s`
-                    : "Send"}
-                </button>
-                <button
-                  type="button"
-                  data-chat-jump-target
-                  onClick={() =>
-                    conversationCallActive
-                      ? endFriendCall()
-                      : incomingCall?.fromUserId === selectedFriend.id
-                        ? answerIncomingCall()
-                        : void startFriendCall(selectedFriend)
-                  }
-                >
-                  {conversationCallActive
-                    ? "End call"
-                    : incomingCall?.fromUserId === selectedFriend.id
-                      ? "Answer"
-                      : "Call"}
-                </button>
-              </form>
-            </section>
-          )}
-          {activeVoiceChannel?.type === "voice_direct" && (
-            <section
-              className={`friendsCallPanel ${showFriendsCallMedia ? "" : "controlsOnly"}`}
-              aria-live="polite"
-            >
-              <div className="friendsCallIdentity">
-                <small>
-                  {isFriendCall(activeVoiceChannel.id)
-                    ? joined
-                      ? "Direct call"
-                      : "Calling"
-                    : "Server voice"}
-                </small>
-                <strong className={directRemoteSpeaking ? "speaking" : ""}>
-                  {activeVoiceChannel.name}
-                </strong>
-                <span>{joining ? "Connecting…" : status}</span>
-              </div>
-              <div className="videoGrid friendsParticipantGrid">
-                <div
-                  className={`videoCard ${remoteScreenSharing ? "screenShare" : !remoteHasVideo ? "nameOnly" : ""} ${!callPeerPresent || hiddenDirectTiles.includes(remoteDirectTileId) ? "videoHidden" : ""}`}
-                  onDoubleClick={(event) =>
-                    fullscreenVideoTile(event.currentTarget)
-                  }
-                >
-                  <video
-                    ref={remoteVideo}
-                    autoPlay
-                    muted
-                    playsInline
-                    onLoadedMetadata={(event) =>
-                      setRemoteVideoQuality(videoQuality(event.currentTarget))
-                    }
-                    onResize={(event) =>
-                      setRemoteVideoQuality(videoQuality(event.currentTarget))
-                    }
-                  />
-                  {remoteHasVideo && (
-                    <StreamInfo
-                      quality={remoteVideoQuality}
-                      stats={directionalStreamStats(directVideoStats, "down")}
-                      name={directRemoteLabel}
-                    />
-                  )}
-                  <HideTileButton
-                    label={directRemoteLabel}
-                    onHide={() => hideDirectTile(remoteDirectTileId)}
-                  />
-                  {remoteScreenSharing && (
-                    <StreamVolume
-                      volume={streamVolume}
-                      onChange={setStreamVolume}
-                    />
-                  )}
-                  <span>
-                    {directRemoteName}
-                    {remoteScreenSharing ? " — screen" : ""}
-                  </span>
-                </div>
-                <div
-                  className={`videoCard ${screenSharing ? "screenShare" : cameraOff ? "nameOnly" : ""} ${hiddenDirectTiles.includes(localDirectTileId) ? "videoHidden" : ""}`}
-                  onDoubleClick={(event) =>
-                    fullscreenVideoTile(event.currentTarget)
-                  }
-                >
-                  <video
-                    ref={localVideo}
-                    autoPlay
-                    muted
-                    playsInline
-                    onLoadedMetadata={(event) =>
-                      setLocalVideoQuality(videoQuality(event.currentTarget))
-                    }
-                    onResize={(event) =>
-                      setLocalVideoQuality(videoQuality(event.currentTarget))
-                    }
-                  />
-                  {(screenSharing || !cameraOff) && (
-                    <StreamInfo
-                      quality={localVideoQuality}
-                      stats={directionalStreamStats(directVideoStats, "up")}
-                      name={directLocalLabel}
-                    />
-                  )}
-                  <HideTileButton
-                    label={directLocalLabel}
-                    onHide={() => hideDirectTile(localDirectTileId)}
-                  />
-                  <span>
-                    {session.user.name ?? "You"}
-                    {screenSharing ? " — screen" : ""}
-                  </span>
-                </div>
-                <div className="callVisibilityControls">
-                  {directSelfViewButton}
-                  {directHiddenMenu}
-                </div>
-              </div>
-              <div
-                className="controls voiceDock friendsCallControls"
-                aria-busy={!voiceReady}
-              >
-                {audioPlaybackBlocked && (
-                  <button type="button" onClick={() => void playRemoteAudio()}>
-                    Enable sound
-                  </button>
-                )}
-                <DeviceMenu
-                  kind="microphone"
-                  actionUnavailable={deafened}
-                  extraOptions={audioDeviceOptions}
-                  unavailable={!voiceReady}
-                  disabled={muted}
-                  devices={microphones}
-                  selectedId={microphoneId}
-                  onAction={toggleAudio}
-                  onRestart={() => void changeActiveMicrophone(microphoneId)}
-                  onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
-                />
-                <DeviceMenu
-                  kind="camera"
-                  extraOptions={cameraResolutionOptions}
-                  unavailable={!voiceReady}
-                  disabled={cameraOff}
-                  devices={cameras}
-                  selectedId={cameraId}
-                  onAction={() => void toggleVideo()}
-                  onSelect={(deviceId) => void changeActiveCamera(deviceId)}
-                />
-                <button
-                  className={screenSharing ? "stopSharing" : ""}
-                  disabled={!voiceReady}
-                  onClick={() => void toggleScreenShare()}
-                >
-                  {screenSharing ? "Stop sharing" : "Share screen"}
-                </button>
-                {directSoundboard}
-              </div>
-            </section>
-          )}
-        </section>
-        <aside className="memberSidebar friendsInfoSidebar">
-          <header className="memberSidebarHeader">
-            Profile
-            {closeUserList}
-          </header>
-          <div className="memberScroll">
-            {selectedFriend ? (
-              <button
-                type="button"
-                className="friendProfileCard"
-                onClick={() => setProfileUser(selectedFriend)}
-              >
-                <span className="avatar">
-                  {selectedFriend.name[0]?.toUpperCase()}
-                </span>
-                <strong>{selectedFriend.name}</strong>
-                <small>
-                  {onlineUserIds.includes(selectedFriend.id)
-                    ? statusLabels[userStatuses[selectedFriend.id] ?? "online"]
-                    : "Offline"}
-                </small>
-                <small>{formatUserHandle(selectedFriend.handle)}</small>
-              </button>
-            ) : (
-              <p className="empty">Select a friend to view their profile.</p>
-            )}
-          </div>
-          {legalLinks}
-        </aside>
-        {incomingCallOverlay}
-        {legalOverlay}
-        {settingsOverlay}
-        {profileOverlay}
-        {screenShareOptionsOpen &&
-          activeVoiceChannel?.type === "voice_direct" &&
-          voiceReady && (
-            <ScreenShareOptions
-              onClose={() => setScreenShareOptionsOpen(false)}
-              onShare={(resolution) => void toggleScreenShare(resolution)}
-            />
-          )}
-        {serverContextMenu}
-        {messageContextDropdown}
-        {directDeletionDialog}
-        {noticeToast}
-        {voiceTransferDialog}
-        {errorToast}
-      </WorkspaceShell>
-    );
-  }
-
-  if (serversLoaded && servers.length === 0) {
-    return (
-      <WorkspaceShell call={groupCall} help={helpTour} className="noServerPage">
-        {helpButton}
-        <section>
-          <button
-            className="workspaceLogo noServerFriendsButton"
-            aria-label="Friends"
-            onClick={openFriendsHome}
-          >
-            LC
-            {notificationCount > 0 && (
-              <span className="notificationBadge">{notificationCount}</span>
-            )}
-          </button>
-          <h1>No servers yet</h1>
-          {session.user.role === "demo" ? (
-            <p>
-              Unfortunately, you currently don&apos;t have access to any
-              servers. Please contact the owner.
-            </p>
-          ) : (
-            <>
-              <p>Create your first server to get started.</p>
-              <form onSubmit={createServer}>
-                <label>
-                  Server name
-                  <input
-                    autoFocus
-                    maxLength={60}
-                    required
-                    value={formName}
-                    onChange={(event) => setFormName(event.target.value)}
-                  />
-                </label>
-                <button type="submit">Create server</button>
-              </form>
-            </>
-          )}
-          <button onClick={() => void signOut({ callbackUrl: "/login" })}>
-            Log out
-          </button>
-        </section>
-        {incomingCallOverlay}
-        {noticeToast}
-        {voiceTransferDialog}
-        {errorToast}
-      </WorkspaceShell>
-    );
-  }
-
-  return (
-    <WorkspaceShell
-      call={groupCall}
-      help={helpTour}
-      className={`workspace ${panelClasses}`}
-      style={sidebarStyle}
-    >
-      <aside className="workspaceRail" aria-label="Workspaces">
-        <button
-          className="workspaceLogo"
-          aria-label="Friends"
-          onClick={openFriendsHome}
-        >
-          LC
-          {notificationCount > 0 && (
-            <span className="notificationBadge">{notificationCount}</span>
-          )}
-        </button>
-        <nav
-          className="serverScroller"
-          aria-label="Servers"
-          style={{ height: Math.max(0, servers.length * 60 - 6) }}
-        >
-          {servers.map((server) => (
-            <ServerNavButton
-              key={server.id}
-              server={server}
-              active={server.id === selectedServerId}
-              unread={unreadServerIds.has(server.id)}
-              voiceUsers={serverVoiceUsers(
-                server.id,
-                workspaceActivity.channels,
-                voicePresence,
-              )}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                setServerContext({
-                  server,
-                  x: Math.min(event.clientX, window.innerWidth - 200),
-                  y: Math.min(event.clientY, window.innerHeight - 64),
-                });
-              }}
-              onClick={() => {
-                if (server.id !== selectedServerId)
-                  void switchServer(server.id);
-              }}
-            />
-          ))}
-        </nav>
-        {session.user.role !== "demo" && (
-          <div
-            className="serverButtonWrap addServerButton"
-            onPointerEnter={(event) =>
-              event.currentTarget.style.setProperty(
-                "--server-tooltip-top",
-                `${event.currentTarget.getBoundingClientRect().top + 23}px`,
-              )
-            }
-          >
-            <button
-              className="workspaceButton"
-              aria-label="Create server"
-              onClick={() => setForm("server")}
-            >
-              +
-            </button>
-            <span className="serverTooltip" role="tooltip">
-              Create a server
-            </span>
-          </div>
-        )}
-      </aside>
-      <aside className="channelSidebar">
-        <header className="workspaceName">
-          <strong>
-            {servers.find((server) => server.id === selectedServerId)?.name ??
-              "LC"}
-          </strong>
-          {isSelectedServerOwner && selectedServerId && (
-            <button
-              type="button"
-              className="serverInviteButton"
-              title="Invite to server"
-              aria-label="Invite to server"
-              aria-haspopup="dialog"
-              onClick={() => {
-                setServerSettingsSection("invite-friends");
-
-                setServerSettingsOpen(true);
-              }}
-            >
-              <svg
-                aria-hidden="true"
-                width="19"
-                height="19"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-              >
-                <circle cx="9" cy="7" r="4" />
-                <path d="M2 21v-3a7 7 0 0 1 14 0v3M19 8v8m-4-4h8" />
-              </svg>
-            </button>
-          )}
-          {isSelectedServerOwner && selectedServerId && (
-            <div
-              className={`accountMenu serverActions ${serverSettingsOpen ? "open" : ""}`}
-            >
-              <button
-                className="accountMenuTrigger"
-                aria-label="Server settings"
-                aria-haspopup="dialog"
-                title="Server settings"
-                aria-expanded={serverSettingsOpen}
-                onClick={() => {
-                  setServerSettingsSection("overview");
-                  setFormName("");
-
-                  setServerSettingsOpen((current) => !current);
-                }}
-              >
-                <SettingsIcon />
-              </button>
-            </div>
-          )}
-        </header>
-        <nav>
-          <p className="sectionLabel">TEXT CHANNELS</p>
-          {serverChannelsLoaded !== selectedServerId && (
-            <LoadingSkeleton kind="channels" />
-          )}
-          {channels
-            .filter((channel) => channel.type === "text")
-            .map((channel) => (
-              <div
-                className="channelRow"
-                key={channel.id}
-                onContextMenu={(event) => openChannelContext(event, channel)}
-              >
-                <button
-                  className={`channel ${!callViewOpen && channel.id === selectedChannelId ? "active" : ""}`}
-                  title={channel.name}
-                  onClick={() => selectTextChannel(channel.id)}
-                >
-                  <span
-                    className={`channelName ${notificationsEnabled && workspaceActivity.unread[channel.id] ? "channelUnread" : ""}`}
-                  >
-                    {channel.name}
-                  </span>
-                  {notificationsEnabled &&
-                    workspaceActivity.unread[channel.id] && (
-                      <span
-                        className="channelUnreadDot"
-                        aria-label="Unread messages"
-                      />
-                    )}
-                </button>
-              </div>
-            ))}
-          <p className="sectionLabel">VOICE CHANNELS</p>
-          {channels
-            .filter((channel) => channel.type !== "text")
-            .map((channel) => (
-              <div
-                className="voiceChannel"
-                key={channel.id}
-                onContextMenu={(event) => {
-                  if ((event.target as Element).closest(".voiceParticipant"))
-                    return;
-                  openChannelContext(event, channel);
-                }}
-              >
-                <button
-                  className={`channel ${callViewOpen && channel.id === activeVoiceChannelId ? "active" : ""}`}
-                  onClick={() => selectVoiceChannel(channel)}
-                >
-                  <span className="channelIcon" aria-hidden="true">
-                    {channel.type === "voice_group" ? "◉" : "\u{1F50A}"}
-                  </span>
-                  <span className="channelName" title={channel.name}>
-                    {channel.name}
-                  </span>
-                </button>
-                {voicePresence[channel.id]?.some(
-                  (participant) => participant.camera || participant.screen,
-                ) && (
-                  <button
-                    className="openCallView"
-                    aria-label={`Open video view for ${channel.name}`}
-                    onClick={() => {
-                      if (activeVoiceChannelId !== channel.id) {
-                        selectVoiceChannel(channel);
-                        setCallViewOpen(true);
-                      } else {
-                        setCallViewOpen((current) => !current);
-                      }
-                    }}
-                  >
-                    ▣
-                  </button>
-                )}
-                {(voicePresence[channel.id]?.length ?? 0) > 0 && (
-                  <div className="voicePresence">
-                    {voicePresence[channel.id].map((participant, index) => (
-                      <span
-                        className={`voiceParticipant ${channel.id === activeVoiceChannelId && participant.speaking ? "speaking" : ""}`}
-                        key={
-                          participant.userId ?? `${participant.name}-${index}`
-                        }
-                        onContextMenu={(event) => {
-                          if (
-                            !isSelectedServerOwner ||
-                            !participant.userId ||
-                            participant.connecting ||
-                            participant.userId === session.user.id
-                          )
-                            return;
-                          event.preventDefault();
-                          setVoiceMenu({
-                            userId: participant.userId,
-                            name: participant.name,
-                            channelId: channel.id,
-                            x: event.clientX,
-                            y: event.clientY,
-                          });
-                        }}
-                      >
-                        <button
-                          className="voiceParticipantIdentity"
-                          type="button"
-                          disabled={!participant.userId}
-                          onClick={() =>
-                            participant.userId &&
-                            setProfileUser({
-                              id: participant.userId,
-                              name: participant.name,
-                            })
-                          }
-                        >
-                          <i>{participant.name[0]?.toUpperCase()}</i>
-                          <b>{participant.name}</b>
-                          {participant.connecting && (
-                            <small
-                              className="voiceConnectingLabel"
-                              role="status"
-                            >
-                              Connecting…
-                            </small>
-                          )}
-                        </button>
-                        <ParticipantMediaIndicators
-                          participant={participant}
-                          selfState={
-                            participant.userId === session.user.id
-                              ? { muted, deafened }
-                              : undefined
-                          }
-                          showCamera={
-                            channel.type === "voice_group" ||
-                            !participant.screen
-                          }
-                          onCamera={() =>
-                            openParticipantMedia(channel, participant, "camera")
-                          }
-                          onWatch={() =>
-                            openParticipantMedia(channel, participant, "screen")
-                          }
-                        />
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-        </nav>
-        {profilePanel}
-        {sidebarResizer}
-      </aside>
-      <section
-        className={`room ${selectedChannel?.type === "text" ? "textOnly" : ""}`}
-      >
-        <header className="roomHeader">
-          {panelControls}
-          <strong>
-            {displayedChannel
-              ? `${displayedChannel.type === "text" ? "" : displayedChannel.type === "voice_group" ? "◉ " : "\u{1F50A} "}${displayedChannel.name}`
-              : "Select a channel"}
-          </strong>
-          <div
-            className={`accountMenu demoAccountsMenu ${demoMenuOpen ? "open" : ""} ${session.user.role !== "owner" ? "ownerOnlyHidden" : ""}`}
-            ref={demoMenu}
-          >
-            <button
-              className="accountMenuTrigger"
-              aria-expanded={demoMenuOpen}
-              onClick={() => setDemoMenuOpen((current) => !current)}
-            >
-              Manage demo accounts
-              <span aria-hidden="true">⌄</span>
-            </button>
-            {demoMenuOpen && (
-              <div className="accountMenuDropdown">
-                {session.user.role === "owner" && (
-                  <>
-                    <button
-                      onClick={() =>
-                        openDemoAccount(
-                          selectedServerId || servers[0]?.id || "",
-                          true,
-                        )
-                      }
-                    >
-                      Create demo account
-                    </button>
-                    <button onClick={() => void openDemoAccountManager()}>
-                      Manage demo accounts
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </header>
-        {activeVoiceChannel?.type === "voice_direct" && (
-          <section
-            className={`callPanel ${callViewOpen ? "" : "backgroundCall"}`}
-          >
-            <div
-              className={`videoGrid ${focusedDirectVideo ? "focused" : ""}`}
-              ref={directVideoGrid}
-            >
-              <div
-                className={`videoCard ${screenSharing ? "screenShare" : cameraOff ? "nameOnly" : ""} ${hiddenDirectTiles.includes(localDirectTileId) || (focusedDirectVideo && focusedDirectVideo !== "local") ? "videoHidden" : ""}`}
-                onDoubleClick={(event) =>
-                  fullscreenVideoTile(event.currentTarget)
-                }
-                onClick={() =>
-                  setFocusedDirectVideo((current) =>
-                    current === "local" ? null : "local",
-                  )
-                }
-              >
-                <video
-                  ref={localVideo}
-                  autoPlay
-                  muted
-                  playsInline
-                  onLoadedMetadata={(event) =>
-                    setLocalVideoQuality(videoQuality(event.currentTarget))
-                  }
-                  onResize={(event) =>
-                    setLocalVideoQuality(videoQuality(event.currentTarget))
-                  }
-                />
-                <HideTileButton
-                  label={directLocalLabel}
-                  onHide={() => hideDirectTile(localDirectTileId)}
-                />
-                <span>
-                  {session.user.name ?? "You"}
-                  {screenSharing ? " — screen" : ""}
-                </span>
-                {(screenSharing || !cameraOff) && (
-                  <StreamInfo
-                    quality={localVideoQuality}
-                    stats={directionalStreamStats(directVideoStats, "up")}
-                    name={directLocalLabel}
-                  />
-                )}
-              </div>
-              <div
-                className={`videoCard remote ${remoteScreenSharing ? "screenShare" : !remoteHasVideo ? "nameOnly" : ""} ${!callPeerPresent || hiddenDirectTiles.includes(remoteDirectTileId) || (focusedDirectVideo && focusedDirectVideo !== "remote") ? "videoHidden" : ""}`}
-                onDoubleClick={(event) =>
-                  fullscreenVideoTile(event.currentTarget)
-                }
-                onClick={() =>
-                  setFocusedDirectVideo((current) =>
-                    current === "remote" ? null : "remote",
-                  )
-                }
-              >
-                <video
-                  ref={remoteVideo}
-                  autoPlay
-                  muted
-                  playsInline
-                  onLoadedMetadata={(event) =>
-                    setRemoteVideoQuality(videoQuality(event.currentTarget))
-                  }
-                  onResize={(event) =>
-                    setRemoteVideoQuality(videoQuality(event.currentTarget))
-                  }
-                />
-                <HideTileButton
-                  label={directRemoteLabel}
-                  onHide={() => hideDirectTile(remoteDirectTileId)}
-                />
-                {remoteScreenSharing && (
-                  <StreamVolume
-                    volume={streamVolume}
-                    onChange={setStreamVolume}
-                  />
-                )}
-                <span>
-                  {directRemoteName}
-                  {remoteScreenSharing ? " — screen" : ""}
-                </span>
-                {remoteHasVideo && (
-                  <StreamInfo
-                    quality={remoteVideoQuality}
-                    stats={directionalStreamStats(directVideoStats, "down")}
-                    name={directRemoteLabel}
-                  />
-                )}
-              </div>
-              <div className="callVisibilityControls">
-                {directSelfViewButton}
-                {directHiddenMenu}
-              </div>
-              {focusedDirectVideo && (
-                <div className="focusActions">
-                  <button onClick={() => setFocusedDirectVideo(null)}>
-                    Show grid
-                  </button>
-                  <button
-                    onClick={() => fullscreenVideoTile(directVideoGrid.current)}
-                  >
-                    Fullscreen
-                  </button>
-                </div>
-              )}
-            </div>
-            <div className="controls voiceDock" aria-busy={!voiceReady}>
-              {audioPlaybackBlocked && (
-                <button type="button" onClick={() => void playRemoteAudio()}>
-                  Enable sound
-                </button>
-              )}
-              <DeviceMenu
-                kind="microphone"
-                actionUnavailable={deafened}
-                extraOptions={audioDeviceOptions}
-                unavailable={!voiceReady}
-                disabled={muted}
-                devices={microphones}
-                selectedId={microphoneId}
-                onAction={toggleAudio}
-                onRestart={() => void changeActiveMicrophone(microphoneId)}
-                onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
-              />
-              <DeviceMenu
-                kind="camera"
-                extraOptions={cameraResolutionOptions}
-                unavailable={!voiceReady}
-                disabled={cameraOff}
-                devices={cameras}
-                selectedId={cameraId}
-                onAction={() => void toggleVideo()}
-                onSelect={(deviceId) => void changeActiveCamera(deviceId)}
-              />
-              <button
-                className={screenSharing ? "stopSharing" : ""}
-                disabled={!voiceReady}
-                onClick={() => void toggleScreenShare()}
-              >
-                {screenSharing ? "Stop sharing" : "Share screen"}
-              </button>
-              {directSoundboard}
-            </div>
-            {mediaNotice && <p className="mediaNotice">{mediaNotice}</p>}
-          </section>
-        )}
-        {selectedChannel?.type === "text" && !callViewOpen && (
-          <section className="chat">
-            <ChatHistory
-              key={selectedChannelId}
-              threadId={selectedChannelId}
-              messages={messages}
-              ready={channelHistoryLoaded === selectedChannelId}
-              hasMore={Boolean(nextMessageCursor)}
-              loadingOlder={loadingMoreMessages}
-              onLoadOlder={loadMoreMessages}
-              ownUserId={session.user.id}
-            >
-              {channelHistoryLoaded === selectedChannelId &&
-                messages.length === 0 && (
-                  <EmptyState
-                    title={
-                      selectedChannelId
-                        ? "The conversation starts here"
-                        : "Choose a text channel"
-                    }
-                    description={
-                      selectedChannelId
-                        ? "This channel has no messages yet. Send the first one."
-                        : "Create or select a channel to begin."
-                    }
-                  />
-                )}
-              {messages.map((message) => (
-                <article
-                  className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.deleted ? "deletedMessage" : ""}`}
-                  key={message.id}
-                  data-message-id={message.id}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMessageMenu({
-                      message,
-                      x: Math.min(event.clientX, window.innerWidth - 190),
-                      y: Math.min(event.clientY, window.innerHeight - 110),
-                    });
-                  }}
-                >
-                  {message.replyTo && (
-                    <div className="replyPreview">
-                      <strong>{message.replyTo.author}</strong>
-                      <span>{message.replyTo.text}</span>
-                    </div>
-                  )}
-                  <MessageHeader
-                    name={message.author}
-                    time={message.time}
-                    onProfile={() =>
-                      setProfileUser({
-                        id: message.authorId,
-                        name: message.author,
-                        ...friends.find(
-                          (friend) => friend.id === message.authorId,
-                        ),
-                      })
-                    }
-                  />
-                  <p>{message.text}</p>
-                </article>
-              ))}
-            </ChatHistory>
-            <form onSubmit={submit}>
-              <div className="messageComposer">
-                {replyingTo && (
-                  <div className="replyingTo">
-                    <span>
-                      Replying to <strong>{replyingTo.author}</strong>
-                    </span>
-                    <button
-                      type="button"
-                      aria-label="Cancel reply"
-                      onClick={() => setReplyingTo(null)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-                <input
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  disabled={!selectedChannelId}
-                  placeholder={
-                    selectedChannel
-                      ? `Message #${selectedChannel.name}`
-                      : "Select a text channel"
-                  }
-                />
-              </div>
-              <button
-                data-chat-send
-                disabled={!selectedChannelId || messageCooldown.seconds > 0}
-                title={
-                  messageCooldown.seconds
-                    ? "Message limit reached. Please wait before sending again."
-                    : undefined
-                }
-              >
-                {messageCooldown.seconds
-                  ? `Wait ${messageCooldown.seconds}s`
-                  : "Send"}
-              </button>
-            </form>
-          </section>
-        )}
-      </section>
-      <aside className="memberSidebar">
-        <header className="memberSidebarHeader">
-          {closeUserList}
-          <strong>ALL USERS — {members.length}</strong>
-        </header>
-        <input
-          className="memberSearch"
-          type="search"
-          value={memberSearch}
-          onChange={(event) => setMemberSearch(event.target.value)}
-          placeholder="Search users"
-          aria-label="Search users"
-        />
-        <div className="memberScroll">
-          <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
-          {onlineMembers.map((member) => (
-            <button
-              type="button"
-              className="member online"
-              data-status={userStatuses[member.id] ?? "online"}
-              key={member.id}
-              onClick={() => setProfileUser(member)}
-              onContextMenu={(event) => {
-                if (!isSelectedServerOwner || member.role === "owner") return;
-                event.preventDefault();
-                setMemberMenu({
-                  member,
-                  x: Math.min(event.clientX, window.innerWidth - 190),
-                  y: Math.min(event.clientY, window.innerHeight - 70),
-                });
-              }}
-            >
-              <span className={`avatar role-${member.role}`}>
-                {member.name[0]?.toUpperCase()}
-              </span>
-              <span className="memberIdentity">
-                <strong>{member.name}</strong>
-                <small>
-                  {statusLabels[userStatuses[member.id] ?? "online"]} ·{" "}
-                  {member.role}
-                </small>
-              </span>
-            </button>
-          ))}
-          <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
-          {offlineMembers.map((member) => (
-            <button
-              type="button"
-              className="member offline"
-              key={member.id}
-              onClick={() => setProfileUser(member)}
-              onContextMenu={(event) => {
-                if (!isSelectedServerOwner || member.role === "owner") return;
-                event.preventDefault();
-                setMemberMenu({
-                  member,
-                  x: Math.min(event.clientX, window.innerWidth - 190),
-                  y: Math.min(event.clientY, window.innerHeight - 70),
-                });
-              }}
-            >
-              <span className={`avatar role-${member.role}`}>
-                {member.name[0]?.toUpperCase()}
-              </span>
-              <span className="memberIdentity">
-                <strong>{member.name}</strong>
-                <small>{member.role}</small>
-              </span>
-            </button>
-          ))}
-        </div>
-        {legalLinks}
-      </aside>
-      {legalOverlay}
-      {settingsOverlay}
-      {profileOverlay}
-      {screenShareOptionsOpen &&
-        activeVoiceChannel?.type === "voice_direct" &&
-        voiceReady && (
-          <ScreenShareOptions
-            onClose={() => setScreenShareOptionsOpen(false)}
-            onShare={(resolution) => void toggleScreenShare(resolution)}
-          />
-        )}
-      {serverContextMenu}
-      {channelContextMenu}
-      {memberMenu && (
-        <div
-          className="messageContextMenu"
-          ref={memberContextMenu}
-          role="menu"
-          style={{ left: memberMenu.x, top: memberMenu.y }}
-        >
-          <button
-            className="danger"
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setKickCandidate(memberMenu.member);
-              setMemberMenu(null);
-            }}
-          >
-            Kick from server
-          </button>
-        </div>
-      )}
-      {voiceMenu && (
-        <VoiceParticipantMenu
-          key={`${voiceMenu.channelId}:${voiceMenu.userId}:${voiceMenu.x}:${voiceMenu.y}`}
-          x={voiceMenu.x}
-          y={voiceMenu.y}
-          channels={channels.filter(
-            (channel) =>
-              channel.type !== "text" && channel.id !== voiceMenu.channelId,
-          )}
-          onClose={() => setVoiceMenu(null)}
-          onKick={() =>
-            void kickVoiceParticipant(voiceMenu.userId, voiceMenu.channelId)
-          }
-          onMove={(destinationId) =>
-            void moveVoiceParticipant(
-              voiceMenu.userId,
-              voiceMenu.channelId,
-              destinationId,
-            )
-          }
-        />
-      )}
-      {messageContextDropdown}
-      {deleteServerOpen && (
-        <div className="modalBackdrop deletionConfirmationBackdrop">
-          <section className="modalCard deletionConfirmationModal">
-            <h2>Delete server?</h2>
-            <p>
-              This permanently deletes{" "}
-              <b>
-                {servers.find((server) => server.id === selectedServerId)?.name}
-              </b>
-              , including its channels and messages.
-            </p>
-            <div className="modalActions">
-              <button
-                type="button"
-                onClick={() => {
-                  setDeleteServerOpen(false);
-                  setServerSettingsOpen(false);
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                className="danger"
-                type="button"
-                onClick={() => void deleteServer()}
-              >
-                Delete server
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+  const managementOverlays = (
+    <>
       {renameTarget && (
         <div
           className="modalBackdrop"
@@ -6997,6 +6106,1554 @@ export default function Home() {
           </section>
         </div>
       )}
+    </>
+  );
+
+  const searchContextNotice = activeContext && (
+    <div className="searchContextNotice">
+      <span>Viewing surrounding messages from a search result</span>
+    </div>
+  );
+
+  if (friendsView) {
+    const acceptedFriends = friends.filter(
+      (friend) => friend.status === "accepted",
+    );
+    const recentFriends = [...acceptedFriends]
+      .filter((friend) => friend.lastActivityAt)
+      .sort(
+        (left, right) =>
+          new Date(right.lastActivityAt!).getTime() -
+          new Date(left.lastActivityAt!).getTime(),
+      );
+    const pendingRequests = friends.filter(
+      (friend) => friend.status === "pending",
+    );
+    const visibleFriends = acceptedFriends.filter((friend) =>
+      friendTab === "online"
+        ? onlineUserIds.includes(friend.id)
+        : !onlineUserIds.includes(friend.id),
+    );
+    return (
+      <WorkspaceShell
+        call={groupCall}
+        help={helpTour}
+        className={`workspace friendsScreen ${panelClasses}`}
+        style={sidebarStyle}
+      >
+        <aside className="workspaceRail">
+          <button
+            className="workspaceLogo friendsActive"
+            aria-label="Friends"
+            aria-current="page"
+            onClick={openFriendsHome}
+          >
+            LC
+            {notificationCount > 0 && (
+              <span className="notificationBadge">{notificationCount}</span>
+            )}
+          </button>
+          <nav
+            className="serverScroller"
+            aria-label="Servers"
+            style={{ height: Math.max(0, servers.length * 60 - 6) }}
+          >
+            {servers.map((server) => (
+              <ServerNavButton
+                key={server.id}
+                server={server}
+                active={false}
+                unread={unreadServerIds.has(server.id)}
+                mentions={serverMentionCounts[server.id] ?? 0}
+                voiceUsers={serverVoiceUsers(
+                  server.id,
+                  workspaceActivity.channels,
+                  voicePresence,
+                )}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setServerContext({
+                    server,
+                    x: Math.min(event.clientX, window.innerWidth - 200),
+                    y: Math.max(
+                      8,
+                      Math.min(event.clientY, window.innerHeight - 110),
+                    ),
+                  });
+                }}
+                onClick={() => {
+                  if (server.id === selectedServerId) {
+                    setFriendsView(false);
+                    return;
+                  }
+                  void switchServer(server.id).then(() =>
+                    setFriendsView(false),
+                  );
+                }}
+              />
+            ))}
+          </nav>
+          {session.user.role !== "demo" && (
+            <div
+              className="serverButtonWrap addServerButton"
+              onPointerEnter={(event) =>
+                event.currentTarget.style.setProperty(
+                  "--server-tooltip-top",
+                  `${event.currentTarget.getBoundingClientRect().top + 23}px`,
+                )
+              }
+            >
+              <button
+                className="workspaceButton"
+                aria-label="Create server"
+                onClick={() => {
+                  setFriendsView(false);
+                  setForm("server");
+                }}
+              >
+                +
+              </button>
+              <span className="serverTooltip" role="tooltip">
+                Create a server
+              </span>
+            </div>
+          )}
+        </aside>
+        <aside className="channelSidebar friendsSidebar">
+          <header className="workspaceName">
+            <button
+              className={`friendsHomeButton ${!selectedFriend ? "active" : ""}`}
+              type="button"
+              aria-current={!selectedFriend ? "page" : undefined}
+              onClick={() => {
+                setSelectedFriend(null);
+                openFriendsHome();
+              }}
+            >
+              Friends
+            </button>
+          </header>
+          <nav>
+            {recentFriends.map((friend) => (
+              <button
+                className={`channel ${selectedFriend?.id === friend.id ? "active" : ""} ${notificationsEnabled && (visibleDirectCounts[friend.id] ?? 0) > 0 ? "unread" : ""}`}
+                key={friend.id}
+                onClick={() => openFriend(friend)}
+                onContextMenu={(event) =>
+                  openNotificationMute(event, "direct", friend)
+                }
+              >
+                <span className="friendConversationTitle">
+                  <i
+                    className={`statusDot status-${userStatuses[friend.id] ?? "offline"}`}
+                    title={
+                      onlineUserIds.includes(friend.id)
+                        ? statusLabels[userStatuses[friend.id] ?? "online"]
+                        : "Offline"
+                    }
+                  />
+                  <b>{friend.name}</b>
+                  {friend.lastActivityAt && (
+                    <time>
+                      {new Date(friend.lastActivityAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </time>
+                  )}
+                </span>
+                {notificationsEnabled &&
+                  (visibleDirectCounts[friend.id] ?? 0) > 0 && (
+                    <span className="conversationUnreadBadge">
+                      {visibleDirectCounts[friend.id]}
+                    </span>
+                  )}
+              </button>
+            ))}
+          </nav>
+          {profilePanel}
+          {sidebarResizer}
+        </aside>
+        <section className="room friendsRoom">
+          <header className="roomHeader">
+            {selectedFriend ? (
+              <button
+                className="profileLink"
+                type="button"
+                onClick={() => setProfileUser(selectedFriend)}
+              >
+                {selectedFriend.name}
+              </button>
+            ) : (
+              <strong>Friends</strong>
+            )}
+            {panelControls}
+            {selectedFriend && (
+              <ConversationSearch
+                key={composerKey}
+                userId={selectedFriend.id}
+                onResult={showSearchResult}
+              />
+            )}
+          </header>
+          {!selectedFriend && (
+            <div className="friendsContent">
+              <form
+                className="friendSearchForm"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void searchFriends();
+                }}
+              >
+                <input
+                  value={friendSearch}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setFriendSearch(value);
+                    if (
+                      value.trim().length >= 3 ||
+                      value.includes(".") ||
+                      value.includes("(")
+                    ) {
+                      void searchFriends(value);
+                    } else {
+                      setFriendResults([]);
+                    }
+                  }}
+                  placeholder="Search friends"
+                />
+                <button>Search</button>
+              </form>
+              {friendResults
+                .filter(
+                  (result) =>
+                    !friends.some((friend) => friend.id === result.id),
+                )
+                .map((friend) => (
+                  <div className="friendRow" key={friend.id}>
+                    <span>
+                      <b>{friend.name}</b>
+                      <small>{formatUserHandle(friend.handle)}</small>
+                    </span>
+                    <button
+                      onClick={() => void friendAction("request", friend)}
+                    >
+                      Add friend
+                    </button>
+                  </div>
+                ))}
+              <div className="friendTabs">
+                <button
+                  className={friendTab === "online" ? "active" : ""}
+                  onClick={() => setFriendTab("online")}
+                >
+                  Online
+                </button>
+                <button
+                  className={friendTab === "offline" ? "active" : ""}
+                  onClick={() => setFriendTab("offline")}
+                >
+                  Offline
+                </button>
+                <button
+                  className={friendTab === "pending" ? "active" : ""}
+                  onClick={() => setFriendTab("pending")}
+                >
+                  Pending invites
+                  {incomingFriendRequestCount > 0 && (
+                    <span className="tabBadge">
+                      {incomingFriendRequestCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+              {friendTab === "pending" ? (
+                <>
+                  <p className="sectionLabel">PENDING INVITES</p>
+                  {pendingRequests.length === 0 && (
+                    <EmptyState
+                      title="No pending invites"
+                      description="Friend requests you send or receive will appear here."
+                    />
+                  )}
+                  {pendingRequests.map((friend) => (
+                    <div className="friendRow" key={friend.id}>
+                      <span>
+                        <b>{friend.name}</b>
+                        <small>{formatUserHandle(friend.handle)}</small>
+                      </span>
+                      {friend.incoming ? (
+                        <>
+                          <button
+                            onClick={() => void friendAction("accept", friend)}
+                          >
+                            Accept
+                          </button>
+                          <button
+                            onClick={() => void friendAction("decline", friend)}
+                          >
+                            Decline
+                          </button>
+                        </>
+                      ) : (
+                        <small>Sent</small>
+                      )}
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <p className="sectionLabel">{friendTab.toUpperCase()}</p>
+                  {visibleFriends.length === 0 && (
+                    <EmptyState
+                      title={
+                        friendTab === "online"
+                          ? "No friends online right now"
+                          : "No offline friends"
+                      }
+                      description={
+                        friendTab === "online"
+                          ? "When your friends come online, you’ll find them here. You can also search for someone to add."
+                          : "Friends who are offline will appear here. Everyone may already be online."
+                      }
+                    />
+                  )}
+                  {visibleFriends.map((friend) => (
+                    <button
+                      type="button"
+                      className="friendRow"
+                      data-status={userStatuses[friend.id] ?? "offline"}
+                      key={friend.id}
+                      onClick={() => setProfileUser(friend)}
+                      onContextMenu={(event) =>
+                        openNotificationMute(event, "direct", friend)
+                      }
+                    >
+                      <span className="friendListAvatar" aria-hidden="true">
+                        {friend.name[0]?.toUpperCase()}
+                        <i
+                          className={`friendStatusDot statusDot status-${userStatuses[friend.id] ?? "offline"}`}
+                        />
+                      </span>
+                      <span className="friendConversationLink">
+                        <b>{friend.name}</b>
+                        <small>
+                          {onlineUserIds.includes(friend.id)
+                            ? statusLabels[userStatuses[friend.id] ?? "online"]
+                            : "Offline"}{" "}
+                          · {formatUserHandle(friend.handle)}
+                        </small>
+                      </span>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+          {selectedFriend && (!callViewOpen || conversationCallActive) && (
+            <section
+              className={`chat directMessages ${conversationCallActive ? "callActive" : ""} ${incomingCall?.fromUserId === selectedFriend.id ? "hasIncomingCall" : ""}`}
+            >
+              <IncomingCallNotice
+                call={incomingCall}
+                status={callsNotificationAllowed ? userStatus : "dnd"}
+                conversationUserId={selectedFriend.id}
+                inline
+                onAnswer={answerIncomingCall}
+                onDecline={declineIncomingCall}
+              />
+              <ChatHistory
+                key={`${selectedFriend.id}:${activeContext?.targetId ?? "latest"}`}
+                threadId={`${selectedFriend.id}:${activeContext?.targetId ?? "latest"}`}
+                focusMessageId={
+                  activeContext?.targetId ?? conversationUnreadId ?? undefined
+                }
+                firstUnreadId={
+                  !activeContext ? conversationUnreadId : undefined
+                }
+                onLatestVisibilityChange={updateLatestVisibility}
+                contextNotice={searchContextNotice}
+                onJumpToPresent={
+                  activeContext ? () => setHistoryContext(null) : undefined
+                }
+                messages={shownDirectMessages}
+                ready={
+                  !!activeContext || directHistoryLoaded === selectedFriend.id
+                }
+                hasMore={!activeContext && Boolean(directMessageCursor)}
+                loadingOlder={loadingOlderDirect}
+                onLoadOlder={loadOlderDirectMessages}
+                ownUserId={session.user.id}
+              >
+                {directHistoryLoaded === selectedFriend.id &&
+                  directMessages.length === 0 && (
+                    <EmptyState
+                      title={`Start a conversation with ${selectedFriend.name}`}
+                      description="Send the first message to get things started."
+                    />
+                  )}
+                {shownDirectMessages.map((message) => (
+                  <article
+                    className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.kind === "call" ? "callHistory" : ""} ${message.deleted ? "deletedMessage" : ""}`}
+                    key={message.id}
+                    data-message-id={message.id}
+                    data-search-match={
+                      activeContext?.targetId === message.id || undefined
+                    }
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      if (message.authorId !== session.user.id) {
+                        setMessageMenu(null);
+                        return;
+                      }
+                      setMessageMenu({
+                        message,
+                        conversationUserId: selectedFriend.id,
+                        x: Math.max(
+                          0,
+                          Math.min(event.clientX, window.innerWidth - 190),
+                        ),
+                        y: Math.max(
+                          0,
+                          Math.min(event.clientY, window.innerHeight - 110),
+                        ),
+                      });
+                    }}
+                  >
+                    {message.kind === "call" && !message.deleted ? (
+                      <p>
+                        {message.text}
+                        {message.text === "Call ended" &&
+                          ` · ${formatCallDuration(message.callDurationSeconds)}`}
+                        <time>{message.time}</time>
+                      </p>
+                    ) : (
+                      <>
+                        <MessageHeader
+                          name={message.author}
+                          edited={!!message.editedAt && !message.deleted}
+                          time={message.time}
+                          onProfile={() =>
+                            setProfileUser({
+                              id: message.authorId,
+                              name: message.author,
+                              ...friends.find(
+                                (friend) => friend.id === message.authorId,
+                              ),
+                            })
+                          }
+                        />
+                        <p>{message.text}</p>
+                        <MessageAttachments
+                          files={message.attachments}
+                          deleted={message.deleted}
+                        />
+                      </>
+                    )}
+                  </article>
+                ))}
+              </ChatHistory>
+              <form onSubmit={sendDirectMessage}>
+                <MessageComposer
+                  key={composerKey}
+                  value={activeEdit ? editDraft : draft}
+                  onChange={activeEdit ? setEditDraft : setDraft}
+                  editId={activeEdit?.message.id}
+                  onCancelEdit={() => setEditingMessage(null)}
+                  files={activeEdit ? [] : files}
+                  onFiles={changeFiles}
+                  busy={sendingMessage}
+                  progress={uploadProgress}
+                  placeholder={`Message ${selectedFriend.name}`}
+                />
+                <button
+                  data-chat-send
+                  disabled={sendingMessage || messageCooldown.seconds > 0}
+                  title={
+                    messageCooldown.seconds
+                      ? "Message limit reached. Please wait before sending again."
+                      : undefined
+                  }
+                >
+                  {messageCooldown.seconds
+                    ? `Wait ${messageCooldown.seconds}s`
+                    : activeEdit
+                      ? "Edit"
+                      : "Send"}
+                </button>
+                <button
+                  type="button"
+                  data-chat-jump-target
+                  onClick={() =>
+                    conversationCallActive
+                      ? endFriendCall()
+                      : incomingCall?.fromUserId === selectedFriend.id
+                        ? answerIncomingCall()
+                        : void startFriendCall(selectedFriend)
+                  }
+                >
+                  {conversationCallActive
+                    ? "End call"
+                    : incomingCall?.fromUserId === selectedFriend.id
+                      ? "Answer"
+                      : "Call"}
+                </button>
+              </form>
+            </section>
+          )}
+          {activeVoiceChannel?.type === "voice_direct" && (
+            <section
+              className={`friendsCallPanel ${showFriendsCallMedia ? "" : "controlsOnly"}`}
+              aria-live="polite"
+            >
+              <div className="friendsCallIdentity">
+                <small>
+                  {isFriendCall(activeVoiceChannel.id)
+                    ? joined
+                      ? "Direct call"
+                      : "Calling"
+                    : "Server voice"}
+                </small>
+                <strong className={directRemoteSpeaking ? "speaking" : ""}>
+                  {activeVoiceChannel.name}
+                </strong>
+                <span>{joining ? "Connecting…" : status}</span>
+              </div>
+              <div className="videoGrid friendsParticipantGrid">
+                <div
+                  className={`videoCard ${remoteScreenSharing ? "screenShare" : !remoteHasVideo ? "nameOnly" : ""} ${!callPeerPresent || hiddenDirectTiles.includes(remoteDirectTileId) ? "videoHidden" : ""}`}
+                  onDoubleClick={(event) =>
+                    fullscreenVideoTile(event.currentTarget)
+                  }
+                >
+                  <video
+                    ref={remoteVideo}
+                    autoPlay
+                    muted
+                    playsInline
+                    onLoadedMetadata={(event) =>
+                      setRemoteVideoQuality(videoQuality(event.currentTarget))
+                    }
+                    onResize={(event) =>
+                      setRemoteVideoQuality(videoQuality(event.currentTarget))
+                    }
+                  />
+                  {remoteHasVideo && (
+                    <StreamInfo
+                      quality={remoteVideoQuality}
+                      stats={directionalStreamStats(directVideoStats, "down")}
+                      name={directRemoteLabel}
+                    />
+                  )}
+                  <HideTileButton
+                    label={directRemoteLabel}
+                    onHide={() => hideDirectTile(remoteDirectTileId)}
+                  />
+                  {remoteScreenSharing && (
+                    <StreamVolume
+                      volume={streamVolume}
+                      onChange={setStreamVolume}
+                    />
+                  )}
+                  <span>
+                    {directRemoteName}
+                    {remoteScreenSharing ? " — screen" : ""}
+                  </span>
+                </div>
+                <div
+                  className={`videoCard ${screenSharing ? "screenShare" : cameraOff ? "nameOnly" : ""} ${hiddenDirectTiles.includes(localDirectTileId) ? "videoHidden" : ""}`}
+                  onDoubleClick={(event) =>
+                    fullscreenVideoTile(event.currentTarget)
+                  }
+                >
+                  <video
+                    ref={localVideo}
+                    autoPlay
+                    muted
+                    playsInline
+                    onLoadedMetadata={(event) =>
+                      setLocalVideoQuality(videoQuality(event.currentTarget))
+                    }
+                    onResize={(event) =>
+                      setLocalVideoQuality(videoQuality(event.currentTarget))
+                    }
+                  />
+                  {(screenSharing || !cameraOff) && (
+                    <StreamInfo
+                      quality={localVideoQuality}
+                      stats={directionalStreamStats(directVideoStats, "up")}
+                      name={directLocalLabel}
+                    />
+                  )}
+                  <HideTileButton
+                    label={directLocalLabel}
+                    onHide={() => hideDirectTile(localDirectTileId)}
+                  />
+                  <span>
+                    {session.user.name ?? "You"}
+                    {screenSharing ? " — screen" : ""}
+                  </span>
+                </div>
+                <div className="callVisibilityControls">
+                  {directSelfViewButton}
+                  {directHiddenMenu}
+                </div>
+              </div>
+              <div
+                className="controls voiceDock friendsCallControls"
+                aria-busy={!voiceReady}
+              >
+                {audioPlaybackBlocked && (
+                  <button type="button" onClick={() => void playRemoteAudio()}>
+                    Enable sound
+                  </button>
+                )}
+                <DeviceMenu
+                  kind="microphone"
+                  actionUnavailable={deafened}
+                  extraOptions={audioDeviceOptions}
+                  unavailable={!voiceReady}
+                  disabled={muted}
+                  devices={microphones}
+                  selectedId={microphoneId}
+                  onAction={toggleAudio}
+                  onRestart={() => void changeActiveMicrophone(microphoneId)}
+                  onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
+                />
+                <DeviceMenu
+                  kind="camera"
+                  extraOptions={cameraResolutionOptions}
+                  unavailable={!voiceReady}
+                  disabled={cameraOff}
+                  devices={cameras}
+                  selectedId={cameraId}
+                  onAction={() => void toggleVideo()}
+                  onSelect={(deviceId) => void changeActiveCamera(deviceId)}
+                />
+                <button
+                  className={screenSharing ? "stopSharing" : ""}
+                  disabled={!voiceReady}
+                  onClick={() => void toggleScreenShare()}
+                >
+                  {screenSharing ? "Stop sharing" : "Share screen"}
+                </button>
+                {directSoundboard}
+              </div>
+            </section>
+          )}
+        </section>
+        <aside className="memberSidebar friendsInfoSidebar">
+          <header className="memberSidebarHeader">
+            Profile
+            {closeUserList}
+          </header>
+          <div className="memberScroll">
+            {selectedFriend ? (
+              <button
+                type="button"
+                className="friendProfileCard"
+                onClick={() => setProfileUser(selectedFriend)}
+              >
+                <span className="avatar">
+                  {selectedFriend.name[0]?.toUpperCase()}
+                </span>
+                <strong>{selectedFriend.name}</strong>
+                <small>
+                  {onlineUserIds.includes(selectedFriend.id)
+                    ? statusLabels[userStatuses[selectedFriend.id] ?? "online"]
+                    : "Offline"}
+                </small>
+                <small>{formatUserHandle(selectedFriend.handle)}</small>
+              </button>
+            ) : (
+              <p className="empty">Select a friend to view their profile.</p>
+            )}
+          </div>
+          {legalLinks}
+        </aside>
+        {incomingCallOverlay}
+        {legalOverlay}
+        {compactLegalLinks}
+        {settingsOverlay}
+        {profileOverlay}
+        {screenShareOptionsOpen &&
+          activeVoiceChannel?.type === "voice_direct" &&
+          voiceReady && (
+            <ScreenShareOptions
+              onClose={() => setScreenShareOptionsOpen(false)}
+              onShare={(resolution) => void toggleScreenShare(resolution)}
+            />
+          )}
+        {serverContextMenu}
+        {notificationMuteMenu}
+        {messageContextDropdown}
+        {directDeletionDialog}
+        {managementOverlays}
+        {noticeToast}
+        {voiceTransferDialog}
+        {errorToast}
+      </WorkspaceShell>
+    );
+  }
+
+  if (serversLoaded && servers.length === 0) {
+    return (
+      <WorkspaceShell call={groupCall} help={helpTour} className="noServerPage">
+        {legalLinks}
+        <section>
+          <button
+            className="workspaceLogo noServerFriendsButton"
+            aria-label="Friends"
+            onClick={openFriendsHome}
+          >
+            LC
+            {notificationCount > 0 && (
+              <span className="notificationBadge">{notificationCount}</span>
+            )}
+          </button>
+          <h1>No servers yet</h1>
+          {session.user.role === "demo" ? (
+            <p>
+              Unfortunately, you currently don&apos;t have access to any
+              servers. Please contact the owner.
+            </p>
+          ) : (
+            <>
+              <p>Create your first server to get started.</p>
+              <form onSubmit={createServer}>
+                <label>
+                  Server name
+                  <input
+                    autoFocus
+                    maxLength={60}
+                    required
+                    value={formName}
+                    onChange={(event) => setFormName(event.target.value)}
+                  />
+                </label>
+                <button type="submit">Create server</button>
+              </form>
+            </>
+          )}
+          <button onClick={() => void signOut({ callbackUrl: "/login" })}>
+            Log out
+          </button>
+        </section>
+        {incomingCallOverlay}
+        {noticeToast}
+        {voiceTransferDialog}
+        {errorToast}
+        {legalOverlay}
+      </WorkspaceShell>
+    );
+  }
+
+  return (
+    <WorkspaceShell
+      call={groupCall}
+      help={helpTour}
+      className={`workspace ${panelClasses}`}
+      style={sidebarStyle}
+    >
+      <aside className="workspaceRail" aria-label="Workspaces">
+        <button
+          className="workspaceLogo"
+          aria-label="Friends"
+          onClick={openFriendsHome}
+        >
+          LC
+          {notificationCount > 0 && (
+            <span className="notificationBadge">{notificationCount}</span>
+          )}
+        </button>
+        <nav
+          className="serverScroller"
+          aria-label="Servers"
+          style={{ height: Math.max(0, servers.length * 60 - 6) }}
+        >
+          {servers.map((server) => (
+            <ServerNavButton
+              key={server.id}
+              server={server}
+              active={server.id === selectedServerId}
+              unread={unreadServerIds.has(server.id)}
+              mentions={serverMentionCounts[server.id] ?? 0}
+              voiceUsers={serverVoiceUsers(
+                server.id,
+                workspaceActivity.channels,
+                voicePresence,
+              )}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setServerContext({
+                  server,
+                  x: Math.min(event.clientX, window.innerWidth - 200),
+                  y: Math.max(
+                    8,
+                    Math.min(event.clientY, window.innerHeight - 110),
+                  ),
+                });
+              }}
+              onClick={() => {
+                if (server.id !== selectedServerId)
+                  void switchServer(server.id);
+              }}
+            />
+          ))}
+        </nav>
+        {session.user.role !== "demo" && (
+          <div
+            className="serverButtonWrap addServerButton"
+            onPointerEnter={(event) =>
+              event.currentTarget.style.setProperty(
+                "--server-tooltip-top",
+                `${event.currentTarget.getBoundingClientRect().top + 23}px`,
+              )
+            }
+          >
+            <button
+              className="workspaceButton"
+              aria-label="Create server"
+              onClick={() => setForm("server")}
+            >
+              +
+            </button>
+            <span className="serverTooltip" role="tooltip">
+              Create a server
+            </span>
+          </div>
+        )}
+      </aside>
+      <aside className="channelSidebar">
+        <header className="workspaceName">
+          <strong>
+            {servers.find((server) => server.id === selectedServerId)?.name ??
+              "LC"}
+          </strong>
+          {isSelectedServerOwner && selectedServerId && (
+            <button
+              type="button"
+              className="serverInviteButton"
+              title="Invite to server"
+              aria-label="Invite to server"
+              aria-haspopup="dialog"
+              onClick={() => {
+                setServerSettingsSection("invite-friends");
+
+                setServerSettingsOpen(true);
+              }}
+            >
+              <svg
+                aria-hidden="true"
+                width="19"
+                height="19"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+              >
+                <circle cx="9" cy="7" r="4" />
+                <path d="M2 21v-3a7 7 0 0 1 14 0v3M19 8v8m-4-4h8" />
+              </svg>
+            </button>
+          )}
+          {isSelectedServerOwner && selectedServerId && (
+            <div
+              className={`accountMenu serverActions ${serverSettingsOpen ? "open" : ""}`}
+            >
+              <button
+                className="accountMenuTrigger"
+                aria-label="Server settings"
+                aria-haspopup="dialog"
+                title="Server settings"
+                aria-expanded={serverSettingsOpen}
+                onClick={() => {
+                  setServerSettingsSection("overview");
+                  setFormName("");
+
+                  setServerSettingsOpen((current) => !current);
+                }}
+              >
+                <SettingsIcon />
+              </button>
+            </div>
+          )}
+        </header>
+        <nav>
+          <p className="sectionLabel">TEXT CHANNELS</p>
+          {serverChannelsLoaded !== selectedServerId && (
+            <LoadingSkeleton kind="channels" />
+          )}
+          {channels
+            .filter((channel) => channel.type === "text")
+            .map((channel) => (
+              <div
+                className="channelRow"
+                key={channel.id}
+                onContextMenu={(event) => openChannelContext(event, channel)}
+              >
+                <button
+                  className={`channel ${!callViewOpen && channel.id === selectedChannelId ? "active" : ""}`}
+                  title={channel.name}
+                  onClick={() => selectTextChannel(channel.id)}
+                >
+                  <span
+                    className={`channelName ${channelUnread[channel.id] || channelMentionCounts[channel.id] ? "channelUnread" : ""}`}
+                  >
+                    {channel.name}
+                  </span>
+                  <UnreadIndicator
+                    unread={channelUnread[channel.id]}
+                    mentions={channelMentionCounts[channel.id] ?? 0}
+                  />
+                </button>
+              </div>
+            ))}
+          <p className="sectionLabel">VOICE CHANNELS</p>
+          {channels
+            .filter((channel) => channel.type !== "text")
+            .map((channel) => (
+              <div
+                className="voiceChannel"
+                key={channel.id}
+                onContextMenu={(event) => {
+                  if ((event.target as Element).closest(".voiceParticipant"))
+                    return;
+                  openChannelContext(event, channel);
+                }}
+              >
+                <button
+                  className={`channel ${callViewOpen && channel.id === activeVoiceChannelId ? "active" : ""}`}
+                  onClick={() => selectVoiceChannel(channel)}
+                >
+                  <span className="channelIcon" aria-hidden="true">
+                    {channel.type === "voice_group" ? "◉" : "\u{1F50A}"}
+                  </span>
+                  <span className="channelName" title={channel.name}>
+                    {channel.name}
+                  </span>
+                </button>
+                {voicePresence[channel.id]?.some(
+                  (participant) => participant.camera || participant.screen,
+                ) && (
+                  <button
+                    className="openCallView"
+                    aria-label={`Open video view for ${channel.name}`}
+                    onClick={() => {
+                      if (activeVoiceChannelId !== channel.id) {
+                        selectVoiceChannel(channel);
+                        setCallViewOpen(true);
+                      } else {
+                        setCallViewOpen((current) => !current);
+                      }
+                    }}
+                  >
+                    ▣
+                  </button>
+                )}
+                {(voicePresence[channel.id]?.length ?? 0) > 0 && (
+                  <div className="voicePresence">
+                    {voicePresence[channel.id].map((participant, index) => (
+                      <span
+                        className={`voiceParticipant ${channel.id === activeVoiceChannelId && participant.speaking ? "speaking" : ""}`}
+                        key={
+                          participant.userId ?? `${participant.name}-${index}`
+                        }
+                        onContextMenu={(event) => {
+                          if (
+                            !isSelectedServerOwner ||
+                            !participant.userId ||
+                            participant.connecting ||
+                            participant.userId === session.user.id
+                          )
+                            return;
+                          event.preventDefault();
+                          setVoiceMenu({
+                            userId: participant.userId,
+                            name: participant.name,
+                            channelId: channel.id,
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        }}
+                      >
+                        <button
+                          className="voiceParticipantIdentity"
+                          type="button"
+                          disabled={!participant.userId}
+                          onClick={() =>
+                            participant.userId &&
+                            setProfileUser({
+                              id: participant.userId,
+                              name: participant.name,
+                            })
+                          }
+                        >
+                          <i>{participant.name[0]?.toUpperCase()}</i>
+                          <b>{participant.name}</b>
+                          {participant.connecting && (
+                            <small
+                              className="voiceConnectingLabel"
+                              role="status"
+                            >
+                              Connecting…
+                            </small>
+                          )}
+                        </button>
+                        <ParticipantMediaIndicators
+                          participant={participant}
+                          selfState={
+                            participant.userId === session.user.id
+                              ? { muted, deafened }
+                              : undefined
+                          }
+                          showCamera={
+                            channel.type === "voice_group" ||
+                            !participant.screen
+                          }
+                          onCamera={() =>
+                            openParticipantMedia(channel, participant, "camera")
+                          }
+                          onWatch={() =>
+                            openParticipantMedia(channel, participant, "screen")
+                          }
+                        />
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+        </nav>
+        {profilePanel}
+        {sidebarResizer}
+      </aside>
+      <section
+        className={`room ${selectedChannel?.type === "text" ? "textOnly" : ""}`}
+      >
+        <header className="roomHeader">
+          {panelControls}
+          <strong>
+            {displayedChannel
+              ? `${displayedChannel.type === "text" ? "" : displayedChannel.type === "voice_group" ? "◉ " : "\u{1F50A} "}${displayedChannel.name}`
+              : "Select a channel"}
+          </strong>
+          {selectedChannel?.type === "text" && (
+            <ConversationSearch
+              key={composerKey}
+              channelId={selectedChannelId}
+              onResult={showSearchResult}
+            />
+          )}
+        </header>
+        {activeVoiceChannel?.type === "voice_direct" && (
+          <section
+            className={`callPanel ${callViewOpen ? "" : "backgroundCall"}`}
+          >
+            <div
+              className={`videoGrid ${focusedDirectVideo ? "focused" : ""}`}
+              ref={directVideoGrid}
+            >
+              <div
+                className={`videoCard ${screenSharing ? "screenShare" : cameraOff ? "nameOnly" : ""} ${hiddenDirectTiles.includes(localDirectTileId) || (focusedDirectVideo && focusedDirectVideo !== "local") ? "videoHidden" : ""}`}
+                onDoubleClick={(event) =>
+                  fullscreenVideoTile(event.currentTarget)
+                }
+                onClick={() =>
+                  setFocusedDirectVideo((current) =>
+                    current === "local" ? null : "local",
+                  )
+                }
+              >
+                <video
+                  ref={localVideo}
+                  autoPlay
+                  muted
+                  playsInline
+                  onLoadedMetadata={(event) =>
+                    setLocalVideoQuality(videoQuality(event.currentTarget))
+                  }
+                  onResize={(event) =>
+                    setLocalVideoQuality(videoQuality(event.currentTarget))
+                  }
+                />
+                <HideTileButton
+                  label={directLocalLabel}
+                  onHide={() => hideDirectTile(localDirectTileId)}
+                />
+                <span>
+                  {session.user.name ?? "You"}
+                  {screenSharing ? " — screen" : ""}
+                </span>
+                {(screenSharing || !cameraOff) && (
+                  <StreamInfo
+                    quality={localVideoQuality}
+                    stats={directionalStreamStats(directVideoStats, "up")}
+                    name={directLocalLabel}
+                  />
+                )}
+              </div>
+              <div
+                className={`videoCard remote ${remoteScreenSharing ? "screenShare" : !remoteHasVideo ? "nameOnly" : ""} ${!callPeerPresent || hiddenDirectTiles.includes(remoteDirectTileId) || (focusedDirectVideo && focusedDirectVideo !== "remote") ? "videoHidden" : ""}`}
+                onDoubleClick={(event) =>
+                  fullscreenVideoTile(event.currentTarget)
+                }
+                onClick={() =>
+                  setFocusedDirectVideo((current) =>
+                    current === "remote" ? null : "remote",
+                  )
+                }
+              >
+                <video
+                  ref={remoteVideo}
+                  autoPlay
+                  muted
+                  playsInline
+                  onLoadedMetadata={(event) =>
+                    setRemoteVideoQuality(videoQuality(event.currentTarget))
+                  }
+                  onResize={(event) =>
+                    setRemoteVideoQuality(videoQuality(event.currentTarget))
+                  }
+                />
+                <HideTileButton
+                  label={directRemoteLabel}
+                  onHide={() => hideDirectTile(remoteDirectTileId)}
+                />
+                {remoteScreenSharing && (
+                  <StreamVolume
+                    volume={streamVolume}
+                    onChange={setStreamVolume}
+                  />
+                )}
+                <span>
+                  {directRemoteName}
+                  {remoteScreenSharing ? " — screen" : ""}
+                </span>
+                {remoteHasVideo && (
+                  <StreamInfo
+                    quality={remoteVideoQuality}
+                    stats={directionalStreamStats(directVideoStats, "down")}
+                    name={directRemoteLabel}
+                  />
+                )}
+              </div>
+              <div className="callVisibilityControls">
+                {directSelfViewButton}
+                {directHiddenMenu}
+              </div>
+              {focusedDirectVideo && (
+                <div className="focusActions">
+                  <button onClick={() => setFocusedDirectVideo(null)}>
+                    Show grid
+                  </button>
+                  <button
+                    onClick={() => fullscreenVideoTile(directVideoGrid.current)}
+                  >
+                    Fullscreen
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="controls voiceDock" aria-busy={!voiceReady}>
+              {audioPlaybackBlocked && (
+                <button type="button" onClick={() => void playRemoteAudio()}>
+                  Enable sound
+                </button>
+              )}
+              <DeviceMenu
+                kind="microphone"
+                actionUnavailable={deafened}
+                extraOptions={audioDeviceOptions}
+                unavailable={!voiceReady}
+                disabled={muted}
+                devices={microphones}
+                selectedId={microphoneId}
+                onAction={toggleAudio}
+                onRestart={() => void changeActiveMicrophone(microphoneId)}
+                onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
+              />
+              <DeviceMenu
+                kind="camera"
+                extraOptions={cameraResolutionOptions}
+                unavailable={!voiceReady}
+                disabled={cameraOff}
+                devices={cameras}
+                selectedId={cameraId}
+                onAction={() => void toggleVideo()}
+                onSelect={(deviceId) => void changeActiveCamera(deviceId)}
+              />
+              <button
+                className={screenSharing ? "stopSharing" : ""}
+                disabled={!voiceReady}
+                onClick={() => void toggleScreenShare()}
+              >
+                {screenSharing ? "Stop sharing" : "Share screen"}
+              </button>
+              {directSoundboard}
+            </div>
+            {mediaNotice && <p className="mediaNotice">{mediaNotice}</p>}
+          </section>
+        )}
+        {selectedChannel?.type === "text" && !callViewOpen && (
+          <section className="chat">
+            <ChatHistory
+              key={`${selectedChannelId}:${activeContext?.targetId ?? "latest"}`}
+              threadId={`${selectedChannelId}:${activeContext?.targetId ?? "latest"}`}
+              focusMessageId={
+                activeContext?.targetId ?? conversationUnreadId ?? undefined
+              }
+              firstUnreadId={!activeContext ? conversationUnreadId : undefined}
+              onLatestVisibilityChange={updateLatestVisibility}
+              contextNotice={searchContextNotice}
+              onJumpToPresent={
+                activeContext ? () => setHistoryContext(null) : undefined
+              }
+              messages={shownChannelMessages}
+              ready={
+                !!activeContext || channelHistoryLoaded === selectedChannelId
+              }
+              hasMore={!activeContext && Boolean(nextMessageCursor)}
+              loadingOlder={loadingMoreMessages}
+              onLoadOlder={loadMoreMessages}
+              ownUserId={session.user.id}
+            >
+              {channelHistoryLoaded === selectedChannelId &&
+                messages.length === 0 && (
+                  <EmptyState
+                    title={
+                      selectedChannelId
+                        ? "The conversation starts here"
+                        : "Choose a text channel"
+                    }
+                    description={
+                      selectedChannelId
+                        ? "This channel has no messages yet. Send the first one."
+                        : "Create or select a channel to begin."
+                    }
+                  />
+                )}
+              {shownChannelMessages.map((message) => (
+                <article
+                  className={`${message.authorId === session.user.id ? "messageOwn" : "messageOther"} ${message.deleted ? "deletedMessage" : ""}`}
+                  key={message.id}
+                  data-message-id={message.id}
+                  data-mentioned={
+                    (!message.deleted &&
+                      message.mentions?.some(
+                        (mention) => mention.userId === session.user.id,
+                      )) ||
+                    undefined
+                  }
+                  data-search-match={
+                    activeContext?.targetId === message.id || undefined
+                  }
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMessageMenu({
+                      message,
+                      x: Math.min(event.clientX, window.innerWidth - 190),
+                      y: Math.min(event.clientY, window.innerHeight - 110),
+                    });
+                  }}
+                >
+                  {message.replyTo && (
+                    <div className="replyPreview">
+                      <strong>{message.replyTo.author}</strong>
+                      <span>{message.replyTo.text}</span>
+                    </div>
+                  )}
+                  <MessageHeader
+                    name={message.author}
+                    edited={!!message.editedAt && !message.deleted}
+                    time={message.time}
+                    onProfile={() =>
+                      setProfileUser({
+                        id: message.authorId,
+                        name: message.author,
+                        ...friends.find(
+                          (friend) => friend.id === message.authorId,
+                        ),
+                      })
+                    }
+                  />
+                  <p>
+                    <MentionText
+                      text={message.text}
+                      mentions={message.deleted ? [] : message.mentions}
+                      onProfile={setProfileUser}
+                    />
+                  </p>
+                  <MessageAttachments
+                    files={message.attachments}
+                    deleted={message.deleted}
+                  />
+                </article>
+              ))}
+            </ChatHistory>
+            <form onSubmit={submit}>
+              <MessageComposer
+                key={composerKey}
+                mentionMembers={members.filter(
+                  (member) => member.id !== session.user.id,
+                )}
+                value={activeEdit ? editDraft : draft}
+                onChange={activeEdit ? setEditDraft : setDraft}
+                editId={activeEdit?.message.id}
+                onCancelEdit={() => setEditingMessage(null)}
+                files={activeEdit ? [] : files}
+                onFiles={changeFiles}
+                busy={sendingMessage}
+                progress={uploadProgress}
+                disabled={!selectedChannelId}
+                placeholder={
+                  selectedChannel
+                    ? `Message #${selectedChannel.name}`
+                    : "Select a text channel"
+                }
+              >
+                {!activeEdit && replyingTo && (
+                  <div className="replyingTo">
+                    <span>
+                      Replying to <strong>{replyingTo.author}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Cancel reply"
+                      onClick={() => setReplyingTo(null)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </MessageComposer>
+              <button
+                data-chat-send
+                disabled={
+                  sendingMessage ||
+                  !selectedChannelId ||
+                  messageCooldown.seconds > 0
+                }
+                title={
+                  messageCooldown.seconds
+                    ? "Message limit reached. Please wait before sending again."
+                    : undefined
+                }
+              >
+                {messageCooldown.seconds
+                  ? `Wait ${messageCooldown.seconds}s`
+                  : activeEdit
+                    ? "Edit"
+                    : "Send"}
+              </button>
+            </form>
+          </section>
+        )}
+      </section>
+      <aside className="memberSidebar">
+        <header className="memberSidebarHeader">
+          {closeUserList}
+          <strong>ALL USERS — {members.length}</strong>
+        </header>
+        <input
+          className="memberSearch"
+          type="search"
+          value={memberSearch}
+          onChange={(event) => setMemberSearch(event.target.value)}
+          placeholder="Search users"
+          aria-label="Search users"
+        />
+        <div className="memberScroll">
+          <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
+          {onlineMembers.map((member) => (
+            <button
+              type="button"
+              className="member online"
+              data-status={userStatuses[member.id] ?? "online"}
+              key={member.id}
+              onClick={() => setProfileUser(member)}
+              onContextMenu={(event) => {
+                if (
+                  !(isSelectedServerOwner && member.role !== "owner") &&
+                  !friends.some(
+                    (friend) =>
+                      friend.id === member.id && friend.status === "accepted",
+                  )
+                )
+                  return;
+                event.preventDefault();
+                setMemberMenu({
+                  member,
+                  x: Math.min(event.clientX, window.innerWidth - 190),
+                  y: Math.min(event.clientY, window.innerHeight - 70),
+                });
+              }}
+            >
+              <span className={`avatar role-${member.role}`}>
+                {member.name[0]?.toUpperCase()}
+              </span>
+              <span className="memberIdentity">
+                <strong>{member.name}</strong>
+                <small>
+                  {statusLabels[userStatuses[member.id] ?? "online"]} ·{" "}
+                  {member.role}
+                </small>
+              </span>
+            </button>
+          ))}
+          <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
+          {offlineMembers.map((member) => (
+            <button
+              type="button"
+              className="member offline"
+              key={member.id}
+              onClick={() => setProfileUser(member)}
+              onContextMenu={(event) => {
+                if (
+                  !(isSelectedServerOwner && member.role !== "owner") &&
+                  !friends.some(
+                    (friend) =>
+                      friend.id === member.id && friend.status === "accepted",
+                  )
+                )
+                  return;
+                event.preventDefault();
+                setMemberMenu({
+                  member,
+                  x: Math.min(event.clientX, window.innerWidth - 190),
+                  y: Math.min(event.clientY, window.innerHeight - 70),
+                });
+              }}
+            >
+              <span className={`avatar role-${member.role}`}>
+                {member.name[0]?.toUpperCase()}
+              </span>
+              <span className="memberIdentity">
+                <strong>{member.name}</strong>
+                <small>{member.role}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+        {legalLinks}
+      </aside>
+      {legalOverlay}
+      {settingsOverlay}
+      {profileOverlay}
+      {screenShareOptionsOpen &&
+        activeVoiceChannel?.type === "voice_direct" &&
+        voiceReady && (
+          <ScreenShareOptions
+            onClose={() => setScreenShareOptionsOpen(false)}
+            onShare={(resolution) => void toggleScreenShare(resolution)}
+          />
+        )}
+      {serverContextMenu}
+      {notificationMuteMenu}
+      {channelContextMenu}
+      {memberMenu && (
+        <div
+          className="messageContextMenu"
+          ref={memberContextMenu}
+          role="menu"
+          style={{ left: memberMenu.x, top: memberMenu.y }}
+        >
+          {friends.some(
+            (friend) =>
+              friend.id === memberMenu.member.id &&
+              friend.status === "accepted",
+          ) && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(event) => {
+                openNotificationMute(
+                  {
+                    clientX: memberMenu.x,
+                    clientY: memberMenu.y,
+                    preventDefault: () => event.preventDefault(),
+                  },
+                  "direct",
+                  memberMenu.member,
+                );
+                setMemberMenu(null);
+              }}
+            >
+              Mute notifications…
+            </button>
+          )}
+          {isSelectedServerOwner && memberMenu.member.role !== "owner" && (
+            <button
+              className="danger"
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setKickCandidate(memberMenu.member);
+                setMemberMenu(null);
+              }}
+            >
+              Kick from server
+            </button>
+          )}
+        </div>
+      )}
+      {voiceMenu && (
+        <VoiceParticipantMenu
+          key={`${voiceMenu.channelId}:${voiceMenu.userId}:${voiceMenu.x}:${voiceMenu.y}`}
+          x={voiceMenu.x}
+          y={voiceMenu.y}
+          channels={channels.filter(
+            (channel) =>
+              channel.type !== "text" && channel.id !== voiceMenu.channelId,
+          )}
+          onClose={() => setVoiceMenu(null)}
+          onKick={() =>
+            void kickVoiceParticipant(voiceMenu.userId, voiceMenu.channelId)
+          }
+          onMove={(destinationId) =>
+            void moveVoiceParticipant(
+              voiceMenu.userId,
+              voiceMenu.channelId,
+              destinationId,
+            )
+          }
+        />
+      )}
+      {messageContextDropdown}
+      {deleteServerOpen && (
+        <div className="modalBackdrop deletionConfirmationBackdrop">
+          <section className="modalCard deletionConfirmationModal">
+            <h2>Delete server?</h2>
+            <p>
+              This permanently deletes{" "}
+              <b>
+                {servers.find((server) => server.id === selectedServerId)?.name}
+              </b>
+              , including its channels and messages.
+            </p>
+            <div className="modalActions">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteServerOpen(false);
+                  setServerSettingsOpen(false);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => void deleteServer()}
+              >
+                Delete server
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {managementOverlays}
+      {compactLegalLinks}
       {errorToast}
       {noticeToast}
       {voiceTransferDialog}
@@ -7043,7 +7700,10 @@ function toChatMessage(message: {
   authorId: string;
   author: string;
   text: string;
+  attachments?: MessageAttachment[];
   createdAt?: string | Date;
+  editedAt?: string | Date | null;
+  mentions?: Mention[];
   deleted?: boolean;
   deletedAt?: string | Date | null;
   replyTo?: { id: string; text: string; author: string } | null;
@@ -7054,6 +7714,13 @@ function toChatMessage(message: {
     id: message.id,
     authorId: message.authorId,
     author: message.author,
+    mentions:
+      message.deleted || message.deletedAt ? [] : (message.mentions ?? []),
+    editedAt: message.editedAt
+      ? new Date(message.editedAt).toISOString()
+      : null,
+    attachments:
+      message.deleted || message.deletedAt ? [] : (message.attachments ?? []),
     text:
       message.deleted || message.deletedAt ? "Deleted message" : message.text,
     deleted: Boolean(message.deleted || message.deletedAt),

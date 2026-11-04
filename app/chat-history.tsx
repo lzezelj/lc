@@ -3,6 +3,7 @@ import { LoadingSkeleton } from "./loading-skeleton";
 
 import {
   Children,
+  Fragment,
   cloneElement,
   isValidElement,
   useEffect,
@@ -21,6 +22,11 @@ export function ChatHistory({
   onLoadOlder,
   ownUserId,
   children,
+  focusMessageId,
+  contextNotice,
+  onJumpToPresent,
+  firstUnreadId,
+  onLatestVisibilityChange,
 }: {
   threadId: string;
   messages: { id: string; authorId: string }[];
@@ -30,12 +36,22 @@ export function ChatHistory({
   onLoadOlder: () => Promise<void>;
   ownUserId: string;
   children: ReactNode;
+  focusMessageId?: string;
+  contextNotice?: ReactNode;
+  onJumpToPresent?: () => void;
+  firstUnreadId?: string | null;
+  onLatestVisibilityChange?: (visible: boolean) => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const wrapper = useRef<HTMLDivElement>(null);
   const jump = useRef<HTMLButtonElement>(null);
   const [showJump, setShowJump] = useState(false);
+  const hasExternalJump = Boolean(onJumpToPresent);
   const latestId = messages.at(-1)?.id;
+  const visibilityCallback = useRef(onLatestVisibilityChange);
+  useEffect(() => {
+    visibilityCallback.current = onLatestVisibilityChange;
+  }, [onLatestVisibilityChange]);
   const tones = new Map<string, number>();
   let tone = 0;
   messages.forEach((message, index) => {
@@ -47,14 +63,27 @@ export function ChatHistory({
     const node = root.current;
     const latest = node?.querySelectorAll<HTMLElement>("[data-message-id]");
     const lastMessage = latest?.[latest.length - 1];
-    if (!node || !ready || !lastMessage) return;
+    if (!node || !ready || !lastMessage) {
+      visibilityCallback.current?.(false);
+      return;
+    }
     const observer = new IntersectionObserver(
-      ([entry]) => setShowJump(!entry.isIntersecting),
+      ([entry]) => {
+        setShowJump(!entry.isIntersecting);
+        visibilityCallback.current?.(
+          entry.isIntersecting &&
+            !hasExternalJump &&
+            node.scrollHeight - node.clientHeight - node.scrollTop <= 4,
+        );
+      },
       { root: node },
     );
     observer.observe(lastMessage);
-    return () => observer.disconnect();
-  }, [latestId, ready, threadId]);
+    return () => {
+      observer.disconnect();
+      visibilityCallback.current?.(false);
+    };
+  }, [latestId, ready, threadId, hasExternalJump]);
   useLayoutEffect(() => {
     const host = wrapper.current;
     const button = jump.current;
@@ -81,7 +110,7 @@ export function ChatHistory({
     observer.observe(host);
     observer.observe(send);
     return () => observer.disconnect();
-  }, [showJump, threadId, ready]);
+  }, [showJump, hasExternalJump, threadId, ready]);
   const pending = useRef(false);
   const state = useRef<{
     thread: string;
@@ -151,6 +180,25 @@ export function ChatHistory({
     };
     remember();
   }, [threadId, messages, ready, ownUserId]);
+  useLayoutEffect(() => {
+    const node = root.current;
+    const target = Array.from(
+      node?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [],
+    ).find((element) => element.dataset.messageId === focusMessageId);
+    if (node && target && ready) {
+      node.scrollTop +=
+        target.getBoundingClientRect().top -
+        node.getBoundingClientRect().top -
+        (node.clientHeight - target.offsetHeight) / 2;
+      remember();
+    }
+    if (node)
+      visibilityCallback.current?.(
+        ready &&
+          !hasExternalJump &&
+          node.scrollHeight - node.clientHeight - node.scrollTop <= 4,
+      );
+  }, [focusMessageId, ready, threadId, hasExternalJump]);
   async function loadOlder() {
     if (!ready || !hasMore || loadingOlder || pending.current) return;
     pending.current = true;
@@ -161,7 +209,11 @@ export function ChatHistory({
     }
   }
   return (
-    <div className="chatHistory" ref={wrapper}>
+    <div
+      className={`chatHistory ${contextNotice ? "hasSearchContext" : ""}`}
+      ref={wrapper}
+    >
+      {contextNotice}
       <div
         ref={root}
         tabIndex={-1}
@@ -169,6 +221,15 @@ export function ChatHistory({
         aria-busy={!ready}
         onScroll={() => {
           remember();
+          if (root.current)
+            visibilityCallback.current?.(
+              ready &&
+                !hasExternalJump &&
+                root.current.scrollHeight -
+                  root.current.clientHeight -
+                  root.current.scrollTop <=
+                  4,
+            );
           if (root.current && root.current.scrollTop < 80) void loadOlder();
         }}
       >
@@ -183,6 +244,13 @@ export function ChatHistory({
           </button>
         )}
         {!ready && <LoadingSkeleton kind="messages" />}
+        {ready &&
+          firstUnreadId &&
+          !messages.some((message) => message.id === firstUnreadId) && (
+            <p className="unreadOutsidePage" role="status">
+              Unread messages outside this loaded history
+            </p>
+          )}
         {ready
           ? Children.map(children, (child) => {
               if (
@@ -193,13 +261,28 @@ export function ChatHistory({
               )
                 return child;
               const id = child.props["data-message-id"];
-              return id && tones.has(id)
-                ? cloneElement(child, { "data-message-tone": tones.get(id) })
-                : child;
+              const content =
+                id && tones.has(id)
+                  ? cloneElement(child, { "data-message-tone": tones.get(id) })
+                  : child;
+              return id === firstUnreadId ? (
+                <Fragment key={id}>
+                  <div
+                    className="newMessagesDivider"
+                    role="separator"
+                    aria-label="New messages"
+                  >
+                    <span>New messages</span>
+                  </div>
+                  {content}
+                </Fragment>
+              ) : (
+                content
+              );
             })
           : null}
       </div>
-      {ready && messages.length > 0 && showJump && (
+      {ready && (hasExternalJump || (messages.length > 0 && showJump)) && (
         <button
           ref={jump}
           type="button"
@@ -207,6 +290,10 @@ export function ChatHistory({
           aria-label="Jump to present"
           title="Jump to present"
           onClick={() => {
+            if (onJumpToPresent) {
+              onJumpToPresent();
+              return;
+            }
             const node = root.current;
             if (!node) return;
             node.focus({ preventScroll: true });

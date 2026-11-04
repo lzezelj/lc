@@ -76,8 +76,6 @@ button {
 .panelControls > button:nth-child(2) { left: max(44px, calc(var(--rail-width) + var(--channel-width) - 40px)); }
 .workspace.channelsHidden .panelControls > button:nth-child(2) { left: calc(var(--rail-width) + 20px); }
 .panelControls > button:nth-child(3) { right: 12px; }
-.panelControls > .helpTrigger, .noServerPage > .helpTrigger { position: fixed; top: 12px; right: 52px; z-index: 45; display: grid; place-items: center; width: 32px; height: 32px; padding: 5px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: #202638; }
-.helpTrigger:hover { background: #2b4369; }
 
 .loadingSkeleton { width: 100%; padding: 14px; pointer-events: none; }
 .skeletonLabel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -538,12 +536,11 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .workspaceName .serverActions { margin: 0; }
 .workspace:has(.serverInviteButton) .workspaceName { padding-right: 126px; }
 .workspaceName .serverInviteButton { position: fixed; top: 12px; left: calc(var(--rail-width) + var(--channel-width) - 78px); z-index: 46; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 7px; background: #252b3b; color: var(--ink); }
-.workspace .roomHeader:has(.demoAccountsMenu) { padding-right: 26px; }
-.demoAccountsMenu { order: 2; margin-left: 8px; }
-.demoAccountsMenu > .accountMenuTrigger { position: relative; z-index: 46; }
-.workspace.userListToggled .roomHeader:has(.demoAccountsMenu) { padding-right: 64px; }
+.workspace .roomHeader:has(.conversationSearch) { padding-right: 26px; }
+.workspace.userListToggled .roomHeader:has(.conversationSearch) { padding-right: 64px; }
 @media (max-width: 920px) {
-  .workspace .roomHeader:has(.demoAccountsMenu) { padding-right: 64px; }
+  .conversationSearch .messageSearchResults { position: fixed; top: 68px; left: 12px; right: 12px; width: auto; max-height: calc(100dvh - 140px); }
+  .workspace .roomHeader:has(.conversationSearch) { padding-right: 64px; }
 }
 .screenShareOptions { display: grid; gap: 16px; padding: 24px; }
 .screenShareOptions .modalActions { display: flex; justify-content: flex-end; gap: 10px; }
@@ -604,10 +601,16 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 }
 
 .channelRow .channel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.channelRow .channelName { flex: 0 1 auto; }
+.channelRow .activityIndicator { margin-left: 0; }
 
 .connectionIndicators .pingIndicator {
   margin-left: 0;
@@ -1700,6 +1703,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .chat form {
   display: flex;
+  align-items: flex-end;
   margin: 0 18px 18px;
   padding: 8px;
   border-radius: 9px;
@@ -1707,10 +1711,113 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 .messageComposer {
+  position: relative;
   display: grid;
   min-width: 0;
   flex: 1;
 }
+
+.mentionSuggestions { position: absolute; z-index: 55; bottom: calc(100% + 8px); left: 0; width: min(380px, 100%); max-height: 260px; overflow-y: auto; padding: 6px; border: 1px solid #35445f; border-radius: 9px; background: #151925; box-shadow: 0 12px 32px #0008; }
+.chat form .mentionSuggestions button { display: flex; align-items: center; gap: 9px; width: 100%; margin: 2px 0; padding: 8px; background: transparent; color: var(--ink); text-align: left; }
+.chat form .mentionSuggestions button[aria-selected="true"], .chat form .mentionSuggestions button:hover { background: #293e60; }
+.mentionSuggestions button > span:last-child { display: grid; min-width: 0; gap: 3px; }
+.mentionSuggestions strong, .mentionSuggestions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mentionSuggestions strong { font-size: 12px; }
+.mentionSuggestions small { color: var(--muted); font-size: 11px; }
+.mentionSuggestions .avatar { flex: 0 0 30px; width: 30px; height: 30px; }
+.chat .messageMention { display: inline; padding: 1px 4px; border: 0; border-radius: 4px; background: #78a4ff26; color: #b5cdff; font: inherit; font-weight: 600; cursor: pointer; }
+.chat .messageMention:hover { background: #78a4ff40; }
+.chatLog article[data-mentioned] { box-shadow: inset 3px 0 var(--accent); }
+.newMessagesDivider { display: flex; align-items: center; gap: 10px; margin: 12px 0; color: var(--accent); font-size: 11px; font-weight: 700; }
+.newMessagesDivider::before, .newMessagesDivider::after { content: ""; flex: 1; height: 1px; background: #78a4ff80; }
+.chat .unreadOutsidePage { margin: 8px 0 12px; color: var(--accent); font-size: 11px; text-align: center; }
+.activityIndicator { position: relative; display: inline-grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; margin-left: auto; }
+.activityDot { position: absolute; width: 11px; height: 11px; border-radius: 50%; background: var(--ink); }
+.activityMentionCount { position: relative; z-index: 1; display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid #101420; border-radius: 10px; background: #d65065; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; }
+.serverActivityIndicator { position: absolute; top: -2px; right: -2px; margin: 0; }
+.notificationSettings { display: grid; gap: 10px; }
+.notificationSettings > input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #354158; border-radius: 7px; background: #111724; color: var(--ink); font: inherit; }
+.notificationMuteMenu { position: fixed; z-index: 160; width: min(360px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 10px; border: 1px solid #354158; border-radius: 10px; background: #151925; box-shadow: 0 12px 36px #0008; }
+.notificationMuteMenu > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.notificationMuteMenu > header > button { padding: 5px 9px; border: 0; border-radius: 5px; background: #272e40; color: var(--ink); }
+.notificationSettings h4 { margin: 14px 0 0; }
+.notificationPreference { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: #1b2232; }
+.notificationPreference > strong { overflow-wrap: anywhere; }
+.notificationPreference label { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+.notificationPreference select { min-width: 0; max-width: 70%; padding: 7px; border: 1px solid #354158; border-radius: 6px; background: #111724; color: var(--ink); font: inherit; }
+
+.messageEdited { color: var(--muted); font-size: 10px; font-weight: 400; }
+.conversationSearch { position: relative; min-width: 0; width: min(260px, 45%); margin-left: auto; }
+.conversationSearch form { display: flex; align-items: center; min-width: 0; padding: 2px 4px 2px 10px; border: 1px solid #354158; border-radius: 7px; background: #141a28; }
+.conversationSearch input { min-width: 0; width: 100%; padding: 4px 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; }
+.conversationSearch:focus-within form { border-color: var(--accent); }
+.conversationSearch button { display: grid; place-items: center; flex-shrink: 0; padding: 5px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); }
+.conversationSearch button:disabled { opacity: .5; cursor: not-allowed; }
+.conversationSearch button:hover { background: #293750; color: var(--ink); }
+.messageSearchResults { position: absolute; z-index: 55; top: calc(100% + 8px); right: 0; width: min(380px, calc(100vw - 24px)); max-height: min(520px, calc(100dvh - 100px)); overflow-y: auto; border: 1px solid #35445f; border-radius: 10px; padding: 8px; background: #151925; box-shadow: 0 12px 36px #0008; text-align: left; }
+.searchResultsHeading { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 6px 10px; }
+.searchResultsHeading strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.messageSearchResults > p { padding: 8px; margin: 0; color: var(--muted); font-size: 12px; }
+.conversationSearch .messageSearchResult { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; width: 100%; margin: 3px 0; padding: 10px; border: 1px solid var(--line); text-align: left; background: #1c2232; color: var(--ink); }
+.conversationSearch .messageSearchResult > span { display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: baseline; margin: 0; gap: 6px; color: var(--muted); font-size: 11px; text-align: left; }
+.messageSearchResult time { font-size: 10px; }
+.messageSearchResult p { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin: 6px 0 0; font-size: 12px; white-space: pre-wrap; text-align: left; }
+.conversationSearch .loadSearchResults { width: 100%; padding: 10px; }
+.chatHistory.hasSearchContext { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.searchContextNotice { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; background: #202f4a; color: var(--muted); font-size: 12px; }
+.chatLog article[data-search-match] { outline: 1px solid var(--accent); outline-offset: -1px; background: #263957; }
+.editingMessage { color: var(--accent); }
+.demoSettingsActions { display: flex; flex-wrap: wrap; gap: 10px; }
+.demoSettingsActions button { padding: 10px 14px; border: 1px solid #354158; border-radius: 7px; background: #222c40; color: var(--ink); }
+
+.composerInputRow { display: flex; align-items: flex-end; min-width: 0; }
+.chat .composerInputRow textarea {
+  box-sizing: border-box;
+  display: block;
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  padding: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  line-height: 20px;
+  min-height: 36px;
+  max-height: 76px;
+  overflow-y: hidden;
+}
+.chat .composerInputRow .addAttachment { padding: 8px; background: transparent; color: var(--muted); display: grid; place-items: center; height: 36px; }
+.chat .composerInputRow .addAttachment:hover { color: var(--ink); background: #30384d; }
+.attachmentDragging { outline: 2px dashed var(--accent); border-radius: 6px; }
+.composerHint { padding: 4px 8px; font-size: 12px; color: var(--muted); }
+.pendingAttachments { list-style: none; margin: 0; padding: 4px 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.pendingAttachments li { display: flex; align-items: center; min-width: 0; max-width: 100%; background: #1c2232; border-radius: 6px; }
+.pendingAttachments span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 8px; font-size: 12px; }
+.chat .pendingAttachments button { padding: 4px 8px; background: transparent; }
+.messageAttachments { display: grid; gap: 8px; max-width: min(360px, 100%); margin-top: 6px; }
+.messageOwn .messageAttachments { margin-left: auto; }
+.messageAttachment { min-width: 0; overflow: hidden; border: 1px solid #30394d; border-radius: 10px; background: #151b28; text-align: left; }
+.attachmentFileRow { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px; }
+.attachmentFileIcon { display: grid; place-items: center; flex: 0 0 36px; width: 36px; height: 40px; border-radius: 8px; background: #78a4ff14; color: var(--accent); }
+.attachmentDetails { display: grid; gap: 4px; flex: 1; min-width: 0; text-align: left; }
+.attachmentDetails strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 13px; font-weight: 600; }
+.attachmentDetails span { color: var(--muted); font-size: 11px; }
+.attachmentDownload { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border: 1px solid #354158; border-radius: 8px; background: #222c40; color: var(--accent); text-decoration: none; }
+.attachmentDownload:hover { background: #2b3b59; border-color: #5975a5; }
+.attachmentDownload:focus-visible, .attachmentThumbnail:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.attachmentThumbnail { display: block; width: 100%; padding: 8px; border: 0; border-bottom: 1px solid var(--line); background: #101520; cursor: zoom-in; }
+.attachmentThumbnail img { display: block; width: 100%; height: 220px; object-fit: contain; border-radius: 4px; }
+.attachmentPreviewModal { width: min(1040px, calc(100vw - 32px)); padding: 20px; }
+.attachmentPreviewModal > header { margin-bottom: 16px; }
+.attachmentPreviewModal h2 { font-size: 18px; }
+.attachmentPreviewModal .attachmentFileRow { padding: 8px 0 0; }
+.attachmentPreviewStage { display: grid; place-items: center; min-height: min(240px, 40dvh); border: 1px solid var(--line); border-radius: 10px; background: #0d111b; overflow: hidden; }
+.attachmentPreviewStage img { display: block; width: 100%; height: min(64dvh, 680px); object-fit: contain; }
+.attachmentPreviewStage img[hidden] { display: none; }
+.attachmentPreviewStage p { max-width: 44ch; margin: 0; padding: 24px; color: var(--muted); font-size: 14px; text-align: center; }
 
 .replyingTo {
   display: flex;
@@ -1877,6 +1984,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .appLegalLinks {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 var(--legal-footer-height);
   min-height: var(--legal-footer-height);
   align-items: center;
@@ -1886,6 +1994,21 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   border-top: 1px solid var(--line);
   background: #121622;
   font-size: 11px;
+}
+
+.compactWorkspaceLinks { display: none; }
+.workspace.userListToggled > .compactWorkspaceLinks { display: block; position: fixed; z-index: 40; bottom: 0; right: 0; width: calc(100% - var(--rail-width) - var(--channel-width)); height: 44px; }
+.compactWorkspaceLinks .appLegalLinks { min-height: 44px; height: 44px; padding: 4px 8px; gap: 4px 10px; }
+.workspace.userListToggled > .room { padding-bottom: 44px; }
+.workspace.userListToggled .directMessages { bottom: 60px; }
+.noServerPage > .appLegalLinks { position: fixed; bottom: 0; left: 0; right: 0; min-height: 44px; }
+@media (max-width: 920px) {
+  .workspace.userListToggled > .compactWorkspaceLinks { display: none; }
+  .workspace:not(.userListToggled) > .compactWorkspaceLinks { display: block; position: fixed; z-index: 40; bottom: 0; right: 0; width: calc(100% - var(--rail-width) - var(--channel-width)); height: 44px; }
+  .workspace:not(.userListToggled) > .room { padding-bottom: 44px; }
+  .workspace:not(.userListToggled) .directMessages { bottom: 60px; }
+  .workspace.userListToggled > .room { padding-bottom: 0; }
+  .workspace.userListToggled .directMessages { bottom: 16px; }
 }
 
 .appLegalLinks button {
@@ -2620,7 +2743,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   .roomHeader .accountMenuTrigger { max-width: 32px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat { padding: 8px; }
   .chat form { gap: 4px; padding: 6px; margin: 0 0 6px; }
-  .workspace .roomHeader:has(.demoAccountsMenu) { padding-right: 64px; }
+  .workspace .roomHeader:has(.conversationSearch) { padding-right: 64px; }
   .chat form input { width: 0; min-width: 0; flex: 1; }
   .directMessages { inset: 58px 8px 8px; }
   .directMessages.callActive { inset: calc(43% + 66px) 8px 8px; }
@@ -2634,7 +2757,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 /* Shared by existing and future buttons; individual controls keep their colors. */
-:root button {
+:root button, :root .attachmentDownload {
   transition: translate var(--button-hover-duration) ease,
     filter var(--button-hover-duration) ease,
     background-color var(--button-hover-duration) ease,
@@ -2642,6 +2765,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
     color var(--button-hover-duration) ease;
 }
 :root button:not(:disabled):is(:hover, :focus-visible),
+:root .attachmentDownload:is(:hover, :focus-visible),
 :root button.soundboardPlaceholder:is(:hover, :focus-visible) {
   translate: 0 -2px;
   filter: brightness(1.12);
@@ -2649,5 +2773,6 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 @media (prefers-reduced-motion: reduce) {
   :root { --button-hover-duration: 0ms; }
   :root button:not(:disabled):is(:hover, :focus-visible),
+  :root .attachmentDownload:is(:hover, :focus-visible),
   :root button.soundboardPlaceholder:is(:hover, :focus-visible) { translate: none; }
 }

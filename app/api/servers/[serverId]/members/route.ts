@@ -61,6 +61,7 @@ export async function GET(
     .select({
       id: users.id,
       name: users.name,
+      handle: users.handle,
       image: users.image,
       role: serverMembers.role,
     })
