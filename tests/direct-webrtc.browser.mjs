@@ -565,6 +565,27 @@ try {
       "Selected video fullscreen check passed:",
       JSON.stringify(fullscreenCheck.result.value),
     );
+    const runWorkspaceCheck = async (verification, viewport) => {
+      console.log(`Checking ${verification} (${viewport})`);
+      const checked = await call(
+        "Runtime.evaluate",
+        {
+          expression: `window.${verification}()`,
+          awaitPromise: true,
+          userGesture: true,
+          returnByValue: true,
+        },
+        sessionId,
+      );
+      if (checked.exceptionDetails)
+        throw new Error(JSON.stringify(checked.exceptionDetails));
+    };
+    for (const verification of [
+      "verifyScreenAudioTransport",
+      "verifyLiveKitImmediateMute",
+      "verifySoundboard",
+    ])
+      await runWorkspaceCheck(verification, "desktop");
     if (mediaOptionsOnly) {
       for (const mobile of [false, true]) {
         if (mobile)
@@ -577,33 +598,41 @@ try {
           ? ["verifyHelpAndSkeletons"]
           : [
               "verifyWorkspaceAdditions",
-              "verifySoundboard",
+              ...(mobile ? ["verifySoundboard"] : []),
               "verifyWorkspaceActivity",
               "verifyCallContext",
               "verifyVoiceParticipantMenu",
               "verifyHelpAndSkeletons",
             ]) {
-          console.log(
-            `Checking ${verification} (${mobile ? "mobile" : "desktop"})`,
-          );
           for (const type of ["keyDown", "keyUp"])
             await call(
               "Input.dispatchKeyEvent",
               { type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
               sessionId,
             );
-          const optionsCheck = await call(
-            "Runtime.evaluate",
-            {
-              expression: `window.${verification}()`,
-              awaitPromise: true,
-              userGesture: true,
-              returnByValue: true,
-            },
-            sessionId,
-          );
-          if (optionsCheck.exceptionDetails)
-            throw new Error(JSON.stringify(optionsCheck.exceptionDetails));
+          const reducedLoading =
+            mobile && verification === "verifyHelpAndSkeletons";
+          if (reducedLoading)
+            await call(
+              "Emulation.setEmulatedMedia",
+              {
+                features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+              },
+              sessionId,
+            );
+          try {
+            await runWorkspaceCheck(
+              verification,
+              mobile ? "mobile" : "desktop",
+            );
+          } finally {
+            if (reducedLoading)
+              await call(
+                "Emulation.setEmulatedMedia",
+                { features: [] },
+                sessionId,
+              );
+          }
         }
       }
       console.log("Media options desktop/mobile checks passed");

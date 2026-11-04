@@ -100,6 +100,7 @@ import {
 import { formatUserHandle } from "../user-handle";
 import { createSignalQueue } from "./direct-negotiation";
 import { createAudioWindowStats } from "./audio-window-stats";
+import { ConversationCache, SessionCache } from "./conversation-cache";
 import {
   microphoneProcessing,
   monitorVoiceActivity,
@@ -140,11 +141,6 @@ type Friend = {
   status: "pending" | "accepted";
   incoming: boolean;
   lastActivityAt: string | null;
-  lastMessage: {
-    text: string;
-    kind: "message" | "call";
-    createdAt: string;
-  } | null;
 };
 type ChannelType = "text" | "voice_direct" | "voice_group";
 type Channel = {
@@ -290,6 +286,20 @@ export default function Home() {
   } | null>(null);
   const sessionState = useSession();
   const session = sessionState.data;
+  const conversationCache = useRef(new ConversationCache<ChatMessage>());
+  const serverViewCache = useRef(
+    new SessionCache<{ channels?: Channel[]; members?: Member[] }>(
+      1024 * 1024,
+      20,
+    ),
+  );
+  const presenceHasConnected = useRef(false);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  useEffect(() => {
+    conversationCache.current.scope(session?.user.id);
+    serverViewCache.current.scope(session?.user.id);
+    presenceHasConnected.current = false;
+  }, [session?.user.id]);
   const sessionStatus: string = sessionState.status;
   const updateSession = sessionState.update;
   // Auth.js retains the current session while update() refreshes it. Keep the
@@ -313,9 +323,11 @@ export default function Home() {
   const [loadingOlderDirect, setLoadingOlderDirect] = useState(false);
   const [directHistoryLoaded, setDirectHistoryLoaded] = useState("");
   const directHistoryGeneration = useRef(0);
+  const directHistoryCacheable = useRef("");
   const [channelHistoryLoaded, setChannelHistoryLoaded] = useState("");
   const [readableHistoryChannel, setReadableHistoryChannel] = useState("");
   const channelHistoryGeneration = useRef(0);
+  const channelHistoryCacheable = useRef("");
   const [unreadDirectMessages, setUnreadDirectMessages] = useState<
     Record<string, number>
   >({});
@@ -878,24 +890,47 @@ export default function Home() {
     if (friendsView) setTimeout(() => void loadFriends(), 0);
   }, [friendsView]);
 
+  const directConversationVisible =
+    friendsView &&
+    (!callViewOpen ||
+      conversationHasCall(
+        activeVoiceChannelId,
+        session?.user.id,
+        selectedFriend?.id,
+      ));
   useEffect(() => {
     const userId = selectedFriend?.id;
     const generation = ++directHistoryGeneration.current;
+    const cached =
+      userId && directConversationVisible
+        ? conversationCache.current.get(session?.user.id, `direct:${userId}`)
+        : undefined;
+    directHistoryCacheable.current = cached ? userId! : "";
     void Promise.resolve().then(() => {
       if (generation !== directHistoryGeneration.current) return;
-      setDirectHistoryLoaded("");
-      setDirectMessages([]);
-      setDirectMessageCursor(null);
+      setDirectHistoryLoaded(cached ? userId! : "");
+      setDirectMessages(cached?.messages ?? []);
+      setDirectMessageCursor(cached?.nextCursor ?? null);
       setLoadingOlderDirect(false);
     });
-    if (!userId) return;
-    void fetch(`/api/direct-messages/${userId}`)
+    if (!userId || !directConversationVisible) return;
+    if (cached)
+      return () => {
+        directHistoryGeneration.current = generation + 1;
+      };
+    const controller = new AbortController();
+    void fetch(`/api/direct-messages/${userId}`, { signal: controller.signal })
       .then(async (response) => {
         const page = await readJsonResponse<HistoryPage>(response);
         if (!response.ok) throw new Error(apiErrorMessage(page));
         if (generation !== directHistoryGeneration.current) return;
         if (!Array.isArray(page.messages))
           throw new Error("Messages could not be loaded.");
+        directHistoryCacheable.current = userId;
+        conversationCache.current.set(session?.user.id, `direct:${userId}`, {
+          messages: page.messages.map(toChatMessage),
+          nextCursor: page.nextCursor,
+        });
         setDirectMessages((current) =>
           mergeChatMessages(page.messages.map(toChatMessage), current),
         );
@@ -913,13 +948,49 @@ export default function Home() {
         }
       });
     return () => {
+      controller.abort();
       directHistoryGeneration.current = generation + 1;
     };
-  }, [selectedFriend?.id]);
+  }, [
+    selectedFriend?.id,
+    directConversationVisible,
+    session?.user.id,
+    historyRefreshKey,
+  ]);
+
+  useEffect(() => {
+    if (
+      directConversationVisible &&
+      selectedFriend?.id &&
+      directHistoryLoaded === selectedFriend.id &&
+      directHistoryCacheable.current === selectedFriend.id
+    )
+      conversationCache.current.set(
+        session?.user.id,
+        `direct:${selectedFriend.id}`,
+        {
+          messages: directMessages,
+          nextCursor: directMessageCursor,
+        },
+      );
+  }, [
+    directMessages,
+    directMessageCursor,
+    directHistoryLoaded,
+    directConversationVisible,
+    selectedFriend?.id,
+    session?.user.id,
+  ]);
 
   async function loadOlderDirectMessages() {
     const userId = selectedFriend?.id;
-    if (!userId || !directMessageCursor || loadingOlderDirect) return;
+    if (
+      !userId ||
+      !directConversationVisible ||
+      !directMessageCursor ||
+      loadingOlderDirect
+    )
+      return;
     const generation = directHistoryGeneration.current;
     setLoadingOlderDirect(true);
     try {
@@ -982,11 +1053,7 @@ export default function Home() {
     const response = await fetch("/api/friends", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        action === "request"
-          ? { action, userId: friend.id }
-          : { action, userId: friend.id },
-      ),
+      body: JSON.stringify({ action, userId: friend.id }),
     });
     if (!response.ok) {
       const message = (await response.json()).error ?? "Friend action failed.";
@@ -1016,6 +1083,10 @@ export default function Home() {
     const message = await response.json();
     if (!response.ok)
       return setErrorMessage(message.error ?? "Message could not be sent.");
+    conversationCache.current.delete(
+      session?.user.id,
+      `direct:${selectedFriend.id}`,
+    );
     if (selectedFriendId.current === selectedFriend.id)
       setDirectMessages((current) =>
         mergeChatMessages(current, [toChatMessage(message)]),
@@ -1061,6 +1132,7 @@ export default function Home() {
       body: JSON.stringify({ event, durationSeconds }),
     });
     if (!response.ok) return;
+    conversationCache.current.delete(session?.user.id, `direct:${partnerId}`);
     const message = toChatMessage(await response.json());
     if (selectedFriendId.current !== partnerId) {
       await loadFriends();
@@ -1145,12 +1217,23 @@ export default function Home() {
       signal: controller.signal,
     })
       .then((response) => {
+        if (active && (response.status === 401 || response.status === 403)) {
+          serverViewCache.current.delete(session?.user.id, selectedServerId);
+          setChannels([]);
+          setMembers([]);
+          setMessages([]);
+          setSelectedChannelId("");
+        }
         if (!response.ok) throw new Error("Channels could not be loaded.");
         return response.json();
       })
       .then((channelData: Channel[]) => {
         if (!active) return;
         const nextChannels = Array.isArray(channelData) ? channelData : [];
+        serverViewCache.current.set(session?.user.id, selectedServerId, {
+          ...serverViewCache.current.get(session?.user.id, selectedServerId),
+          channels: nextChannels,
+        });
         setChannels(nextChannels);
         setServerChannelsLoaded(selectedServerId);
         const savedChannel =
@@ -1186,11 +1269,22 @@ export default function Home() {
       signal: controller.signal,
     })
       .then((response) => {
+        if (active && (response.status === 401 || response.status === 403)) {
+          serverViewCache.current.delete(session?.user.id, selectedServerId);
+          setMembers([]);
+        }
         if (!response.ok) throw new Error("Members could not be loaded.");
         return response.json();
       })
       .then((memberData: Member[]) => {
-        if (active) setMembers(Array.isArray(memberData) ? memberData : []);
+        if (active) {
+          const nextMembers = Array.isArray(memberData) ? memberData : [];
+          serverViewCache.current.set(session?.user.id, selectedServerId, {
+            ...serverViewCache.current.get(session?.user.id, selectedServerId),
+            members: nextMembers,
+          });
+          setMembers(nextMembers);
+        }
       })
       .catch(() => {
         if (active) setErrorMessage("Members could not be loaded.");
@@ -1267,26 +1361,46 @@ export default function Home() {
 
   async function switchServer(serverId: string) {
     if (!serverId || serverId === selectedServerId) return;
+    const cached = serverViewCache.current.get(session?.user.id, serverId);
+    const nextChannels = cached?.channels ?? [];
+    const nextChannelId =
+      restoredTextChannel(nextChannels) || nextChannels[0]?.id || "";
+    const history =
+      nextChannels.find((channel) => channel.id === nextChannelId)?.type ===
+      "text"
+        ? conversationCache.current.get(
+            session?.user.id,
+            `channel:${nextChannelId}`,
+          )
+        : undefined;
     channelHistoryGeneration.current += 1;
-    setChannels([]);
-    setMembers([]);
-    setMessages([]);
-    setSelectedChannelId("");
-    setServerChannelsLoaded("");
+    setChannels(nextChannels);
+    setMembers(cached?.members ?? []);
+    setMessages(history?.messages ?? []);
+    setSelectedChannelId(nextChannelId);
+    setServerChannelsLoaded(cached?.channels ? serverId : "");
+    setChannelHistoryLoaded(history ? nextChannelId : "");
+    setReadableHistoryChannel(history ? nextChannelId : "");
+    setNextMessageCursor(history?.nextCursor ?? null);
+    setLoadingMoreMessages(false);
     setReplyingTo(null);
     setMessageMenu(null);
-    lastTextChannelId.current = "";
+    lastTextChannelId.current = restoredTextChannel(nextChannels);
     setCallViewOpen(false);
     setSelectedServerId(serverId);
   }
 
   function selectTextChannel(channelId: string) {
     if (channelId !== selectedChannelId) {
+      const cached = conversationCache.current.get(
+        session?.user.id,
+        `channel:${channelId}`,
+      );
       channelHistoryGeneration.current += 1;
-      setChannelHistoryLoaded("");
-      setReadableHistoryChannel("");
-      setMessages([]);
-      setNextMessageCursor(null);
+      setChannelHistoryLoaded(cached ? channelId : "");
+      setReadableHistoryChannel(cached ? channelId : "");
+      setMessages(cached?.messages ?? []);
+      setNextMessageCursor(cached?.nextCursor ?? null);
       setLoadingMoreMessages(false);
     }
     lastTextChannelId.current = channelId;
@@ -1372,15 +1486,27 @@ export default function Home() {
   )?.type;
   useEffect(() => {
     const generation = ++channelHistoryGeneration.current;
+    const cached =
+      historyChannelType === "text"
+        ? conversationCache.current.get(
+            session?.user.id,
+            `channel:${selectedChannelId}`,
+          )
+        : undefined;
+    channelHistoryCacheable.current = cached ? selectedChannelId : "";
     void Promise.resolve().then(() => {
       if (generation !== channelHistoryGeneration.current) return;
-      setChannelHistoryLoaded("");
-      setReadableHistoryChannel("");
-      setMessages([]);
-      setNextMessageCursor(null);
+      setChannelHistoryLoaded(cached ? selectedChannelId : "");
+      setReadableHistoryChannel(cached ? selectedChannelId : "");
+      setMessages(cached?.messages ?? []);
+      setNextMessageCursor(cached?.nextCursor ?? null);
       setLoadingMoreMessages(false);
     });
     if (!selectedChannelId || historyChannelType !== "text") return;
+    if (cached)
+      return () => {
+        channelHistoryGeneration.current = generation + 1;
+      };
     void fetch(`/api/channels/${selectedChannelId}/messages`)
       .then(async (response) => {
         const page = await readJsonResponse<HistoryPage>(response);
@@ -1388,6 +1514,15 @@ export default function Home() {
         if (generation !== channelHistoryGeneration.current) return;
         if (!Array.isArray(page.messages))
           throw new Error("Messages could not be loaded.");
+        channelHistoryCacheable.current = selectedChannelId;
+        conversationCache.current.set(
+          session?.user.id,
+          `channel:${selectedChannelId}`,
+          {
+            messages: page.messages.map(toChatMessage),
+            nextCursor: page.nextCursor,
+          },
+        );
         setMessages((current) =>
           mergeChatMessages(page.messages.map(toChatMessage), current),
         );
@@ -1408,7 +1543,34 @@ export default function Home() {
     return () => {
       channelHistoryGeneration.current = generation + 1;
     };
-  }, [historyChannelType, selectedChannelId]);
+  }, [
+    historyChannelType,
+    selectedChannelId,
+    session?.user.id,
+    historyRefreshKey,
+  ]);
+
+  useEffect(() => {
+    if (
+      selectedChannelId &&
+      channelHistoryLoaded === selectedChannelId &&
+      channelHistoryCacheable.current === selectedChannelId
+    )
+      conversationCache.current.set(
+        session?.user.id,
+        `channel:${selectedChannelId}`,
+        {
+          messages,
+          nextCursor: nextMessageCursor,
+        },
+      );
+  }, [
+    messages,
+    nextMessageCursor,
+    channelHistoryLoaded,
+    selectedChannelId,
+    session?.user.id,
+  ]);
 
   async function loadMoreMessages() {
     if (!selectedChannelId || !nextMessageCursor || loadingMoreMessages) return;
@@ -1446,11 +1608,20 @@ export default function Home() {
     );
     if (!selectedChannelId || selected?.type !== "text") return;
 
+    let hasOpened = false;
     const liveText = createReconnectingSignalingConnection({
       onSocket: (openedSocket) => {
         textSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
+        if (hasOpened) {
+          conversationCache.current.delete(
+            session?.user.id,
+            `channel:${selectedChannelId}`,
+          );
+          setHistoryRefreshKey((current) => current + 1);
+        }
+        hasOpened = true;
         openedSocket.send(
           JSON.stringify({
             type: "subscribe-text",
@@ -1515,7 +1686,7 @@ export default function Home() {
       liveText.close();
       textSocket.current = null;
     };
-  }, [channels, selectedChannelId]);
+  }, [channels, selectedChannelId, session?.user.id]);
 
   useEffect(
     () => () => {
@@ -1550,6 +1721,12 @@ export default function Home() {
         presenceSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
+        if (presenceHasConnected.current) {
+          conversationCache.current.clear();
+          serverViewCache.current.clear();
+          setHistoryRefreshKey((current) => current + 1);
+        }
+        presenceHasConnected.current = true;
         openedSocket.send(JSON.stringify({ type: "get-user-status" }));
         openedSocket.send(JSON.stringify({ type: "subscribe-workspace" }));
         if (pendingVoiceChannel.current)
@@ -1583,6 +1760,22 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (
+          message.channelId &&
+          [
+            "channel-activity",
+            "channel-activity-changed",
+            "channel-deleted",
+          ].includes(message.type)
+        ) {
+          const key = `channel:${message.channelId}`;
+          const cached = conversationCache.current.get(currentUserId, key);
+          if (
+            message.type !== "channel-activity" ||
+            !cached?.messages.some((entry) => entry.id === message.messageId)
+          )
+            conversationCache.current.delete(currentUserId, key);
+        }
         workspaceActivityRef.current.handle(message);
         if (message.type === "voice-move") {
           moveVoiceRef.current(message);
@@ -1593,6 +1786,9 @@ export default function Home() {
           setUserStatus(message.status);
         }
         if (message.type === "access-changed") {
+          conversationCache.current.clear();
+          serverViewCache.current.clear();
+          setHistoryRefreshKey((current) => current + 1);
           invalidateSignalingToken();
           refreshAccessRef.current();
           return;
@@ -1610,6 +1806,8 @@ export default function Home() {
           return;
         }
         if (message.type === "server-updated" && message.serverId) {
+          conversationCache.current.clear();
+          serverViewCache.current.delete(currentUserId, message.serverId);
           invalidateSignalingToken();
           setSignalingRefreshKey((current) => current + 1);
           void Promise.all([
@@ -1687,6 +1885,10 @@ export default function Home() {
           message.fromUserId &&
           message.messageId
         ) {
+          conversationCache.current.delete(
+            currentUserId,
+            `direct:${message.fromUserId}`,
+          );
           if (selectedFriendId.current === message.fromUserId) {
             setDirectMessages((current) =>
               current
@@ -1709,6 +1911,13 @@ export default function Home() {
           message.message
         ) {
           const directMessage = toChatMessage(message.message);
+          const key = `direct:${message.fromUserId}`;
+          const cached = conversationCache.current.get(currentUserId, key);
+          if (cached)
+            conversationCache.current.set(currentUserId, key, {
+              ...cached,
+              messages: mergeChatMessages(cached.messages, [directMessage]),
+            });
           void loadFriends();
           if (selectedFriendId.current === message.fromUserId) {
             setDirectMessages((current) =>
@@ -2815,6 +3024,10 @@ export default function Home() {
       const message =
         await readJsonResponse<Parameters<typeof toChatMessage>[0]>(response);
       if (!response.ok) throw new Error(apiErrorMessage(message));
+      conversationCache.current.delete(
+        session?.user.id,
+        `channel:${selectedChannelId}`,
+      );
       if (generation !== channelHistoryGeneration.current) return;
       setDraft("");
       setReplyingTo(null);
@@ -3195,6 +3408,7 @@ export default function Home() {
       const result = await readJsonResponse<{ error?: string }>(response);
       throw new Error(result?.error ?? "Messages could not be deleted.");
     }
+    conversationCache.current.clear();
     setAccountMessages((current) =>
       serverId
         ? current.filter((message) => message.serverId !== serverId)
@@ -3240,6 +3454,7 @@ export default function Home() {
       setErrorMessage("The message could not be deleted.");
       return;
     }
+    conversationCache.current.clear();
     if (candidate.conversationUserId) {
       if (selectedFriendId.current === candidate.conversationUserId) {
         setDirectMessages((current) =>
@@ -4800,22 +5015,15 @@ export default function Home() {
                     }
                   />
                   <b>{friend.name}</b>
-                  {friend.lastMessage && (
+                  {friend.lastActivityAt && (
                     <time>
-                      {new Date(
-                        friend.lastMessage.createdAt,
-                      ).toLocaleTimeString([], {
+                      {new Date(friend.lastActivityAt).toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
                       })}
                     </time>
                   )}
                 </span>
-                {friend.lastMessage && (
-                  <small title={friend.lastMessage.text}>
-                    {friend.lastMessage.text}
-                  </small>
-                )}
                 {notificationsEnabled &&
                   (unreadDirectMessages[friend.id] ?? 0) > 0 && (
                     <span className="conversationUnreadBadge">

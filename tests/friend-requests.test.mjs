@@ -11,6 +11,128 @@ const source = await readFile(
   new URL("../app/api/friends/route.ts", import.meta.url),
   "utf8",
 );
+
+test("Friends list fetches only scoped friendship and profile metadata, never DM history", async () => {
+  for (const mode of ["friends", "empty", "anonymous"]) {
+    const schema = {
+      friendships: { requesterId: "requesterId", recipientId: "recipientId" },
+      users: { id: "id", name: "name", handle: "handle", image: "image" },
+    };
+    const activity = "2026-11-04T10:00:00.000Z";
+    const rows = [
+      {
+        requesterId: actorId,
+        recipientId: targetId,
+        status: "accepted",
+        lastActivityAt: activity,
+      },
+      {
+        requesterId: "incoming",
+        recipientId: actorId,
+        status: "pending",
+        lastActivityAt: null,
+      },
+    ];
+    const reads = [];
+    const dependencies = {
+      "drizzle-orm": Object.fromEntries(
+        ["eq", "and", "or"].map((op) => [op, (...args) => ({ op, args })]),
+      ),
+      "next/server": { NextResponse: { json: Response.json } },
+      "../../../auth": {
+        auth: async () =>
+          mode === "anonymous" ? null : { user: { id: actorId } },
+      },
+      "../../../db/schema": schema,
+      "../../../db": {
+        db: {
+          select: () => ({
+            from: (table) => ({
+              where: async (predicate) => {
+                assert.ok(
+                  table === schema.friendships || table === schema.users,
+                  "Friends must not query message storage",
+                );
+                reads.push({ table, predicate });
+                return table === schema.friendships
+                  ? mode === "empty"
+                    ? []
+                    : rows
+                  : [
+                      {
+                        id: targetId,
+                        name: "Friend",
+                        handle: "friend.0001",
+                        image: null,
+                      },
+                      {
+                        id: "incoming",
+                        name: "Requester",
+                        handle: "requester.0002",
+                        image: null,
+                      },
+                    ];
+              },
+            }),
+          }),
+        },
+      },
+      "../../../server/notify-user": {},
+      "../../../user-handle": { normalizeUserHandle },
+    };
+    const exports = {};
+    vm.runInNewContext(
+      ts.transpile(source, { module: ts.ModuleKind.CommonJS }),
+      {
+        exports,
+        require: (key) => {
+          assert.ok(key in dependencies, key);
+          return dependencies[key];
+        },
+      },
+    );
+    const response = await exports.GET();
+    assert.equal(response.status, mode === "anonymous" ? 401 : 200);
+    assert.equal(
+      reads.length,
+      mode === "anonymous" ? 0 : mode === "empty" ? 1 : 2,
+    );
+    if (mode === "anonymous") continue;
+    assert.deepEqual(JSON.parse(JSON.stringify(reads[0].predicate)), {
+      op: "or",
+      args: [
+        { op: "eq", args: ["requesterId", actorId] },
+        { op: "eq", args: ["recipientId", actorId] },
+      ],
+    });
+    const people = await response.json();
+    if (mode === "empty") {
+      assert.deepEqual(people, []);
+      continue;
+    }
+    assert.deepEqual(people, [
+      {
+        id: targetId,
+        name: "Friend",
+        handle: "friend.0001",
+        image: null,
+        status: "accepted",
+        incoming: false,
+        lastActivityAt: activity,
+      },
+      {
+        id: "incoming",
+        name: "Requester",
+        handle: "requester.0002",
+        image: null,
+        status: "pending",
+        incoming: true,
+        lastActivityAt: null,
+      },
+    ]);
+  }
+});
+
 function fixture({
   role = "member",
   authenticated = true,

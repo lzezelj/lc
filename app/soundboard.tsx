@@ -250,6 +250,15 @@ export function SoundboardButton({
       setPlaying(false);
     }
   }
+  const query = search.trim().toLowerCase();
+  const visibleSounds =
+    open && !loading
+      ? sounds.filter(
+          (sound) =>
+            sound.serverId === serverId &&
+            sound.name.toLowerCase().includes(query),
+        )
+      : [];
   return (
     <>
       <button
@@ -265,7 +274,6 @@ export function SoundboardButton({
         }
         onClick={() => {
           setError("");
-          if (!board.open) setLoadedFor("");
           board.setOpen(!board.open);
         }}
       >
@@ -293,41 +301,33 @@ export function SoundboardButton({
           <div className="soundboardClips" aria-busy={loading}>
             {loading && <LoadingSkeleton kind="sounds" />}
             {!loading &&
-              sounds
-                .filter(
-                  (sound) =>
-                    sound.serverId === serverId &&
-                    sound.name
-                      .toLowerCase()
-                      .includes(search.trim().toLowerCase()),
-                )
-                .map((sound) => (
-                  <div className="soundboardClip" key={sound.id}>
+              visibleSounds.map((sound) => (
+                <div className="soundboardClip" key={sound.id}>
+                  <button
+                    className="soundboardPlay"
+                    disabled={disabled || playing || board.playBlocked}
+                    aria-label={`Play ${sound.name} for everyone`}
+                    title={
+                      board.playBlocked
+                        ? "One sound per second"
+                        : "Play for everyone"
+                    }
+                    onClick={() => void play(sound)}
+                  >
+                    {sound.name}
+                  </button>
+                  <div className="soundboardClipActions">
                     <button
-                      className="soundboardPlay"
-                      disabled={disabled || playing || board.playBlocked}
-                      aria-label={`Play ${sound.name} for everyone`}
-                      title={
-                        board.playBlocked
-                          ? "One sound per second"
-                          : "Play for everyone"
-                      }
-                      onClick={() => void play(sound)}
+                      disabled={playing}
+                      aria-label={`Preview ${sound.name}`}
+                      title="Preview only for you"
+                      onClick={() => void play(sound, true)}
                     >
-                      {sound.name}
+                      <SoundPreviewIcon />
                     </button>
-                    <div className="soundboardClipActions">
-                      <button
-                        disabled={playing}
-                        aria-label={`Preview ${sound.name}`}
-                        title="Preview only for you"
-                        onClick={() => void play(sound, true)}
-                      >
-                        <SoundPreviewIcon />
-                      </button>
-                    </div>
                   </div>
-                ))}
+                </div>
+              ))}
           </div>
           {!loading && !error && sounds.length === 0 && (
             <p className="soundboardEmpty">
@@ -340,11 +340,7 @@ export function SoundboardButton({
           {!loading &&
             !error &&
             sounds.length > 0 &&
-            !sounds.some(
-              (sound) =>
-                sound.serverId === serverId &&
-                sound.name.toLowerCase().includes(search.trim().toLowerCase()),
-            ) && (
+            visibleSounds.length === 0 && (
               <p className="soundboardEmpty">No sounds match your search.</p>
             )}
           {!loading && canManage && (

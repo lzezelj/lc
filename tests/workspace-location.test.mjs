@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { ConversationCache, SessionCache } from "../app/conversation-cache.ts";
 import {
   readWorkspaceLocation,
   saveWorkspaceLocation,
@@ -63,7 +64,13 @@ function fixture({
     getItem: (key) => stored.get(key) ?? null,
     setItem: (key, value) => stored.set(key, value),
   };
+  const serverViewCache = new SessionCache();
+  const conversationCache = new ConversationCache();
+  serverViewCache.scope("actor");
+  conversationCache.scope("actor");
   const context = {
+    serverViewCache: { current: serverViewCache },
+    conversationCache: { current: conversationCache },
     authStatus: "authenticated",
     session: { user: { id: "actor" } },
     location: {},
@@ -139,8 +146,59 @@ function fixture({
       }),
       context,
     );
-  return { context, stored, storage, run };
+  return { context, stored, storage, run, serverViewCache, conversationCache };
 }
+
+test("cached server switching restores its own lists and messages before any loading frame", async () => {
+  const f = fixture();
+  const channel = { id: "cached-text", type: "text", name: "Cached channel" };
+  const member = { id: "member", name: "Member" };
+  const messages = [{ id: "cached-message", text: "Cached content" }];
+  f.serverViewCache.set("actor", "two", {
+    channels: [channel],
+    members: [member],
+  });
+  f.conversationCache.set("actor", "channel:cached-text", {
+    messages,
+    nextCursor: null,
+  });
+  f.context.selectedServerId = "one";
+  const select = vm.runInNewContext(
+    ts.transpile(`${navigationHandlers.get("switchServer")}; switchServer;`),
+    f.context,
+  );
+  const switching = select("two");
+  assert.equal(f.context.selectedServerId, "two");
+  assert.equal(f.context.serverChannelsLoaded, "two");
+  assert.equal(f.context.selectedChannelId, "cached-text");
+  assert.equal(f.context.channelHistoryLoaded, "cached-text");
+  assert.equal(f.context.readableHistoryChannel, "cached-text");
+  assert.equal(f.context.channels[0].id, channel.id);
+  assert.equal(f.context.members[0].id, member.id);
+  assert.equal(f.context.messages, messages);
+  await switching;
+});
+
+test("forbidden background refresh removes cached server content instead of leaving it visible", async () => {
+  const f = fixture();
+  f.context.selectedServerId = "two";
+  f.context.selectedChannelId = "cached-text";
+  f.context.channels = [{ id: "cached-text", type: "text" }];
+  f.context.members = [{ id: "member" }];
+  f.context.messages = [{ id: "private-message" }];
+  f.serverViewCache.set("actor", "two", {
+    channels: f.context.channels,
+    members: f.context.members,
+  });
+  f.context.fetch = async () => ({ ok: false, status: 403 });
+  f.run(loadChannels);
+  await settle();
+  assert.equal(f.serverViewCache.get("actor", "two"), undefined);
+  assert.equal(f.context.channels.length, 0);
+  assert.equal(f.context.members.length, 0);
+  assert.equal(f.context.messages.length, 0);
+  assert.equal(f.context.selectedChannelId, "");
+});
 
 test("reload restores the authorized server and its selected text channel before persistence", async () => {
   const f = fixture();

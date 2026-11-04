@@ -20,16 +20,16 @@ and the connected example's shared device controls, profile and unnamed status.
 | `auth-account.test.mjs`, `user-handles.test.mjs` | Account/session age policy, handle formatting/allocation, and selected auth callbacks |
 | `rate-limit.test.mjs` | Rate-limit windows and isolation |
 | `demo-extension.test.mjs`, `direct-message-deletion.test.mjs`, `server-leave.test.mjs` | Current API handlers, authorization, persistence calls, and notifications with mocked dependencies |
-| `friend-requests.test.mjs` | Profile requests by user ID, handle compatibility, authentication, demo restrictions, and invalid/duplicate requests |
+| `friend-requests.test.mjs` | Metadata-only Friends listing without DM queries, activity timestamps, profile requests by user ID, handle compatibility, authentication, demo restrictions, and invalid/duplicate requests |
 | `server-invites.test.mjs` | Owner-only invitation/search, active-account checks, friend-only default and explicit people mode |
 | `account-privacy.test.mjs` | Confirmed account deletion, ownership blockers, credential removal, retention choices and author/sender-scoped message deletion |
 | `server-ownership.test.mjs` | Confirmed owner-only transfer, membership/ownership consistency, active recipient and server-limit rules |
 | `channel-management.test.mjs` | Server-scoped channel deletion, ownership, rate limits, cleanup ordering, and message grouping by stable server ID |
 | `server-message-deletion.test.mjs` | Account authorization, per-server message deletion, invalid-filter rejection, all-server compatibility, and deletion broadcasts |
-| `workspace-location.test.mjs` | Immediate server/channel selection, independent channel/member loading, request cancellation and stale responses, reload restoration, destination validation, and account-scoped storage |
+| `workspace-location.test.mjs` | Immediate cached server/channel restoration without a loading frame, background permission revalidation, independent channel/member loading, request cancellation and stale responses, reload restoration, destination validation, and account-scoped storage |
 | `workspace-activity.test.mjs` | Read baselines/cursors, duplicate and own messages, reconnect races, deletion/revocation, cross-tab markers, server voice summaries and API membership/privacy |
 | `call-context.test.mjs` | DM/server room separation, matching-conversation call layout, scoped cancellation/decline, DND badges/title/ringing, inline invitations and stable invitation expiry |
-| `message-pagination.test.mjs` | Latest-50 channel/direct history, stable timestamp ties, cursor validation, authorization, and history response races |
+| `message-pagination.test.mjs` | Latest-50 channel/direct history, visible-conversation-only loading, bounded account-scoped session caches, navigation reuse of loaded older pages/cursors, live invalidation, reconnect recovery, failed fetch retries, hidden-view cancellation, stable timestamp ties, cursor validation, authorization, and history response races |
 | `signaling.test.mjs` | Real local signaling transport, authorization, rooms, reconnection, text events, voice presence, current user presence, and legacy server-presence compatibility |
 | `direct-negotiation.test.mjs` | Signal ordering, queue recovery, and audio statistics windows |
 | `voice-activity.test.mjs`, `microphone-gate.test.mjs` | Speaking detection and microphone processing, including interruption and cleanup |
@@ -57,7 +57,7 @@ npm.cmd run test:webrtc-browser -- --help-tour
 
 - Default: real browser peer connections and generated audio over local ICE.
 - `--help-tour`: focused desktop/mobile guide layout, layering, example controls,
-  preference persistence and drag checks without the broader audio-upload checks.
+  preference persistence and drag checks after the shared desktop media checks.
 The test browser launches with speaker output muted. Generated audio, Web Audio
 analysis and WebRTC transport still run, without playing test tones aloud.
 - `--microphone`: real Web Audio processing with generated input.
@@ -89,6 +89,14 @@ test suites. The `--media-options-only` filter limits workspace checks to native
 video fullscreen, separate screen audio, and desktop/mobile media setup controls,
 without rerunning chat-history and unrelated workspace checks. The fixtures
 do not launch the authenticated application or a real SFU.
+All workspace modes, including `--help-tour`, run desktop fullscreen, screen and
+soundboard RTP, immediate LiveKit receiver muting, and soundboard upload/preview
+checks. These are separate logged browser commands, each with a 20-second
+deadline. `--media-options-only` additionally checks the soundboard on mobile;
+the identical desktop scenario runs once. Native uploaded/managed WAV previews
+wait for playable data and have a four-second playback deadline with readiness,
+network and media-error diagnostics. A timeout remains a failure, without retries
+or skipping playback assertions.
 The local browser checks do not exercise physical microphones/cameras, screen
 capture permissions, or multiple authenticated users.
 

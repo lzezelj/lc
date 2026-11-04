@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { ConversationCache, SessionCache } from "../app/conversation-cache.ts";
 
 const actor = "10000000-0000-4000-8000-000000000001";
 const friend = "10000000-0000-4000-8000-000000000002";
@@ -219,10 +220,18 @@ const pageAst = ts.createSourceFile(
 const historyCode = {};
 function visitPage(node) {
   if (
+    ts.isVariableDeclaration(node) &&
+    node.name.getText(pageAst) === "directConversationVisible"
+  )
+    historyCode.visible = node.initializer.getText(pageAst);
+  if (
     ts.isFunctionDeclaration(node) &&
-    ["mergeChatMessages", "loadOlderDirectMessages", "toChatMessage"].includes(
-      node.name?.text,
-    )
+    [
+      "mergeChatMessages",
+      "loadOlderDirectMessages",
+      "loadMoreMessages",
+      "toChatMessage",
+    ].includes(node.name?.text)
   )
     historyCode[node.name.text] = node.getText(pageAst);
   if (
@@ -233,24 +242,82 @@ function visitPage(node) {
       .includes("const userId = selectedFriend?.id")
   )
     historyCode.effect = node.arguments[0].getText(pageAst);
+  if (
+    ts.isCallExpression(node) &&
+    node.expression.getText(pageAst) === "useEffect"
+  ) {
+    const body = node.arguments[0].getText(pageAst);
+    if (body.includes("const generation = ++channelHistoryGeneration.current"))
+      historyCode.channelEffect = body;
+    if (body.includes("directHistoryCacheable.current ==="))
+      historyCode.persistDirect = body;
+    if (body.includes("channelHistoryCacheable.current ==="))
+      historyCode.persistChannel = body;
+  }
+  if (
+    ts.isPropertyAssignment(node) &&
+    node.name.getText(pageAst) === "onMessage" &&
+    node.initializer
+      .getText(pageAst)
+      .includes("workspaceActivityRef.current.handle(message)")
+  )
+    historyCode.presenceMessage = node.initializer.getText(pageAst);
+  if (
+    ts.isPropertyAssignment(node) &&
+    node.name.getText(pageAst) === "onOpen" &&
+    node.initializer.getText(pageAst).includes('type: "get-user-status"')
+  )
+    historyCode.presenceOpen = node.initializer.getText(pageAst);
   ts.forEachChild(node, visitPage);
 }
 visitPage(pageAst);
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-function historyFixture() {
+function historyFixture(channel = false) {
   const requests = [];
+  const cache = new ConversationCache();
+  cache.scope(actor);
+  const serverCache = new SessionCache();
+  serverCache.scope(actor);
   const context = {
+    session: { user: { id: actor } },
+    currentUserId: actor,
+    conversationCache: { current: cache },
+    serverViewCache: { current: serverCache },
+    directHistoryCacheable: { current: "" },
+    channelHistoryCacheable: { current: "" },
+    channelHistoryGeneration: { current: 0 },
+    selectedChannelId: "channel-a",
+    historyChannelType: "text",
+    messages: [],
+    nextMessageCursor: null,
+    loadingMoreMessages: false,
+    workspaceActivityRef: { current: { handle() {} } },
+    presenceHasConnected: { current: false },
+    pendingVoiceChannel: { current: "" },
+    voiceChannelIdsRef: { current: [] },
+    activeGroupChannelId: { current: "" },
+    refreshAccessRef: { current() {} },
+    invalidateSignalingToken() {},
+    setHistoryRefreshKey() {},
+    loadFriends() {},
+    selectedFriendId: { current: friend },
+    friendsViewRef: { current: false },
+    document: { visibilityState: "visible" },
+    unreadDirectMessages: {},
     selectedFriend: { id: friend },
+    directConversationVisible: true,
     directHistoryGeneration: { current: 0 },
     directMessages: [],
     directMessageCursor: null,
     loadingOlderDirect: false,
     URLSearchParams,
-    fetch: (url) =>
+    AbortController,
+    fetch: (url, options = {}) =>
       new Promise((resolve) =>
         requests.push({
           url,
-          resolve: (page) => resolve({ ok: true, json: async () => page }),
+          signal: options.signal,
+          resolve: (page, ok = true) => resolve({ ok, json: async () => page }),
         }),
       ),
     readJsonResponse: (response) => response.json(),
@@ -262,6 +329,12 @@ function historyFixture() {
     "LoadingOlderDirect",
     "DirectHistoryLoaded",
     "ErrorMessage",
+    "Messages",
+    "NextMessageCursor",
+    "LoadingMoreMessages",
+    "ChannelHistoryLoaded",
+    "ReadableHistoryChannel",
+    "UnreadDirectMessages",
   ]) {
     const state = key[0].toLowerCase() + key.slice(1);
     context[`set${key}`] = (value) => {
@@ -271,7 +344,7 @@ function historyFixture() {
   }
   vm.runInNewContext(
     ts.transpile(
-      `${historyCode.mergeChatMessages}\n${historyCode.toChatMessage}\n${historyCode.loadOlderDirectMessages}`,
+      `${historyCode.mergeChatMessages}\n${historyCode.toChatMessage}\n${historyCode.loadOlderDirectMessages}\n${historyCode.loadMoreMessages}`,
       { target: ts.ScriptTarget.ES2022 },
     ),
     context,
@@ -279,15 +352,274 @@ function historyFixture() {
   return {
     context,
     requests,
+    cache,
+    reconnect: () => {
+      context.workspaceActivityRef.current.refresh = () => {};
+      context.openedSocket = { send() {} };
+      vm.runInNewContext(
+        ts.transpile(`(${historyCode.presenceOpen})(openedSocket);`),
+        context,
+      );
+    },
+    persist: () =>
+      vm.runInNewContext(
+        ts.transpile(
+          `(${channel ? historyCode.persistChannel : historyCode.persistDirect})();`,
+        ),
+        context,
+      ),
+    event: (message) => {
+      context.incoming = { data: JSON.stringify(message) };
+      vm.runInNewContext(
+        ts.transpile(`(${historyCode.presenceMessage})(incoming);`),
+        context,
+      );
+    },
     start: () =>
       vm.runInNewContext(
-        ts.transpile(`(${historyCode.effect})();`, {
-          target: ts.ScriptTarget.ES2022,
-        }),
+        ts.transpile(
+          `(${channel ? historyCode.channelEffect : historyCode.effect})();`,
+          {
+            target: ts.ScriptTarget.ES2022,
+          },
+        ),
         context,
       ),
   };
 }
+test("direct history is eligible only in the visible friend's chat, including a matching DM call", () => {
+  const visible = (values) =>
+    vm.runInNewContext(historyCode.visible, {
+      friendsView: true,
+      callViewOpen: false,
+      selectedFriend: { id: friend },
+      session: { user: { id: actor } },
+      activeVoiceChannelId: "",
+      conversationHasCall: (roomId, userId, otherId) =>
+        roomId === `friend:${[userId, otherId].sort().join(":")}`,
+      ...values,
+    });
+  assert.equal(visible({}), true);
+  assert.equal(visible({ friendsView: false }), false);
+  assert.equal(
+    visible({ callViewOpen: true, activeVoiceChannelId: "server-voice" }),
+    false,
+  );
+  assert.equal(
+    visible({
+      callViewOpen: true,
+      activeVoiceChannelId: `friend:${actor}:${friend}`,
+    }),
+    true,
+  );
+});
+
+test("visited DM and channel histories reuse loaded older pages and cursors across navigation", async () => {
+  for (const channel of [false, true]) {
+    const f = historyFixture(channel);
+    const close = f.start();
+    await settle();
+    f.requests[0].resolve({
+      messages: [
+        { id: uuid(2), text: "Latest", createdAt: "2026-11-01T12:00:00Z" },
+      ],
+      nextCursor: {
+        beforeCreatedAt: "2026-11-01T12:00:00Z",
+        beforeId: uuid(2),
+      },
+    });
+    await settle();
+    const older = channel
+      ? f.context.loadMoreMessages()
+      : f.context.loadOlderDirectMessages();
+    f.requests[1].resolve({
+      messages: [
+        { id: uuid(1), text: "Older", createdAt: "2026-11-01T11:00:00Z" },
+      ],
+      nextCursor: null,
+    });
+    await older;
+    f.persist();
+    close();
+    if (channel) f.context.selectedChannelId = "channel-b";
+    else {
+      f.context.directConversationVisible = false;
+    }
+    const closeOther = f.start();
+    await settle();
+    closeOther?.();
+    if (channel) f.context.selectedChannelId = "channel-a";
+    else f.context.directConversationVisible = true;
+    f.start();
+    await settle();
+    assert.equal(
+      f.requests.length,
+      channel ? 3 : 2,
+      "Returning to a loaded conversation must not fetch it again",
+    );
+    const messages = channel ? f.context.messages : f.context.directMessages;
+    assert.deepEqual(
+      Array.from(messages, (message) => message.id),
+      [uuid(1), uuid(2)],
+    );
+    assert.equal(
+      channel ? f.context.nextMessageCursor : f.context.directMessageCursor,
+      null,
+    );
+  }
+});
+
+test("live events update only previously opened DM caches and invalidate changed/deleted channel histories", async () => {
+  const f = historyFixture();
+  f.cache.set(actor, `direct:${friend}`, {
+    messages: [{ id: uuid(1), text: "Old" }],
+    nextCursor: null,
+  });
+  f.cache.set(actor, "channel:channel-a", {
+    messages: [{ id: uuid(1), text: "Old" }],
+    nextCursor: null,
+  });
+  f.event({
+    type: "direct-message",
+    fromUserId: friend,
+    message: { id: uuid(2), text: "Live", createdAt: "2026-11-01T12:00:00Z" },
+  });
+  assert.equal(
+    f.cache.get(actor, `direct:${friend}`).messages.at(-1).text,
+    "Live",
+  );
+  f.event({
+    type: "direct-message",
+    fromUserId: "unopened",
+    message: { id: uuid(3), text: "Unread", createdAt: "2026-11-01T12:00:00Z" },
+  });
+  assert.equal(f.cache.get(actor, "direct:unopened"), undefined);
+  f.event({
+    type: "channel-activity",
+    channelId: "channel-a",
+    messageId: uuid(1),
+  });
+  assert.ok(f.cache.get(actor, "channel:channel-a"));
+  f.event({
+    type: "channel-activity",
+    channelId: "channel-a",
+    messageId: uuid(2),
+  });
+  assert.equal(f.cache.get(actor, "channel:channel-a"), undefined);
+  f.event({
+    type: "direct-message-deleted",
+    fromUserId: friend,
+    messageId: uuid(1),
+    permanent: true,
+  });
+  assert.equal(f.cache.get(actor, `direct:${friend}`), undefined);
+  f.cache.set(actor, "channel:channel-a", { messages: [], nextCursor: null });
+  f.event({ type: "access-changed" });
+  assert.equal(f.cache.get(actor, "channel:channel-a"), undefined);
+  assert.equal(
+    f.requests.length,
+    0,
+    "Live invalidation must not fetch unopened history",
+  );
+});
+
+test("conversation caches are bounded by bytes/count, isolated by account and empty after a reload", () => {
+  const cache = new ConversationCache(300, 2);
+  cache.scope(actor);
+  const page = (id) => ({
+    messages: [{ id, text: "Cached" }],
+    nextCursor: null,
+  });
+  cache.set(actor, "direct:a", page("a"));
+  cache.set(actor, "direct:b", page("b"));
+  assert.ok(cache.get(actor, "direct:a"));
+  cache.set(actor, "direct:c", page("c"));
+  assert.equal(cache.get(actor, "direct:b"), undefined);
+  cache.set(actor, "channel:large", {
+    messages: [{ id: "large", text: "x".repeat(400) }],
+    nextCursor: null,
+  });
+  assert.equal(cache.get(actor, "channel:large"), undefined);
+  cache.scope(friend);
+  assert.equal(cache.get(actor, "direct:a"), undefined);
+  cache.set(actor, "direct:late", page("late"));
+  assert.equal(cache.get(friend, "direct:late"), undefined);
+  const reloaded = new ConversationCache();
+  reloaded.scope(friend);
+  assert.equal(reloaded.get(friend, "direct:c"), undefined);
+  const byteBound = new ConversationCache(90, 10);
+  byteBound.scope(actor);
+  byteBound.set(actor, "direct:a", page("a"));
+  byteBound.set(actor, "direct:b", page("b"));
+  assert.equal(byteBound.get(actor, "direct:a"), undefined);
+  assert.ok(byteBound.get(actor, "direct:b"));
+});
+
+test("reconnecting signaling discards cached histories so missed events are recovered", () => {
+  const f = historyFixture();
+  f.reconnect();
+  f.cache.set(actor, `direct:${friend}`, {
+    messages: [{ id: uuid(1), text: "Before disconnect" }],
+    nextCursor: null,
+  });
+  f.reconnect();
+  assert.equal(f.cache.get(actor, `direct:${friend}`), undefined);
+});
+
+test("failed history responses are not cached as empty conversations", async () => {
+  for (const channel of [false, true]) {
+    const f = historyFixture(channel);
+    const close = f.start();
+    await settle();
+    f.requests[0].resolve({ error: "Unavailable" }, false);
+    await settle();
+    f.persist();
+    assert.equal(
+      f.cache.get(actor, channel ? "channel:channel-a" : `direct:${friend}`),
+      undefined,
+    );
+    close();
+    f.start();
+    await settle();
+    assert.equal(
+      f.requests.length,
+      2,
+      "Returning after a failed request must retry the server",
+    );
+  }
+});
+
+test("retained friend selection does not fetch history or older pages until its chat opens", async () => {
+  const f = historyFixture();
+  f.context.directConversationVisible = false;
+  f.context.directMessageCursor = {
+    beforeCreatedAt: "2026-11-01T12:00:00Z",
+    beforeId: uuid(2),
+  };
+  await f.context.loadOlderDirectMessages();
+  f.start();
+  await settle();
+  assert.equal(f.requests.length, 0);
+  f.context.directConversationVisible = true;
+  const close = f.start();
+  await settle();
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].url, `/api/direct-messages/${friend}`);
+  assert.equal(f.requests[0].signal.aborted, false);
+  close();
+  assert.equal(f.requests[0].signal.aborted, true);
+  f.context.directConversationVisible = false;
+  f.start();
+  f.requests[0].resolve({
+    messages: [{ id: uuid(1), text: "Late hidden history" }],
+    nextCursor: null,
+  });
+  await settle();
+  assert.equal(f.context.directMessages.length, 0);
+  assert.equal(f.context.directHistoryLoaded, "");
+  assert.equal(f.requests.length, 1);
+});
+
 test("late direct history responses cannot overwrite another conversation", async () => {
   const f = historyFixture();
   const cleanup = f.start();

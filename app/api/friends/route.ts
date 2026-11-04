@@ -1,8 +1,8 @@
-import { and, desc, eq, or } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
-import { directMessages, friendships, users } from "../../../db/schema";
+import { friendships, users } from "../../../db/schema";
 import { notifyUser } from "../../../server/notify-user";
 import { normalizeUserHandle } from "../../../user-handle";
 
@@ -34,40 +34,6 @@ export async function GET() {
         .where(or(...ids.map((id) => eq(users.id, id))))
     : [];
   const byId = new Map(people.map((person) => [person.id, person]));
-  const messageRows = ids.length
-    ? await db
-        .select({
-          senderId: directMessages.senderId,
-          recipientId: directMessages.recipientId,
-          text: directMessages.content,
-          kind: directMessages.kind,
-          deletedAt: directMessages.deletedAt,
-          createdAt: directMessages.createdAt,
-        })
-        .from(directMessages)
-        .where(
-          or(
-            eq(directMessages.senderId, session.user.id),
-            eq(directMessages.recipientId, session.user.id),
-          ),
-        )
-        .orderBy(desc(directMessages.createdAt))
-    : [];
-  const latestByFriend = new Map<
-    string,
-    { text: string; kind: string; createdAt: Date }
-  >();
-  for (const message of messageRows) {
-    const friendId =
-      message.senderId === session.user.id
-        ? message.recipientId
-        : message.senderId;
-    if (!latestByFriend.has(friendId))
-      latestByFriend.set(friendId, {
-        ...message,
-        text: message.deletedAt ? "Deleted message" : message.text,
-      });
-  }
   return NextResponse.json(
     rows.map((row) => ({
       ...byId.get(
@@ -76,12 +42,6 @@ export async function GET() {
       status: row.status,
       incoming: row.recipientId === session.user.id,
       lastActivityAt: row.lastActivityAt,
-      lastMessage:
-        latestByFriend.get(
-          row.requesterId === session.user.id
-            ? row.recipientId
-            : row.requesterId,
-        ) ?? null,
     })),
   );
 }

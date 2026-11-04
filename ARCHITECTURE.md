@@ -226,13 +226,21 @@ Group playback and microphone processing share the gesture-unlocked audio contex
 The optional `npm run test:webrtc-browser -- --microphone` check feeds generated
 audio through the actual gate in headless Edge and verifies quiet blocking,
 speech passage, live threshold changes and output-track cleanup.
-Server selection updates the visible workspace immediately and clears the old
-channel list and messages. One effect loads destination channels and members
-independently; channel selection and history loading do not wait for members.
+Server selection updates the visible workspace immediately. Visited servers
+restore their own cached channel/member snapshots and message history in the
+navigation state update, before a loading frame can paint. An account-scoped
+`SessionCache` holds up to 20 server snapshots or 1 MiB of serialized metadata,
+using the same bounded memory-cache implementation as conversation history.
+Server/channel/access events, account changes and reconnects invalidate these
+snapshots. A background effect still revalidates destination channels and members
+independently; permission failures discard cached content. Unvisited servers
+clear the old server's data rather than briefly displaying it under a new name.
+Channel selection and history loading do not wait for members.
 Loading indicators stay inside the workspace, keeping navigation and active
 calls mounted. Switching again aborts obsolete list requests and ignores their
-responses. Text-channel clicks clear previous history immediately and show the
-selected channel's loading state until its authorized history arrives.
+responses. Text-channel clicks clear the previous channel's visible history;
+previously loaded message pages restore from the page-session cache, while an
+uncached channel shows loading until its authorized history arrives.
 
 ### Server and channel activity
 
@@ -311,7 +319,8 @@ keyboard focus and remains visible on touch devices. Published sounds also play
 locally for the sender; Preview uses a separate local-only player and
 never publishes or announces speaking. The compact mute icon sits alongside the
 volume slider. Navigation and closing the board do not stop an active clip.
-Metadata refreshes when reopening the board; upload and settings removal update
+Reopening a loaded board keeps its tiles visible while metadata refreshes, rather
+than resetting it to an empty loading state. Upload and settings removal update
 their own lists immediately. Server settings manages the viewed server, while
 the call dropup and its upload dialog stay scoped to the active call's server.
 The upload dialog supports file preview before saving and authenticated preview
@@ -367,6 +376,12 @@ local-only preview, sender monitoring, dropup alignment and focus, actual LiveKi
 receiver muting before gain fades, search, upload/removal controls, third-track RTP audio with the microphone
 muted and independent screen/soundboard stop behavior. LiveKit
 publication still needs verification against a configured SFU with two clients.
+Every workspace browser mode includes these desktop media checks; the
+`--workspace-controls --media-options-only` mode also runs the soundboard on
+mobile. Fullscreen, RTP, receiver muting and soundboard probes run as separately
+logged commands. Uploaded/managed native WAV previews wait for playable data and
+fail within four seconds with media-state diagnostics; this does not establish
+the cause of an earlier intermittent preview timeout.
 Database tests apply the sound migration in a temporary transactional schema,
 verify byte round trips, invalid-record constraints and server cascades, then
 roll back the entire schema.
@@ -646,6 +661,35 @@ replace the content immediately without polling.
 Channel and direct-message history are fetched newest-first in cursor pages of
 50 messages. Both queries order by timestamp and ID for stable ties; direct
 history remains restricted to the authenticated pair of accepted friends.
+GET `/api/friends` returns friendship/profile metadata and the stored activity
+timestamp only; it does not query direct-message storage or return message
+previews. The recent-conversation sidebar uses that activity timestamp for its
+ordering and time label. Direct history loads only while the selected friend's
+chat is visible in the Friends workspace, including alongside that friend's DM
+call. Retaining a friend selection while viewing a server or another call's media
+does not prefetch that conversation. Closing/switching the view aborts the initial
+history request and invalidates its generation so late responses cannot restore
+hidden or obsolete history. Older-page requests are also gated on chat visibility.
+Real-time incoming notifications and unread counts continue independently;
+these new-message events do not load past history. No schema migration is needed.
+Loaded channel and DM histories, including explicitly fetched older pages and
+their next-page cursor, stay in an account-scoped in-memory `ConversationCache`
+owned by the mounted workspace. Returning to a fresh cached conversation does
+not request history again. Nothing is written to localStorage, sessionStorage,
+IndexedDB or a service worker for message content; a full page reload starts
+empty. The cache evicts least-recently-used conversations above 40 entries or
+5 MiB of serialized UTF-8 content. This bounds cached payloads, not total browser
+heap usage or the currently displayed history. Oversized histories remain usable
+in the current view but are not cached.
+Live DM events update only already-loaded cached conversations. Channel activity
+without a cached message body, deletions and access/server changes invalidate
+affected snapshots; reopening then reads authoritative PostgreSQL history.
+Signaling reconnects clear cached histories and refresh the active view to recover
+missed events. Failed fetches are not cached as empty conversations. Server/member
+metadata still refreshes independently for current names, roles and access.
+Sound audio already uses its separate page-session 24-clip/4-MiB memory LRU;
+navigation does not reset it, while reload does. Neither cache stores decoded
+audio for inactive playback, starts capture or changes call membership.
 The browser displays pages chronologically, opens at the latest message, and
 requests 50 older messages when scrolling near the top (with a manual fallback).
 A shared history view preserves the visible message when older rows prepend;
@@ -676,7 +720,7 @@ Migration `0010_direct_message_deletion` adds a nullable deletion timestamp.
 The default action erases content and keeps a `Deleted message` placeholder;
 an explicit permanent option removes the row. After the database write, a
 `direct-message-deleted` event goes to both users, including their other open
-tabs. Clients update the open history and refresh conversation previews without
+tabs. Clients update the open history and refresh conversation metadata without
 counting deletion events as new unread messages. Missed events recover through
 the existing history reload. Deletions are rate limited per authenticated user.
 
@@ -746,6 +790,11 @@ explain controls unavailable in the current view. Skipping, finishing or closing
 the guide removes the mask, observers and positioning. Calls stay mounted.
 Shared, non-interactive loading skeletons fill channel lists, both message
 histories and the six-tile soundboard grid while authorized responses are pending.
+Their accessible loading status is immediate, but gray rows reveal only after
+150 ms. Faster responses remove the placeholder before it becomes visible; cached
+navigation and soundboard reopening reuse content immediately. The delay reserves
+the normal skeleton layout, does not postpone data rendering or impose a minimum
+loading time, and retains reduced-motion support without pulsing.
 Soundboard metadata loading is tracked separately from empty/error results and
 refreshes on reopening. Skeletons have an accessible loading status, honor
 reduced motion, and never stand in for clickable channels/messages/sounds.
@@ -1139,12 +1188,19 @@ application-level owner dashboard yet.
 - Monitoring is mostly manual.
 - Rate-limit counters are local to one Next.js process and reset on restart;
   they are not suitable for horizontally scaled application instances.
+- Expired rate-limit entries remain in the process map until reused or the
+  process restarts, so memory tracks distinct account/IP keys over its lifetime.
+- Account-message management queries remain unpaginated and can become expensive
+  with large histories. Ordinary conversation history uses cursor pages; the
+  Friends metadata endpoint no longer reads direct-message history.
 - Demo-account expiry removes server access but intentionally retains the user
   and message records until an authorized user explicitly deletes messages or
   a later account-deletion workflow anonymizes them.
 
 These choices are appropriate for a small portfolio deployment: they keep cost
 and operational complexity low while preserving clear service boundaries.
+The repository-wide cleanup review, complete file inventory, retained candidates
+and verification limits are recorded in [PROJECT_AUDIT.md](PROJECT_AUDIT.md).
 
 ## Scaling path
 

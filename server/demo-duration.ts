@@ -1,4 +1,3 @@
-export const DEFAULT_DEMO_DURATION_HOURS = 4;
 export const MAX_DEMO_EXTENSION_HOURS = 720;
 
 export function parseDemoExtensionHours(value: unknown) {

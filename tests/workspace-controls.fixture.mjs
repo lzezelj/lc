@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import {
   SettingsModal,
   SettingsIcon,
@@ -315,8 +316,7 @@ window.verifyHelpAndSkeletons = async () => {
     await click("Skip");
     await click("Done");
     for (const kind of ["channels", "messages", "sounds"]) {
-      root.render(h(LoadingSkeleton, { kind }));
-      await wait();
+      flushSync(() => root.render(h(LoadingSkeleton, { kind, key: kind })));
       const skeleton = container.querySelector('[role="status"]');
       check(
         skeleton?.getAttribute("aria-label") === `Loading ${kind}` &&
@@ -328,6 +328,22 @@ window.verifyHelpAndSkeletons = async () => {
           (kind === "sounds" ? 6 : 5),
         "Skeleton rows must match the intended layout",
       );
+      const row = skeleton.querySelector(".skeletonRow");
+      check(
+        getComputedStyle(row).visibility === "hidden",
+        "Brief loading must reserve space without flashing gray skeletons",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 190));
+      check(
+        getComputedStyle(row).visibility === "visible",
+        "A slower request must still reveal the loading skeleton",
+      );
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches)
+        check(
+          getComputedStyle(row.querySelector(".skeletonShape"))
+            .animationName === "none",
+          "Delayed loading must preserve reduced-motion support",
+        );
     }
   } finally {
     root.unmount();
@@ -780,6 +796,41 @@ window.verifyWorkspaceActivity = async () => {
     localStorage.removeItem(`lc.channelReads.${userId}`);
   }
 };
+async function playSoundPreview(audio, label) {
+  check(audio instanceof HTMLAudioElement, `${label}: audio element missing`);
+  let timer, onReady, onError;
+  try {
+    await new Promise((resolve, reject) => {
+      let started = false;
+      onReady = () => {
+        if (started || audio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA)
+          return;
+        started = true;
+        void audio.play().then(resolve, reject);
+      };
+      onError = () =>
+        reject(
+          new Error(
+            `${label}: preview did not start (readyState=${audio.readyState}, networkState=${audio.networkState}, error=${audio.error?.code ?? "none"}, hasSource=${Boolean(audio.getAttribute("src"))})`,
+          ),
+        );
+      timer = setTimeout(onError, 4000);
+      audio.addEventListener("canplay", onReady);
+      audio.addEventListener("error", onError);
+      if (audio.error) onError();
+      else onReady();
+    });
+    check(!audio.paused, `${label}: preview must be playing`);
+  } catch (error) {
+    audio.pause();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    audio.removeEventListener("canplay", onReady);
+    audio.removeEventListener("error", onError);
+  }
+}
+
 async function verifySoundboard() {
   const originalFetch = window.fetch;
   let publications = 0,
@@ -1064,7 +1115,7 @@ async function verifySoundboard() {
       uploadedPreview?.controls && uploadedPreview.src.startsWith("blob:"),
       "Uploaded sounds must have local preview controls",
     );
-    await uploadedPreview.play();
+    await playSoundPreview(uploadedPreview, "Uploaded sound");
     check(publications === 1, "Upload preview must not publish to the call");
     uploadDialog.querySelector('.modalActions button[type="button"]').click();
     await wait();
@@ -1081,6 +1132,35 @@ async function verifySoundboard() {
         document.activeElement === trigger,
       "Escape must close the dropup and restore trigger focus",
     );
+    const loadedFetch = window.fetch;
+    let finishRefresh;
+    window.fetch = (url, options) =>
+      String(url) === "/api/servers/call-server/soundboard"
+        ? new Promise((resolve) => {
+            finishRefresh = resolve;
+          })
+        : loadedFetch(url, options);
+    try {
+      flushSync(() => trigger.click());
+      check(
+        container.querySelector('[aria-label="Play Celebrate for everyone"]') &&
+          !container.querySelector(".loadingSkeleton"),
+        "Reopening a loaded board must show its tiles immediately while metadata refreshes",
+      );
+      await wait();
+      check(
+        finishRefresh,
+        "Reopening must still revalidate soundboard metadata",
+      );
+      finishRefresh(Response.json({ canManage: true, sounds: soundList }));
+      await wait();
+    } finally {
+      window.fetch = loadedFetch;
+    }
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await wait();
     const managerHost = document.createElement("div");
     document.body.append(managerHost);
     const managerRoot = createRoot(managerHost);
@@ -1114,7 +1194,7 @@ async function verifySoundboard() {
       manager.querySelector('[aria-label="Preview Uploaded"]').click();
       await wait();
       const managedPreview = manager.querySelector("audio");
-      await managedPreview.play();
+      await playSoundPreview(managedPreview, "Managed sound");
       manager.querySelector('[aria-label="Remove Uploaded"]').click();
       await wait();
       check(
@@ -1400,6 +1480,9 @@ async function verifyScreenAudioTransport() {
     await context.close();
   }
 }
+window.verifyScreenAudioTransport = verifyScreenAudioTransport;
+window.verifyLiveKitImmediateMute = verifyLiveKitImmediateMute;
+
 window.verifyVideoFullscreen = async () => {
   const container = document.createElement("div");
   container.className = "videoGrid focused";
@@ -1502,9 +1585,6 @@ window.verifyVideoFullscreen = async () => {
   );
   root.unmount();
   container.remove();
-  await verifyScreenAudioTransport();
-  await verifyLiveKitImmediateMute();
-  await verifySoundboard();
   return {
     selectedTileOnly: true,
     fullResolution: true,

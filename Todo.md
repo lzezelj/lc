@@ -8,4 +8,4 @@ Browser/device testing
 Automated tests for permissions and authorization
 Monitoring and structured logs
 
-Kick doesnt go away when klicked outside of the menu
+One device in a call per account.
