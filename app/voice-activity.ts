@@ -1,17 +1,27 @@
 // One context is unlocked by a user gesture before asynchronous call setup.
+import {
+  readEchoCancellationEnabled,
+  readMicrophoneMode,
+} from "./microphone-preferences.mjs";
 let audioContext: AudioContext | null = null;
 
 export function microphoneProcessing() {
-  const enabled = localStorage.getItem("lc.microphoneProcessing") !== "off";
+  const enabled = readMicrophoneMode() !== "raw";
   return {
-    echoCancellation: enabled,
+    echoCancellation: enabled && readEchoCancellationEnabled(),
     noiseSuppression: enabled,
     autoGainControl: enabled,
   };
 }
 
 export function prepareVoiceActivity() {
-  audioContext ??= new AudioContext();
+  if (!audioContext) {
+    try {
+      audioContext = new AudioContext({ sampleRate: 48000 });
+    } catch {
+      audioContext = new AudioContext();
+    }
+  }
   if (audioContext.state !== "running")
     void audioContext.resume().catch(() => {});
   return audioContext;

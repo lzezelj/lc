@@ -3,7 +3,49 @@ import { test } from "node:test";
 import {
   monitorVoiceActivity,
   prepareVoiceActivity,
+  microphoneProcessing,
 } from "../app/voice-activity.ts";
+
+test("saved echo cancellation is independent of noise suppression before microphone capture", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let echo = "off",
+    mode = "rnnoise";
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key) =>
+        key === "lc.echoCancellation"
+          ? echo
+          : key === "lc.microphoneMode"
+            ? mode
+            : null,
+    },
+  });
+  try {
+    assert.deepEqual(microphoneProcessing(), {
+      echoCancellation: false,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+    echo = "on";
+    assert.equal(microphoneProcessing().echoCancellation, true);
+    mode = "raw";
+    assert.deepEqual(microphoneProcessing(), {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+    mode = "browser";
+    assert.deepEqual(microphoneProcessing(), {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    });
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else delete globalThis.localStorage;
+  }
+});
 
 test("voice activity resets on capture interruption and resumes after an audio-context interruption", () => {
   const previous = new Map(

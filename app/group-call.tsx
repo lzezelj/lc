@@ -74,6 +74,7 @@ type GroupCallDiagnostics = {
 type GroupCallProps = {
   sessionId?: string;
   serverId?: string;
+  joinSoundId?: string | null;
   serverName?: string;
   cameraResolution?: CameraResolution;
   onCameraResolutionChange?: (resolution: CameraResolution) => void;
@@ -221,6 +222,7 @@ function RemoteTrackView({
 export function GroupCall({
   sessionId,
   serverId,
+  joinSoundId,
   serverName,
   cameraResolution = "720",
   onCameraResolutionChange,
@@ -251,6 +253,8 @@ export function GroupCall({
   onError,
 }: GroupCallProps) {
   const soundboard = useSoundboard(channelId, {
+    serverId,
+    joinSoundId,
     outputVolume: outputVolume * 100,
     outputId,
     deafened,
@@ -541,6 +545,7 @@ export function GroupCall({
     roomRef.current = null;
     soundPlayerRef.current?.stop();
     soundboard.preview.current?.stop();
+    soundboard.stopJoinSound();
     if (localVideo.current) localVideo.current.srcObject = null;
     if (localScreen.current) localScreen.current.srcObject = null;
     setRemoteMedia([]);
@@ -754,7 +759,7 @@ export function GroupCall({
       })
       .on(RoomEvent.ParticipantConnected, () => {
         updatePresence();
-        playVoiceSound("join");
+        soundboard.playJoinSound();
       })
       .on(RoomEvent.ParticipantDisconnected, (participant) => {
         playVoiceSound("leave");
@@ -854,7 +859,7 @@ export function GroupCall({
         screen: false,
         speaking: false,
       });
-      playVoiceSound("join");
+      soundboard.playJoinSound();
     } catch {
       if (roomRef.current !== room) {
         releaseRoom(room);
@@ -1066,24 +1071,6 @@ export function GroupCall({
     } catch (error) {
       track.stop();
       throw error;
-    }
-  }
-
-  async function restartMicrophone() {
-    prepareVoiceActivity();
-    const room = roomRef.current;
-    if (!room) return;
-    try {
-      const track = room.localParticipant.getTrackPublication(
-        Track.Source.Microphone,
-      )?.audioTrack;
-      if (track) await track.restartTrack(voiceCaptureOptions(microphoneId));
-      else await setMicrophoneEnabled(room, !mutedRef.current);
-      startSpeakingMonitor(room);
-    } catch {
-      audioCallbacks.current.onError(
-        "Microphone could not be restarted. Check the device and browser permission.",
-      );
     }
   }
 
@@ -1330,7 +1317,6 @@ export function GroupCall({
           devices={microphones}
           selectedId={microphoneId}
           onAction={() => void toggleAudio()}
-          onRestart={() => void restartMicrophone()}
           onSelect={(deviceId) => void changeMicrophone(deviceId)}
         />
         <DeviceMenu

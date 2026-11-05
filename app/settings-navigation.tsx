@@ -33,25 +33,32 @@ export function SettingsNavigation({
           : []),
         { label: "Session", items: [["logout", "Log out"]] },
       ]
-    : [
-        {
-          label: "Server",
-          items: [
-            ["overview", "Overview"],
-            ["channels", "Channels"],
-            ["soundboard", "Soundboard"],
-          ],
-        },
-        { label: "People", items: [["members", "Members"]] },
-        {
-          label: "Invitations",
-          items: [
-            ["invite-friends", "Invite friends"],
-            ["invite-people", "Invite people"],
-          ],
-        },
-        { label: "Administration", items: [["delete", "Delete server"]] },
-      ];
+    : !owner
+      ? [
+          {
+            label: "Server",
+            items: [["join-sound", "Voice channel join sound"]],
+          },
+        ]
+      : [
+          {
+            label: "Server",
+            items: [
+              ["overview", "Overview"],
+              ["channels", "Channels"],
+              ["soundboard", "Soundboard"],
+            ],
+          },
+          { label: "People", items: [["members", "Members"]] },
+          {
+            label: "Invitations",
+            items: [
+              ["invite-friends", "Invite friends"],
+              ["invite-people", "Invite people"],
+            ],
+          },
+          { label: "Administration", items: [["delete", "Delete server"]] },
+        ];
   return (
     <>
       {groups.map((group) => (

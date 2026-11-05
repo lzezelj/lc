@@ -120,6 +120,10 @@ export const servers = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
+    joinSoundId: uuid("join_sound_id").references(
+      (): AnyPgColumn => serverSounds.id,
+      { onDelete: "set null" },
+    ),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),

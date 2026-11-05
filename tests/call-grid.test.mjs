@@ -234,6 +234,8 @@ function renderCall(state = {}, options = {}) {
       return {
         player: { current: { stop() {} } },
         preview: { current: { stop() {} } },
+        playJoinSound() {},
+        stopJoinSound() {},
         volume: options.soundboardVolume ?? 100,
         muted: options.soundboardMuted ?? false,
       };
@@ -1534,13 +1536,11 @@ test("session refresh preserves workspace readiness only while an authenticated 
   }
 });
 
-test("microphone menu exposes the same actions before and after joining", async () => {
+test("microphone menu shares the processing selector and omits retired capture actions", async () => {
   const source = await readFile(
     new URL("../app/device-menu.tsx", import.meta.url),
     "utf8",
   );
-  const preferences = new Map();
-  let restarts = 0;
   const exports = {};
   const jsx = (type, props) => ({ type, props });
   vm.runInNewContext(
@@ -1559,47 +1559,47 @@ test("microphone menu exposes the same actions before and after joining", async 
             }
           : name === "react/jsx-runtime"
             ? { jsx, jsxs: jsx }
-            : { DeviceSelection: "DeviceSelection" },
-      localStorage: {
-        getItem: (key) => preferences.get(key) ?? null,
-        setItem: (key, value) => preferences.set(key, value),
-      },
+            : name === "./microphone-processing"
+              ? {
+                  MicrophoneModeSelector: "MicrophoneModeSelector",
+                  EchoCancellationToggle: "EchoCancellationToggle",
+                }
+              : { DeviceSelection: "DeviceSelection" },
     },
   );
-  for (const active of [false, true]) {
-    preferences.clear();
+  for (const kind of ["microphone", "headphones", "camera"]) {
     const tree = exports.DeviceMenu({
-      kind: "microphone",
+      kind,
       disabled: false,
       devices: [],
       selectedId: "",
       onAction() {},
       onSelect() {},
-      onRestart: active
-        ? () => {
-            restarts++;
-          }
-        : undefined,
     });
-    const restart = elements(tree).find(
-      (element) =>
-        element.type === "button" &&
-        element.props.children === "Restart microphone",
+    assert.equal(
+      elements(tree).some(
+        (element) => element.type === "MicrophoneModeSelector",
+      ),
+      kind === "microphone",
     );
-    assert.equal(restart.props.disabled, !active);
-    const processing = elements(tree).find(
-      (element) =>
-        element.type === "button" &&
-        Array.isArray(element.props.children) &&
-        element.props.children.join("") === "Disable microphone processing",
+    assert.ok(
+      !elements(tree).some(
+        (element) =>
+          element.type === "button" &&
+          /Restart microphone|microphone processing/.test(
+            String(element.props.children),
+          ),
+      ),
     );
-    assert.ok(processing);
-    processing.props.onClick();
-    assert.equal(preferences.get("lc.microphoneProcessing"), "off");
+    assert.equal(
+      elements(tree).some(
+        (element) => element.type === "EchoCancellationToggle",
+      ),
+      kind === "microphone",
+    );
+    assert.equal(
+      elements(tree).some((element) => element.type === "DeviceSelection"),
+      kind !== "headphones",
+    );
   }
-  assert.equal(
-    restarts,
-    1,
-    "idle processing changes must not request microphone capture",
-  );
 });

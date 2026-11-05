@@ -26,6 +26,142 @@ database migration, package upgrade or infrastructure change was performed.
 
 ## Architecture preserved
 
+Member-settings follow-up: all current server members can open server settings
+and change the shared voice channel join sound, including demo members. Non-owner
+navigation and content expose only that section and a local selected-sound preview;
+soundboard upload/removal and all other management APIs retain owner checks.
+The join-sound API now authorizes membership while retaining server-scoped sound
+validation, rate limits and refresh events. Shared settings button defaults use
+the demo-action neutral style, standalone primary actions use blue, destructive
+actions use red, and the sound preview icon has a centered square target.
+Formatting, all 225 default tests and production build passed. Muted desktop/
+mobile checks cover member-only navigation/content, member saves, preview icon
+centering and neutral/blue/red button styles, including grouped upload actions.
+The first run stopped in `verifyInvitesAndReveal` on its previously observed null
+textContent read; complete reruns passed. No new migration or production change.
+
+Server join-sound follow-up: owners can choose Default or one of their server's
+soundboard clips in Server settings → Soundboard. The authenticated, rate-limited
+API validates ownership and clip/server association. Migration 0017 persists the
+nullable reference and restores Default on sound deletion; it was applied to the
+verified local database. Native and group server calls play the selected sound
+locally with output/deafen and teardown protection. Friend calls retain Default.
+Default tests (225), PostgreSQL tests (7), formatting and production build passed.
+New regressions are included in the existing core and database CI commands.
+Muted desktop/mobile media-options, save/reset, footer and guide pointer checks
+passed on rerun. The first combined browser run timed out in the desktop guide
+after soundboard/save/reset and other media checks passed; its cause is unproven.
+Muted Friends/server call navigation also passed, preserving direct audio and
+the group room/audio through workspace changes.
+
+Introduction follow-up: added microphone-mode guidance recommending RNNoise
+with echo cancellation off as a starting point for headphones, with speaker
+feedback guidance and Browser-only threshold behavior. The existing -50 dB
+default and saved preferences are unchanged. New guide steps cover attachment
+previews/downloads, mentions, unread indicators, notification controls/mutes,
+My messages and the footer Licenses page; the skip screen now names the footer.
+Formatting and six focused guide/audio tests passed. Muted desktop/mobile guide
+and pointer checks passed on rerun; the first browser run timed out in
+Runtime.evaluate during the mobile guide check. Its cause remains unproven.
+
+Settings follow-up: added a public `/licenses` page containing full RNNoise and
+wrapper notices, opened from the app footer in the existing legal overlay.
+Microphone menus share the processing and echo controls with Voice & video.
+Voice & video retains permission access at the top, then groups audio devices,
+processing, echo, threshold and microphone testing before camera setup/testing.
+No capture, signaling or media-processing algorithm was changed in this follow-up.
+Verification: formatting, 36 focused media/menu/help tests and production build
+passed. Muted media-options desktop/mobile and footer/guide checks passed on
+rerun; the first run stopped in `verifyInvitesAndReveal` on a null textContent
+read before reaching the microphone checks. Its cause remains unproven.
+
+Three-mode follow-up: microphone menus and Voice & video now share a saved Raw /
+Browser / RNNoise selector. Raw requests echo cancellation, suppression and AGC
+off and bypasses the loudness gate, while keeping volume/mute/deafen. Browser
+retains browser processing and the threshold; RNNoise retains neural denoising
+without a second gate, with Browser fallback. Existing saved choices migrate,
+mode changes retain the published track, and Raw temporarily disables the echo
+control without erasing its saved preference. The license notices remain in
+`server/rnnoise-LICENSE.txt` and the header of the served RNNoise JavaScript module,
+alongside the wrapper's Apache license; no visible credits panel was introduced.
+Formatting, all 223 default tests, production build, muted real-WASM mode checks,
+desktop/mobile menu checks and call-preserving navigation passed.
+
+Microphone playback/echo follow-up: Test microphone now plays processed audio
+automatically, without a separate Hear my microphone checkbox. It still respects
+Deafen/output settings and pauses/releases capture on stop, device change or close.
+Voice & video now includes a separate saved Echo cancellation control (default on).
+Both initial capture and the shared RNNoise/browser fallback graph honor it, so
+RNNoise cannot silently re-enable echo cancellation. Immediate gain updates on
+deafen avoid waiting for background sampling timers. Capture/playback lifecycle
+tests and real-WASM browser checks cover the new behavior; physical microphone
+word clipping remains a listening check, and no cause is asserted from generated
+audio alone.
+Formatting, all 222 default tests, production build and the muted real-WASM echo
+on/off, RNNoise, deafen and fallback checks passed.
+
+Device-menu/speech follow-up: microphone and output dropdowns now use the channel
+sidebar width and elevated stacking, including idle/joined desktop/mobile views.
+Restart microphone and the overall-processing action were removed, with the
+same shared Noise suppression by RNNoise checkbox in the menu and Voice & video.
+Shared preferences moved into a small browser module; choosing RNNoise clears an
+obsolete overall-off preference so the new control remains effective. Active
+RNNoise now bypasses the second loudness cutoff, while browser fallback retains
+the existing threshold/hysteresis/release and mute/deafen/volume remain enforced.
+The stock model itself is unchanged. All 221 tests and production build passed;
+muted real-WASM checks passed attenuation with a deliberately high threshold,
+toggle continuity, deafen and failure recovery. Desktop/mobile media checks
+verified bounded menu geometry, stacking over content and the actual shared
+toggle, and muted call navigation passed. Physical-microphone speech quality and
+stacked upstream processing, such as NVIDIA Broadcast, still require listening.
+
+RNNoise toggle follow-up: Voice & video now has a separate persistent RNNoise
+checkbox. It updates the active settings test and call graphs in place, preserving
+the output track, volume and mute/deafen controls. Disabled RNNoise uses browser
+suppression; the existing overall processing switch still disables both paths.
+Revision/abort guards reject late initialization after changing the preference,
+and cross-tab storage events synchronize it. Existing microphone-test regressions
+cover checkbox state and capture continuity. The muted real-WASM browser check
+also covers disable/re-enable, rapid toggle cancellation and stable output identity.
+The distributed static library already includes both its Apache license and
+upstream RNNoise copyright/redistribution notices; no branding was added.
+Formatting, all 221 default tests, production build and the muted real-WASM
+toggle/deafen/fallback browser check passed. The fallback probe waits for the
+timer-driven gain gate to resume after deafen rather than sampling it once.
+
+RNNoise/message-window follow-up: the sent-message window now uses User settings
+dimensions and a two-column desktop/one-column mobile grid, preserving wrapped
+text and deletion confirmation. Microphone processing now loads pinned open-source
+RNNoise WASM through a same-origin static build endpoint and a hashed AudioWorklet
+asset. Direct calls, LiveKit's microphone processor and settings microphone tests
+share this graph. Initial/browser fallback remains connected until readiness;
+worklet errors restore it, cancellation prevents late attachment, and cleanup
+destroys per-capture state. Browser denoising/AGC are disabled only after RNNoise
+starts, while echo cancellation remains. Processing off retains the previous
+unprocessed mode. Gate hysteresis/release increased to 10 dB/350 ms for word tails.
+Formatting, all 221 default tests and production build passed. Added default
+regressions cover readiness, shared module loading, failures, cancellation, frame
+buffering and state release; they run through the existing GitHub Actions npm test
+step. Muted browser checks verified actual WASM activation, generated-noise
+attenuation, deafen, runtime-error fallback, stopped output tracks and the message
+window dimensions/grid on desktop/mobile. Human speech quality and physical
+microphone noise still require listening; generated audio does not prove those.
+No production deployment or database migration was performed.
+
+5 November UI follow-up: removed redundant destination-type labels from My
+messages; pending image files now display local composer thumbnails with object
+URL cleanup, and settings close icons use a centered SVG. The Friends API now
+returns bounded latest-text previews for accepted conversations, with indexed
+one-row lookups per direction rather than loading conversation histories.
+Previews truncate text to 160 characters, mask soft-deleted text and label files;
+pending requests receive no preview. Send/edit/delete paths refresh the sidebar.
+All 219 default tests, seven disposable PostgreSQL tests, production build and
+muted desktop/mobile composer, image-preview and chat-tools checks passed.
+The PostgreSQL tests exercise the actual Friends route, latest incoming/outgoing
+selection, truncation, pending-request exclusion and deleted/attachment labels.
+No schema migration or audio-processing change was made; Krisp investigation
+confirmed a standalone browser RTC SDK exists, with access requested from Krisp.
+
 Notification/call follow-up: explicit friend-call hangup now cancels the incoming
 invitation over authenticated presence before outcome recording clears the peer.
 This reaches a ringing receiver who has not joined the voice room. Disconnect

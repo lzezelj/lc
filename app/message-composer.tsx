@@ -2,6 +2,7 @@
 
 import {
   useId,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -13,6 +14,20 @@ import {
   attachmentMaxBytes,
   attachmentMaxCount,
 } from "./attachment-types";
+
+function PendingImage({ file }: { file: File }) {
+  const image = useRef<HTMLImageElement>(null);
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    if (image.current) image.current.src = url;
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return (
+    // Local file preview; the temporary URL is released on removal or unmount.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img ref={image} className="pendingImage" alt={`Preview of ${file.name}`} />
+  );
+}
 
 export function MessageComposer({
   value,
@@ -198,6 +213,7 @@ export function MessageComposer({
         <ul className="pendingAttachments">
           {files.map((file, index) => (
             <li key={index}>
+              {file.type.startsWith("image/") && <PendingImage file={file} />}
               <span>{file.name}</span>
               <button
                 type="button"

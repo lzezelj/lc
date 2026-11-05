@@ -10,7 +10,17 @@ test("settings previews release captures on stop, device change, close, and late
   let effects = [];
   const requests = [];
   const gates = [];
-  const audio = { srcObject: null };
+  let plays = 0,
+    pauses = 0;
+  const audio = {
+    srcObject: null,
+    play: async () => {
+      plays++;
+    },
+    pause: () => {
+      pauses++;
+    },
+  };
   const video = { srcObject: null };
   const hooks = {
     useState(initial) {
@@ -80,6 +90,10 @@ test("settings previews release captures on stop, device change, close, and late
       },
     },
   };
+  dependencies["./microphone-processing"] = {
+    MicrophoneModeSelector: "MicrophoneModeSelector",
+    EchoCancellationToggle: "EchoCancellationToggle",
+  };
   const exports = {};
   vm.runInNewContext(
     ts.transpile(
@@ -119,10 +133,10 @@ test("settings previews release captures on stop, device change, close, and late
         ? [node, ...elements(node.props?.children)]
         : [];
   let tree;
-  const render = (microphoneId = "mic-1") => {
+  const render = (microphoneId = "mic-1", deafened = false) => {
     cursor = 0;
     effects = [];
-    tree = exports.MediaTests({ microphoneId, cameraId: "camera-1" });
+    tree = exports.MediaTests({ microphoneId, cameraId: "camera-1", deafened });
     for (const element of elements(tree))
       if (element.props.ref)
         element.props.ref.current = element.type === "audio" ? audio : video;
@@ -152,12 +166,21 @@ test("settings previews release captures on stop, device change, close, and late
     return track;
   };
   render();
+  assert.ok(
+    elements(tree).some((element) => element.type === "MicrophoneModeSelector"),
+    "microphone settings reuse the shared processing selector",
+  );
   click("Test microphone");
   render();
   click("Stop microphone test");
   render();
   const lateMic = await resolveCapture(0);
   assert.equal(lateMic.stopped, true);
+  assert.equal(
+    plays,
+    0,
+    "a cancelled permission grant must not start playback",
+  );
   assert.equal(
     gates.length,
     0,
@@ -167,10 +190,25 @@ test("settings previews release captures on stop, device change, close, and late
   render();
   const firstMic = await resolveCapture(1);
   assert.ok(audio.srcObject);
+  assert.equal(
+    plays,
+    1,
+    "microphone test plays automatically once capture is attached",
+  );
+  assert.equal(audio.muted, false, "microphone playback is enabled by default");
+  assert.ok(
+    elements(tree).some((element) => element.type === "EchoCancellationToggle"),
+  );
+  render("mic-1", true);
+  assert.equal(audio.muted, true, "deafen still silences test playback");
+  render("mic-1", false);
+  assert.equal(audio.muted, false);
+  assert.equal(requests.length, 2, "playback changes must not recapture");
   render("mic-2");
   assert.equal(firstMic.stopped, true);
   assert.equal(gates[0].stopped, true);
   assert.equal(audio.srcObject, null);
+  assert.ok(pauses > 0, "stopping a test pauses its audio element");
   const secondMic = await resolveCapture(2);
   click("Test camera");
   render("mic-2");

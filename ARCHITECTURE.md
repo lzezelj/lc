@@ -200,9 +200,10 @@ switching. Output selection requires browser support for media-element and
 AudioContext sinks; unsupported browsers retain the system output and volume
 controls. These are application audio levels, not hardware mixer controls.
 The idle footer uses the same microphone/device control as a joined call.
-Both microphone menus expose the same device, volume and processing options;
-Restart is disabled until there is active capture. Processing can be configured
-before joining and applies when microphone capture begins.
+Both microphone menus expose the same device, volume and processing-mode controls,
+including before joining. The microphone and output dropdowns use the channel
+sidebar width, fixed positioning and an elevated stacking layer so chat content
+cannot cover them. The old restart and overall-processing actions are removed.
 The full call footer appears as soon as joining starts, with Connecting to the
 channel shown until room joining and initial microphone setup finish (including
 receive-only fallback). Media/device actions are disabled during setup, while
@@ -212,20 +213,79 @@ depend on remote video, diagnostics, or a second participant arriving.
 Channel highlighting follows the visible workspace: text channels remain
 highlighted during voice-only use; opening the call grid highlights its voice
 channel and clears the text highlight.
-Microphone transmission also passes through a browser Web Audio gain gate before
-WebRTC encoding. The threshold is saved locally (default -50 dBFS), updates live,
-and uses a 6 dB hysteresis and 180 ms release to reduce syllable chopping. Direct
+Microphone transmission passes through on-device RNNoise and a Web Audio volume
+stage before WebRTC encoding. When RNNoise is active, no additional loudness gate
+cuts its output: quiet speech already attenuated by the denoiser must remain
+audible. Manual mute/deafen and input volume still apply. Browser fallback retains
+the locally saved threshold (default -50 dBFS), 10 dB hysteresis and 350 ms release.
+Direct
 calls publish its output track; group calls install the gate as a LiveKit audio
 processor before publication. Device changes rebuild the graph, and leaving stops
-the graph and capture. This is a level gate, not background-speaker separation:
-loud distant voices can pass and noise remains audible while the gate is open.
-Voice/video settings provide a local input meter, optional gated mic playback,
-and a muted camera preview. Tests stop their own captures when stopped, when the
+the graph and capture. The shared context requests 48 kHz for RNNoise; unsupported
+sample rates, module/initialization errors and runtime processor failures retain
+or reconnect browser noise suppression instead of silencing the call. RNNoise
+loads only in RNNoise mode. The microphone menu and Voice & video reuse a
+Raw / Browser / RNNoise selector, saved as `lc.microphoneMode`. Raw disables LC
+suppression, echo cancellation, automatic gain control and the threshold gate;
+input/output volume and explicit mute/deafen remain active. Browser enables
+browser suppression/automatic gain and the saved transmission threshold. RNNoise
+uses the neural model without an additional loudness gate, falling back to Browser
+if it cannot start. Initial capture and live graph changes use the same mode.
+Voice & video has an independent Echo cancellation
+checkbox, saved as `lc.echoCancellation`, enabled by default. Capture constraints,
+active RNNoise initialization and browser fallback all honor that preference;
+changing it updates active graphs without replacing their published output.
+Raw temporarily bypasses this preference and disables its checkbox; returning
+to Browser or RNNoise restores the saved echo choice.
+Preference events update every active microphone graph,
+including the settings test, without recapturing or replacing the output track.
+Storage events synchronize other tabs. Aborted/revised initialization cannot
+reattach an obsolete filter after a toggle, and stopping removes these listeners.
+Without a saved mode, retired preferences migrate in memory: overall processing
+off becomes Raw, RNNoise off becomes Browser, otherwise RNNoise remains the default.
+Saving a mode also updates legacy keys for older open tabs without changing the
+independent echo preference.
+Once RNNoise confirms readiness, browser noise suppression and automatic gain
+control are disabled on the original track to avoid stacked denoisers and noise
+amplification; echo cancellation follows its separate preference. Failures restore
+browser suppression while preserving the echo choice. Original tracks and the published output track remain stable
+while switching processing paths. The fallback gate is based on loudness, and RNNoise
+is speech denoising rather than identification of the intended speaker: other
+people's voices can remain.
+
+`@shiguredo/rnnoise-wasm` is pinned to 2025.1.5. The public versioned GET
+`/api/audio/rnnoise/2025.1.5` is generated at build time with the embedded WASM,
+Apache license and upstream RNNoise notices; it contains library code and no user
+audio or credentials. The hashed worklet asset imports that same-origin module.
+The public, statically generated `/licenses` page includes the full upstream
+RNNoise and wrapper license texts. A Licenses footer action opens it inside the
+existing legal overlay without unmounting the application or active call; the
+notices remain accessible independently of repository visibility. Voice & video
+keeps permission access at the top, followed by an audio group (devices,
+processing, echo cancellation, threshold and test) and a camera group (device,
+resolution and test). Both tests retain a single shared lifecycle component.
+Its private AudioWorklet realm supplies the worker marker required by the pinned
+Emscripten build, buffers 128-sample quanta into 480-sample mono PCM frames and
+adds 10 ms of buffering in addition to RNNoise's algorithmic delay. One engine
+loads per context and each capture owns a denoise state. Readiness/cancellation
+checks prevent late loading from reconnecting stopped capture. Stop releases
+model state and acknowledges cleanup before its message port closes. No audio
+is sent to a noise-suppression service, and no cross-origin isolation headers,
+external CDN or production infrastructure changes are required.
+Voice/video settings show the active RNNoise/browser/off mode, a local input
+meter, automatic processed mic playback after Test microphone is selected,
+and a muted camera preview. The old Hear my microphone checkbox is removed.
+Playback still respects Deafen, output volume and the selected output device;
+autoplay failures show an error. Tests stop and pause their own playback when stopped, when the
 device changes, or when the dialog closes, without stopping an ongoing call.
+Deafen changes update every active gain stage immediately rather than waiting
+for its periodic level-sampling timer.
 Group playback and microphone processing share the gesture-unlocked audio context.
 The optional `npm run test:webrtc-browser -- --microphone` check feeds generated
 audio through the actual gate in headless Edge and verifies quiet blocking,
-speech passage, live threshold changes and output-track cleanup.
+speech-level tone passage, live threshold changes, RNNoise noise attenuation,
+deafen, worklet-failure fallback and output-track cleanup. Generated noise/tone
+checks do not establish subjective speech quality or background-voice isolation.
 Server selection updates the visible workspace immediately. Visited servers
 restore their own cached channel/member snapshots and message history in the
 navigation state update, before a loading frame can paint. An account-scoped
@@ -388,6 +448,26 @@ also provides local preview. These native audio controls use temporary Blob URLs
 and the same bounded audio cache as call playback, with the selected output
 device/volume and Deafen. Dialog/preview teardown pauses playback and revokes
 the Blob URL; it never publishes tracks, announces speaking or tears down calls.
+Server settings → Soundboard also selects the server's voice channel join sound.
+Default retains the generated join tone; a custom choice references an existing
+sound in that server. Migration `0017_server_join_sound` adds nullable
+`servers.join_sound_id` with an `ON DELETE SET NULL` foreign key. Deleting the
+selected sound therefore restores Default. The member-authorized, rate-limited PATCH
+`/api/servers/{serverId}/join-sound` locks membership, validates the sound's server
+association, and persists the choice. Server-list responses carry the setting;
+Every current server member, including demo members, can open server settings
+and change this shared choice. Non-owners see only the Voice channel join sound
+section and its optional local preview; management sections, uploads, removal,
+invitations and other server mutations remain owner-authorized at their APIs.
+the existing authenticated server-updated event refreshes clients after saves and
+sound deletion. The open call reads its own server's choice independently of
+the viewed workspace. Native server channels and LiveKit participant joins use
+a call-owned local player, never a published track. Custom playback reuses authenticated audio
+loading and the bounded sound cache, honors output device/volume and Deafen, and
+cancels pending loads and revokes Blob URLs on stop, channel changes or teardown.
+Missing/unplayable custom audio falls back to the default tone. Friend calls keep
+the default sound. This does not change leave sounds or admission/signaling rules.
+
 Every published play, including a cache hit, requests
 POST `/api/servers/{serverId}/soundboard/play?clip={id}`. The API rechecks current
 membership and clip/server association, then grants at most one play per account
@@ -836,6 +916,9 @@ opens an in-app `SettingsModal` preview, preserving the mounted workspace/call,
 with Escape/backdrop/close-button dismissal, focus restoration, loading/error
 feedback and the same authenticated download link. Preview content disappears
 when its message is deleted. PDFs download rather than embedding document content.
+Selected image files also show local thumbnails in the shared composer before
+uploading. Their temporary object URLs are revoked when files change or the
+composer unmounts; previews do not upload bytes or modify the send flow.
 
 Migration `0013_message_attachments` adds message metadata and a separate
 `message_attachments` table. Message foreign keys cascade permanent removal;
@@ -884,10 +967,16 @@ replace the content immediately without polling.
 Channel and direct-message history are fetched newest-first in cursor pages of
 50 messages. Both queries order by timestamp and ID for stable ties; direct
 history remains restricted to the authenticated pair of accepted friends.
-GET `/api/friends` returns friendship/profile metadata and the stored activity
-timestamp only; it does not query direct-message storage or return message
-previews. The recent-conversation sidebar uses that activity timestamp for its
-ordering and time label. Direct history loads only while the selected friend's
+GET `/api/friends` returns friendship/profile metadata, the stored activity
+timestamp and a bounded last-message preview for each accepted friend. A lateral
+query fetches at most one text-message row per direction using the existing
+pair/timeline index, then selects the latest by timestamp and ID. Responses contain
+at most 160 text characters and the sender ID; attachment-only and soft-deleted
+messages return labels, and pending requests have no preview. It does not load
+conversation pages, attachments or file bytes. The sidebar shows the preview
+below the name, prefixes outgoing messages with You, and refreshes on sends,
+edits and deletions. The activity timestamp still controls ordering/time labels.
+Direct history loads only while the selected friend's
 chat is visible in the Friends workspace, including alongside that friend's DM
 call. Retaining a friend selection while viewing a server or another call's media
 does not prefetch that conversation. Closing/switching the view aborts the initial
@@ -1023,11 +1112,14 @@ Soundboard metadata loading is tracked separately from empty/error results and
 refreshes on reopening. Skeletons have an accessible loading status, honor
 reduced motion, and never stand in for clickable channels/messages/sounds.
 Personal message deletion confirms inline.
-My messages lists searchable server and direct-message destinations, with the
-current server first. Selecting one opens a separate settings window containing
-only that account's sent messages, a content/channel search and confirmed
-permanent individual or bulk removal. The self-only message-history API scopes
-every read and deletion to the session author/sender and selected destination;
+My messages uses the same shared Servers/People category and search controls as
+Notifications, retaining each category's search while switching tabs. The current
+server appears first within Servers. Selecting a destination opens a separate
+settings window containing only that account's sent messages, a content/channel
+search and confirmed permanent individual or bulk removal. The message window
+shares User settings dimensions and shows two cards per row on desktop, with one
+column on narrow screens. Existing text wrapping is retained. The self-only
+message-history API scopes every read and deletion to the session author/sender and selected destination;
 it also includes soft-deleted placeholders for permanent removal. Existing chat
 history pagination remains independent. Channel creation precedes the searchable
 channel list; member management includes search and alternating row colors.
@@ -1192,8 +1284,8 @@ AudioContext unlocked during a call gesture. Its silent output connection keeps
 analysis active on mobile browsers without playing microphone audio. Capture
 mute/end and context suspension clear the light immediately; group track
 restarts and device changes reattach the detector. Microphone menus expose a
-restart action and a persistent processing toggle for comparing browser echo
-cancellation, noise suppression, and gain control during audio troubleshooting.
+persistent RNNoise toggle shared with Voice & video for comparing neural and
+browser noise suppression. Retired restart/overall-processing actions are absent.
 Diagnostics include actual capture state and sample rate. Browser/device
 crackling has not been verified resolved; low lifetime packet loss alone does
 not rule out brief network loss or capture/output distortion.
@@ -1416,7 +1508,7 @@ application-level owner dashboard yet.
   process restarts, so memory tracks distinct account/IP keys over its lifetime.
 - Account-message management queries remain unpaginated and can become expensive
   with large histories. Ordinary conversation history uses cursor pages; the
-  Friends metadata endpoint no longer reads direct-message history.
+  Friends endpoint reads only bounded previews rather than full message histories.
 - Demo-account expiry removes server access but intentionally retains the user
   and message records until an authorized user explicitly deletes messages or
   a later account-deletion workflow anonymizes them.

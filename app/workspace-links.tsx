@@ -4,7 +4,7 @@ export function WorkspaceLinks({
   onLegal,
   onHelp,
 }: {
-  onLegal: (document: "impressum" | "privacy") => void;
+  onLegal: (document: "impressum" | "privacy" | "licenses") => void;
   onHelp: () => void;
 }) {
   return (
@@ -14,6 +14,9 @@ export function WorkspaceLinks({
       </button>
       <button type="button" onClick={() => onLegal("privacy")}>
         Privacy
+      </button>
+      <button type="button" onClick={() => onLegal("licenses")}>
+        Licenses
       </button>
       <button
         type="button"

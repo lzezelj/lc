@@ -12,10 +12,13 @@ import {
 
 import { loadSoundAudio, type Sound } from "./soundboard-library";
 import { SoundPreviewIcon, SoundUploadDialog } from "./sound-manager";
+import { ServerJoinSoundPlayer } from "./server-join-sound";
 
 export function useSoundboard(
   callId: string,
   options: {
+    serverId?: string;
+    joinSoundId?: string | null;
     outputVolume?: number;
     outputId?: string;
     deafened?: boolean;
@@ -23,6 +26,25 @@ export function useSoundboard(
   } = {},
 ) {
   const player = useRef<SoundPlayer | null>(null);
+  const joinPlayer = useRef<ServerJoinSoundPlayer | null>(null);
+  const { serverId, joinSoundId, outputVolume, outputId, deafened } = options;
+  useEffect(() => {
+    const current = new ServerJoinSoundPlayer();
+    joinPlayer.current = current;
+    return () => {
+      current.stop();
+      joinPlayer.current = null;
+    };
+  }, [callId]);
+  useEffect(() => {
+    joinPlayer.current?.update({
+      serverId,
+      joinSoundId,
+      outputVolume,
+      outputId,
+      deafened,
+    });
+  }, [callId, serverId, joinSoundId, outputVolume, outputId, deafened]);
   const preview = useRef<SoundPlayer | null>(null);
   const localAudio = useRef<HTMLAudioElement | null>(null);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
@@ -110,6 +132,10 @@ export function useSoundboard(
     };
   }
   return {
+    playJoinSound: () => {
+      void joinPlayer.current?.play();
+    },
+    stopJoinSound: () => joinPlayer.current?.stop(),
     player,
     preview,
     listen,

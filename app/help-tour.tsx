@@ -48,7 +48,22 @@ const stepTargets: HelpTarget[] = [
   {
     selectors: [".profileSettings", "[aria-label='Server settings']"],
     fallbacks: [".panelControls > button:nth-child(2)"],
-    hint: "Show channels reveals your profile settings. Server management is available only to that server's owner.",
+    hint: "Show channels reveals your profile and server settings. Members can change the join sound; server management remains owner-only.",
+  },
+  {
+    selectors: [".profileBar .profileMicrophone", ".profileSettings"],
+    fallbacks: [".panelControls > button:nth-child(2)"],
+    hint: "Show channels reveals your microphone options and profile settings.",
+  },
+  {
+    selectors: [".chatLog", ".chat form"],
+    fallbacks: [".friendSearchForm"],
+    hint: "Open a conversation to attach files, or a server text channel to mention its members.",
+  },
+  {
+    selectors: [".serverScroller", ".channelSidebar", ".profileSettings"],
+    fallbacks: [".panelControls > button:nth-child(2)"],
+    hint: "Show channels reveals unread indicators and your notification settings.",
   },
   { selectors: [".helpTrigger", ".appLegalLinks"] },
 ];
@@ -87,12 +102,27 @@ export const helpSteps = [
   {
     title: "Settings and server management",
     location: "Your profile → cog · server name → cog",
-    text: "The cog beside your profile opens account, privacy, microphone, output and camera settings. Your profile status includes Do not disturb to silence notification alerts. Server owners use the server cog to manage channels, members, invitations and sounds. Right-click menus expose additional actions when you have permission.",
+    text: "The cog beside your profile opens account, privacy, microphone, output and camera settings. Do not disturb silences notification alerts. The server cog lets members change the shared voice channel join sound. Owners also manage channels, members, invitations and sounds; their join-sound choice is under Soundboard. Right-click menus expose additional actions when you have permission.",
+  },
+  {
+    title: "Microphone processing",
+    location: "Microphone arrow or User settings → Voice & video → Audio",
+    text: "For the best starting point with headphones, choose RNNoise and turn Echo cancellation off. If speakers feed sound back into your microphone, turn echo cancellation on. Raw bypasses processing; Browser uses browser noise suppression. Test microphone plays back your processed voice, so use headphones. The transmission threshold defaults to −50 dB and applies only to Browser processing, including fallback when RNNoise is unavailable; Raw and active RNNoise do not use it. Avoid stacking RNNoise with noise removal in another app.",
+  },
+  {
+    title: "Attachments and mentions",
+    location: "Conversation → attachment button or @",
+    text: "Use the attachment button beside the message box or drag files into it to send images and PDFs in channels and direct messages. Check image previews before sending. Click a sent image to preview it inside LC, or use its download icon to save the file. In server chats, type @ to choose another member or type their handle to mention them.",
+  },
+  {
+    title: "Unread messages and notifications",
+    location: "Server/channel indicators · User settings → Notifications",
+    text: "A dot marks unread server or channel messages; a numbered badge counts mentions. The New messages divider separates previously read history from new messages. User settings → Notifications has searchable Servers and People tabs with separate server message/mention and direct-message/call controls. Right-click a server or friend for mute options. User settings → My messages lets you find and manage your own messages across servers and people.",
   },
   {
     title: "You're ready",
-    location: "Help, Privacy and Impressum → workspace footer",
-    text: "Choose Help & introduction beside Privacy and Impressum at the bottom of the workspace to reopen this guide. Choose below whether this tour should appear automatically next time.",
+    location: "Help, Licenses, Privacy and Impressum → workspace footer",
+    text: "Choose Help & introduction in the workspace footer to reopen this guide. Licenses includes the full RNNoise and WebAssembly integration notices; legal documents open inside LC without ending your call. Choose below whether this tour should appear automatically next time.",
   },
 ];
 
@@ -210,8 +240,8 @@ export function HelpTour({
             Skip the introduction?
           </h3>
           <p>
-            You can reopen it anytime with the question mark in the header.
-            Should LC show it again next time?
+            You can reopen it anytime with Help & introduction in the workspace
+            footer. Should LC show it again next time?
           </p>
         </div>
       )}

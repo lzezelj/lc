@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { SettingsDestinations } from "./settings-destinations";
 import type {
   NotificationKind,
   NotificationPreference,
@@ -184,42 +185,13 @@ export function NotificationSettings({
         marks messages as seen when notifications are disabled. Do not disturb
         silences all alerts.
       </p>
-      <div
-        className="friendTabs"
-        role="group"
-        aria-label="Notification categories"
-      >
-        <button
-          type="button"
-          aria-pressed={category === "server"}
-          className={category === "server" ? "active" : ""}
-          onClick={() => setCategory("server")}
-        >
-          Servers
-        </button>
-        <button
-          type="button"
-          aria-pressed={category === "direct"}
-          className={category === "direct" ? "active" : ""}
-          onClick={() => setCategory("direct")}
-        >
-          People
-        </button>
-      </div>
-      <input
-        type="search"
-        aria-label={
-          category === "server"
-            ? "Search notification servers"
-            : "Search notification people"
-        }
-        placeholder={category === "server" ? "Search servers" : "Search people"}
-        value={queries[category]}
-        onChange={(event) =>
-          setQueries({ ...queries, [category]: event.target.value })
-        }
+      <SettingsDestinations
+        label="Notification"
+        category={category}
+        onCategory={setCategory}
+        query={queries[category]}
+        onQuery={(query) => setQueries({ ...queries, [category]: query })}
       />
-      <h4>{category === "server" ? "Servers" : "People"}</h4>
       {!matches.length && (
         <p className="settingsDescription">
           {items.length

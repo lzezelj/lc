@@ -13,6 +13,72 @@ import * as attachmentTypes from "../app/attachment-types.ts";
 
 const { Client } = pg;
 
+test("server join sounds default to null and reset when their sound is deleted", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const user = randomUUID(),
+      server = randomUUID(),
+      sound = randomUUID();
+    await database
+      .insert(schema.users)
+      .values({ id: user, name: "Join sound owner" });
+    const [created] = await database
+      .insert(schema.servers)
+      .values({ id: server, name: "Join sound test", createdBy: user })
+      .returning();
+    assert.equal(created.joinSoundId, null);
+    await database.insert(schema.serverSounds).values({
+      id: sound,
+      serverId: server,
+      name: "Welcome",
+      audio: Buffer.alloc(44),
+      durationMs: 100,
+    });
+    await database
+      .update(schema.servers)
+      .set({ joinSoundId: sound })
+      .where(orm.eq(schema.servers.id, server));
+    await database
+      .delete(schema.serverSounds)
+      .where(orm.eq(schema.serverSounds.id, sound));
+    const [reset] = await database
+      .select()
+      .from(schema.servers)
+      .where(orm.eq(schema.servers.id, server));
+    assert.equal(reset.joinSoundId, null);
+    await database.insert(schema.serverSounds).values({
+      id: sound,
+      serverId: server,
+      name: "Welcome",
+      audio: Buffer.alloc(44),
+      durationMs: 100,
+    });
+    await database
+      .update(schema.servers)
+      .set({ joinSoundId: sound })
+      .where(orm.eq(schema.servers.id, server));
+    await database
+      .delete(schema.servers)
+      .where(orm.eq(schema.servers.id, server));
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.serverSounds)
+          .where(orm.eq(schema.serverSounds.id, sound))
+      ).length,
+      0,
+      "server deletion still cascades with a selected sound",
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
 test("real PostgreSQL edit/search queries preserve files, enforce conversation scope and page stored history", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
@@ -155,6 +221,69 @@ test("real PostgreSQL edit/search queries preserve files, enforce conversation s
         rateLimitMessage: () => "wait",
       };
     const notices = [];
+    await database.insert(schema.friendships).values([
+      { requesterId: actor, recipientId: friend, status: "accepted" },
+      { requesterId: actor, recipientId: stranger, status: "pending" },
+    ]);
+    const friendList = await load("../app/api/friends/route.ts", {
+      "drizzle-orm": orm,
+      "next/server": { NextResponse: { json: Response.json } },
+      "../../../auth": auth,
+      "../../../db": { db: database },
+      "../../../db/schema": schema,
+      "../../../server/notify-user": {},
+      "../../../user-handle": {},
+    });
+    let previews = await (await friendList.GET()).json();
+    assert.equal(
+      previews.find((row) => row.id === friend).lastMessage.text,
+      "Direct editable",
+    );
+    assert.equal(previews.find((row) => row.id === stranger).lastMessage, null);
+    const previewId = randomUUID();
+    await database.insert(schema.directMessages).values({
+      id: previewId,
+      senderId: friend,
+      recipientId: actor,
+      content: "x".repeat(200),
+      createdAt: new Date(Date.now() + 1000),
+    });
+    previews = await (await friendList.GET()).json();
+    assert.equal(
+      previews.find((row) => row.id === friend).lastMessage.text.length,
+      160,
+    );
+    assert.equal(
+      previews.find((row) => row.id === friend).lastMessage.senderId,
+      friend,
+    );
+    await database
+      .update(schema.directMessages)
+      .set({ deletedAt: new Date() })
+      .where(orm.eq(schema.directMessages.id, previewId));
+    previews = await (await friendList.GET()).json();
+    assert.equal(
+      previews.find((row) => row.id === friend).lastMessage.text,
+      "Deleted message",
+    );
+    await database
+      .update(schema.directMessages)
+      .set({
+        deletedAt: null,
+        content: "",
+        attachments: [
+          { id: randomUUID(), name: "photo.png", type: "image/png", size: 1 },
+        ],
+      })
+      .where(orm.eq(schema.directMessages.id, previewId));
+    previews = await (await friendList.GET()).json();
+    assert.equal(
+      previews.find((row) => row.id === friend).lastMessage.text,
+      "Attachment",
+    );
+    await database
+      .delete(schema.directMessages)
+      .where(orm.eq(schema.directMessages.id, previewId));
     const edits = await load("../server/edit-message.ts", {
       "drizzle-orm": orm,
       "../auth": auth,

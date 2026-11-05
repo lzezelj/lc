@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { SettingsModal } from "./settings-modal";
 import { MessageDeleteAction } from "./message-delete-action";
+import { SettingsDestinations } from "./settings-destinations";
 
 type PersonalMessage = {
   id: string;
@@ -19,7 +20,8 @@ export function PersonalMessages({
   currentServerId: string;
 }) {
   const [messages, setMessages] = useState<PersonalMessage[]>([]),
-    [query, setQuery] = useState("");
+    [category, setCategory] = useState<"server" | "direct">("server"),
+    [queries, setQueries] = useState({ server: "", direct: "" });
   const [group, setGroup] = useState<{
       id: string;
       kind: "server" | "direct";
@@ -58,6 +60,11 @@ export function PersonalMessages({
       b.kind.localeCompare(a.kind) ||
       a.name.localeCompare(b.name),
   );
+  const visibleGroups = groups.filter(
+    (item) =>
+      item.kind === category &&
+      item.name.toLowerCase().includes(queries[category].trim().toLowerCase()),
+  );
   async function remove(messageId?: string) {
     if (!group) return;
     const response = await fetch("/api/users/me/message-history", {
@@ -79,42 +86,47 @@ export function PersonalMessages({
   return (
     <section className="personalMessages">
       <h3>My messages</h3>
-      <label>
-        Search servers and direct messages
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </label>
+      <p className="settingsDescription">
+        Find your sent messages in a server or to a person.
+      </p>
+      <SettingsDestinations
+        label="My messages"
+        category={category}
+        onCategory={setCategory}
+        query={queries[category]}
+        onQuery={(query) => setQueries({ ...queries, [category]: query })}
+      />
       {error && <p role="alert">{error}</p>}
       {loading && <p className="empty">Loading messages…</p>}
       <div className="messageDestinationList">
-        {groups
-          .filter((item) =>
-            item.name.toLowerCase().includes(query.trim().toLowerCase()),
-          )
-          .map((item) => (
-            <button
-              type="button"
-              key={`${item.kind}:${item.id}`}
-              onClick={() => {
-                setGroup(item);
-                setMessageQuery("");
-              }}
-            >
-              <strong>{item.name}</strong>
-              <small>
-                {item.kind === "server" ? "Server" : "Direct message"}
-              </small>
-            </button>
-          ))}
+        {visibleGroups.map((item) => (
+          <button
+            type="button"
+            key={`${item.kind}:${item.id}`}
+            onClick={() => {
+              setGroup(item);
+              setMessageQuery("");
+            }}
+          >
+            <strong>{item.name}</strong>
+          </button>
+        ))}
       </div>
-      {!loading && !groups.length && (
-        <p className="empty">No messages found.</p>
+      {!loading && !visibleGroups.length && !error && (
+        <p className="settingsDescription">
+          {queries[category].trim()
+            ? "No matches found."
+            : category === "server"
+              ? "No server messages found."
+              : "No direct messages found."}
+        </p>
       )}
       {group && (
-        <SettingsModal title={group.name} onClose={() => setGroup(null)}>
+        <SettingsModal
+          title={group.name}
+          className="settingsWorkspace personalMessagesModal"
+          onClose={() => setGroup(null)}
+        >
           <div className="personalMessageWindow">
             <label>
               Search messages
@@ -129,33 +141,35 @@ export function PersonalMessages({
               confirmation="Permanently delete all your messages in this conversation or server? This cannot be undone."
               onDelete={() => remove()}
             />
-            {messages
-              .filter(
-                (message) =>
-                  message.groupId === group.id &&
-                  message.kind === group.kind &&
-                  `${message.text} ${message.channelName ?? ""}`
-                    .toLowerCase()
-                    .includes(messageQuery.trim().toLowerCase()),
-              )
-              .map((message) => (
-                <article key={message.id}>
-                  <small>
-                    {message.channelName ? `#${message.channelName} · ` : ""}
-                    {new Date(message.createdAt).toLocaleString()}
-                  </small>
-                  <p>
-                    {message.deletedAt
-                      ? "Deleted message"
-                      : message.text || "Attachment"}
-                  </p>
-                  <MessageDeleteAction
-                    label="Delete permanently"
-                    confirmation="Permanently delete this message?"
-                    onDelete={() => remove(message.id)}
-                  />
-                </article>
-              ))}
+            <div className="personalMessageGrid">
+              {messages
+                .filter(
+                  (message) =>
+                    message.groupId === group.id &&
+                    message.kind === group.kind &&
+                    `${message.text} ${message.channelName ?? ""}`
+                      .toLowerCase()
+                      .includes(messageQuery.trim().toLowerCase()),
+                )
+                .map((message) => (
+                  <article key={message.id}>
+                    <small>
+                      {message.channelName ? `#${message.channelName} · ` : ""}
+                      {new Date(message.createdAt).toLocaleString()}
+                    </small>
+                    <p>
+                      {message.deletedAt
+                        ? "Deleted message"
+                        : message.text || "Attachment"}
+                    </p>
+                    <MessageDeleteAction
+                      label="Delete permanently"
+                      confirmation="Permanently delete this message?"
+                      onDelete={() => remove(message.id)}
+                    />
+                  </article>
+                ))}
+            </div>
           </div>
         </SettingsModal>
       )}

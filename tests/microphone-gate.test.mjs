@@ -19,8 +19,13 @@ test("voice gate blocks quiet input, opens for speech, and releases without chat
     "hysteresis keeps syllables open",
   );
   assert.equal(gate.update(-65, -45, 100), true, "short pauses remain open");
-  assert.equal(gate.update(-65, -45, 230), false);
-  assert.equal(gate.update(-80, -80, 250), true, "off means always transmit");
+  assert.equal(
+    gate.update(-65, -45, 230),
+    true,
+    "quiet word endings retain a longer release",
+  );
+  assert.equal(gate.update(-65, -45, 430), false);
+  assert.equal(gate.update(-80, -80, 450), true, "off means always transmit");
 });
 
 test("gate controls actual output gain, follows live threshold changes, and cleans up processors", async () => {

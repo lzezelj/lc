@@ -5,10 +5,17 @@ import type {
 } from "livekit-client";
 
 export const defaultVoiceThreshold = -50;
+import {
+  readMicrophoneMode,
+  microphoneProcessingChanged,
+  readEchoCancellationEnabled,
+} from "./microphone-preferences.mjs";
 let microphoneDeafened = false;
+const activeSamples = new Set<() => void>();
 
 export function setMicrophoneDeafened(value: boolean) {
   microphoneDeafened = value;
+  for (const sample of activeSamples) sample();
 }
 
 export function readMicrophoneVolume() {
@@ -34,9 +41,9 @@ export function createGateState() {
   return {
     update(levelDb: number, thresholdDb: number, now: number) {
       const loud =
-        thresholdDb <= -80 || levelDb >= thresholdDb - (open ? 6 : 0);
+        thresholdDb <= -80 || levelDb >= thresholdDb - (open ? 10 : 0);
       if (loud) lastLoud = now;
-      open = loud || (open && now - lastLoud < 180);
+      open = loud || (open && now - lastLoud < 350);
       return open;
     },
   };
@@ -46,6 +53,7 @@ export function createMicrophoneGate(
   track: MediaStreamTrack,
   context: AudioContext,
   onLevel?: (db: number, transmitting: boolean) => void,
+  onProcessing?: (mode: "rnnoise" | "browser" | "raw") => void,
 ) {
   const source = context.createMediaStreamSource(new MediaStream([track]));
   const analyser = context.createAnalyser();
@@ -56,6 +64,96 @@ export function createMicrophoneGate(
   source.connect(analyser);
   analyser.connect(gain);
   gain.connect(destination);
+  let stopped = false;
+  let denoiser:
+    | Awaited<
+        ReturnType<typeof import("./noise-suppression").createNoiseSuppression>
+      >
+    | undefined;
+  let abort = new AbortController();
+  let revision = 0;
+  let activeMode: "raw" | "browser" | "rnnoise" = "browser";
+  const originalConstraints = track.getConstraints?.();
+  function connectBrowser(processing: boolean) {
+    activeMode = processing ? "browser" : "raw";
+    if (denoiser) {
+      source.disconnect();
+      denoiser.stop();
+      denoiser = undefined;
+      source.connect(analyser);
+    }
+    void track
+      .applyConstraints?.({
+        ...originalConstraints,
+        echoCancellation: processing && readEchoCancellationEnabled(),
+        noiseSuppression: processing,
+        autoGainControl: processing,
+      })
+      .catch(() => {});
+    onProcessing?.(activeMode);
+  }
+  function updateProcessing() {
+    if (stopped) return;
+    const currentRevision = ++revision;
+    abort.abort();
+    abort = new AbortController();
+    const signal = abort.signal;
+    const selectedMode = readMicrophoneMode();
+    const processing = selectedMode !== "raw";
+    const fallback = () => {
+      if (!stopped && revision === currentRevision) connectBrowser(processing);
+    };
+    connectBrowser(processing);
+    // Keep browser audio connected until the selected worklet confirms ready.
+    if (
+      selectedMode === "rnnoise" &&
+      context.audioWorklet &&
+      context.sampleRate === 48000
+    ) {
+      void import("./noise-suppression")
+        .then(async ({ createNoiseSuppression }) => {
+          if (stopped || signal.aborted) return;
+          const filter = await createNoiseSuppression(
+            context,
+            signal,
+            fallback,
+          );
+          if (stopped || signal.aborted) {
+            filter.stop();
+            return;
+          }
+          denoiser = filter;
+          activeMode = "rnnoise";
+          source.disconnect();
+          source.connect(filter.node);
+          filter.node.connect(analyser);
+          // Avoid stacking two denoisers or automatically amplifying background noise.
+          void track
+            .applyConstraints?.({
+              ...originalConstraints,
+              echoCancellation: processing && readEchoCancellationEnabled(),
+              noiseSuppression: false,
+              autoGainControl: false,
+            })
+            .catch(() => {});
+          onProcessing?.("rnnoise");
+        })
+        .catch(fallback);
+    }
+  }
+  function storageChanged(event: StorageEvent) {
+    if (
+      event.key === null ||
+      event.key === "lc.rnnoise" ||
+      event.key === "lc.microphoneMode" ||
+      event.key === "lc.echoCancellation" ||
+      event.key === "lc.microphoneProcessing"
+    )
+      updateProcessing();
+  }
+  updateProcessing();
+  window.addEventListener?.(microphoneProcessingChanged, updateProcessing);
+  window.addEventListener?.("storage", storageChanged);
   const samples = new Float32Array(analyser.fftSize);
   const gate = createGateState();
   const sample = () => {
@@ -74,7 +172,10 @@ export function createMicrophoneGate(
     const transmitting =
       available &&
       !microphoneDeafened &&
-      gate.update(db, readVoiceThreshold(), performance.now());
+      // RNNoise already suppresses background audio; a second loudness gate
+      // can chop quiet syllables after denoising has reduced their level.
+      (activeMode !== "browser" ||
+        gate.update(db, readVoiceThreshold(), performance.now()));
     gain.gain.setTargetAtTime(
       transmitting ? readMicrophoneVolume() / 100 : 0,
       context.currentTime,
@@ -83,12 +184,23 @@ export function createMicrophoneGate(
     onLevel?.(db, transmitting);
   };
   const timer = window.setInterval(sample, 20);
+  activeSamples.add(sample);
   track.addEventListener("mute", sample);
   track.addEventListener("ended", sample);
   context.addEventListener("statechange", sample);
   return {
     track: destination.stream.getAudioTracks()[0],
     stop() {
+      if (stopped) return;
+      stopped = true;
+      activeSamples.delete(sample);
+      abort.abort();
+      window.removeEventListener?.(
+        microphoneProcessingChanged,
+        updateProcessing,
+      );
+      window.removeEventListener?.("storage", storageChanged);
+      denoiser?.stop();
       window.clearInterval(timer);
       track.removeEventListener("mute", sample);
       track.removeEventListener("ended", sample);

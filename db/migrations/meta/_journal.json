@@ -120,6 +120,13 @@
       "when": 1793740800003,
       "tag": "0016_mention_deletion_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793830800000,
+      "tag": "0017_server_join_sound",
+      "breakpoints": true
     }
   ]
 }

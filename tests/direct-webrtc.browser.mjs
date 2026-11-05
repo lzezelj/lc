@@ -74,8 +74,66 @@ if (useTurn) {
 // Optional Windows integration check. Uses real browser ICE/DTLS/RTP and a
 // generated tone, without requiring microphone access or an external service.
 const directory = await mkdtemp(join(tmpdir(), "lc-webrtc-"));
+let noiseServer;
+let noiseOrigin;
+let suppressionCode = "";
+if (microphone) {
+  const { createServer } = await import("node:http");
+  const assets = new Map([
+    [
+      "/worklet.js",
+      await readFile(
+        new URL("../app/rnnoise-worklet.js", import.meta.url),
+        "utf8",
+      ),
+    ],
+    [
+      "/api/audio/rnnoise/2025.1.5",
+      await readFile(
+        new URL(
+          "../node_modules/@shiguredo/rnnoise-wasm/dist/rnnoise.js",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ],
+  ]);
+  noiseServer = createServer((request, response) => {
+    response.setHeader(
+      "Content-Type",
+      assets.has(request.url) ? "text/javascript" : "text/html",
+    );
+    response.end(
+      assets.get(request.url) ??
+        "<!doctype html><title>Muted RNNoise check</title>",
+    );
+  });
+  await new Promise((resolve) => noiseServer.listen(0, "127.0.0.1", resolve));
+  noiseOrigin = `http://127.0.0.1:${noiseServer.address().port}`;
+  suppressionCode = ts
+    .transpile(
+      (
+        await readFile(
+          new URL("../app/noise-suppression.ts", import.meta.url),
+          "utf8",
+        )
+      ).replace(
+        'new URL("./rnnoise-worklet.js", import.meta.url)',
+        'new URL("/worklet.js", location.href)',
+      ),
+      { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    )
+    .replace(/^export /gm, "");
+}
 let navigationCode = "";
 if (navigation || workspaceControls) {
+  await writeFile(
+    join(directory, "microphone-preferences.mjs"),
+    await readFile(
+      new URL("../app/microphone-preferences.mjs", import.meta.url),
+      "utf8",
+    ),
+  );
   const require = createRequire(import.meta.url);
   const { webpack } = require("next/dist/compiled/webpack/webpack");
   const component = await readFile(
@@ -93,7 +151,12 @@ if (navigation || workspaceControls) {
   for (const name of [
     "workspace-shell",
     ...(navigation
-      ? ["device-menu", "device-selection", "call-tile-controls"]
+      ? [
+          "device-menu",
+          "microphone-processing",
+          "device-selection",
+          "call-tile-controls",
+        ]
       : []),
   ]) {
     await writeFile(
@@ -151,7 +214,7 @@ if (navigation || workspaceControls) {
       const monitorRoomDiagnostics = () => () => {};
       const monitorTrackVideo = () => () => {};
       const videoQuality = () => '';
-      const useSoundboard = () => ({player: useRef(null), volume: 100, muted: false});
+      const useSoundboard = () => ({player: useRef(null), volume: 100, muted: false, playJoinSound() {}, stopJoinSound() {}});
       const SoundboardButton = () => null;
       ${components}
       export {GroupCall};
@@ -205,11 +268,13 @@ if (navigation || workspaceControls) {
       "unread-indicator",
       "mention-text",
       "notification-settings",
+      "settings-destinations",
       "message-attachments",
       "message-header",
       "user-profile",
       "sidebar-resizer",
       "device-menu",
+      "microphone-processing",
       "participant-media-indicators",
       "panel-toggle",
       "device-selection",
@@ -265,6 +330,8 @@ if (navigation || workspaceControls) {
       ? [
           "soundboard-audio",
           "soundboard-library",
+          "server-join-sound",
+          "call-sounds",
           "workspace-activity",
           "use-workspace-activity",
           "call-context",
@@ -405,6 +472,29 @@ try {
     targetId,
     flatten: true,
   });
+  if (noiseOrigin) {
+    await call("Page.enable", {}, sessionId);
+    const loaded = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        socket.off("message", listener);
+        reject(new Error("Audio fixture did not load"));
+      }, 5000);
+      function listener(data) {
+        const message = JSON.parse(data);
+        if (
+          message.sessionId === sessionId &&
+          message.method === "Page.loadEventFired"
+        ) {
+          clearTimeout(timeout);
+          socket.off("message", listener);
+          resolve();
+        }
+      }
+      socket.on("message", listener);
+    });
+    await call("Page.navigate", { url: noiseOrigin }, sessionId);
+    await loaded;
+  }
   const source = await readFile(
     new URL("../app/direct-negotiation.ts", import.meta.url),
     "utf8",
@@ -425,6 +515,11 @@ try {
           { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
         )
         .replace(/^export /gm, "")
+        .replace(/^import .*microphone-preferences.mjs.*;\r?\n/gm, "")
+        .replace(
+          'import("./noise-suppression")',
+          "Promise.resolve({ createNoiseSuppression })",
+        )
     : "";
   if (workspaceControls)
     await call(
@@ -446,10 +541,12 @@ try {
         ? `const css = document.createElement('style'); css.textContent = ${JSON.stringify(workspaceStyles)}; document.head.append(css); ${navigationCode}; window.setupWorkspaceControlsTest()`
         : microphone
           ? `(async () => {
-        let threshold = '-45';
-        const localStorage = { getItem: (key) => key === 'lc.voiceThreshold' ? threshold : null };
+        let threshold = '-45', processing = 'on', rnnoise = 'off', echo = 'off', mode = null;
+        const localStorage = { getItem: (key) => key === 'lc.voiceThreshold' ? threshold : key === 'lc.microphoneProcessing' ? processing : key === 'lc.rnnoise' ? rnnoise : key === 'lc.echoCancellation' ? echo : key === 'lc.microphoneMode' ? mode : null };
+        ${(await readFile(new URL("../app/microphone-preferences.mjs", import.meta.url), "utf8")).replace(/^export /gm, "")}
+        ${suppressionCode}
         ${gateCode}
-        const context = new AudioContext(); await context.resume();
+        const context = new AudioContext({sampleRate:48000}); await context.resume();
         const oscillator = context.createOscillator();
         const volume = context.createGain(); volume.gain.value = 0.0001;
         const capture = context.createMediaStreamDestination();
@@ -459,7 +556,7 @@ try {
         const analyser = context.createAnalyser(); analyser.fftSize = 2048;
         source.connect(analyser);
         const values = new Float32Array(analyser.fftSize);
-        const readLevel = async () => { await new Promise(resolve => setTimeout(resolve, 450)); analyser.getFloatTimeDomainData(values); return Math.sqrt(values.reduce((sum, sample) => sum + sample * sample, 0) / values.length); };
+        const readLevel = async () => { await new Promise(resolve => setTimeout(resolve, 650)); analyser.getFloatTimeDomainData(values); return Math.sqrt(values.reduce((sum, sample) => sum + sample * sample, 0) / values.length); };
         const quiet = await readLevel();
         volume.gain.value = 0.1;
         const speech = await readLevel();
@@ -469,8 +566,66 @@ try {
         const disabled = await readLevel();
         gate.stop(); oscillator.stop(); capture.stream.getTracks().forEach(track => track.stop());
         const stopped = gate.track.readyState;
+        processing = 'on'; rnnoise = 'on'; threshold = '-80';
+        const noise = context.createBuffer(1, 48000, 48000);
+        let seed = 7;
+        for(let i=0;i<48000;i++){seed=(seed*16807)%2147483647;noise.getChannelData(0)[i]=(seed/2147483647*2-1)*0.03;}
+        const noisy = context.createBufferSource(); noisy.buffer=noise; noisy.loop=true;
+        const input = context.createMediaStreamDestination(); noisy.connect(input); noisy.start();
+        const captureTrack = input.stream.getAudioTracks()[0], constraintsApplied = [];
+        const apply = captureTrack.applyConstraints.bind(captureTrack);
+        captureTrack.applyConstraints = (value) => { constraintsApplied.push({...value}); return apply(value); };
+        let activeFilter;
+        const createFilter = createNoiseSuppression;
+        createNoiseSuppression = async (...args) => (activeFilter = await createFilter(...args));
+        const modes = [];
+        const cleaned = createMicrophoneGate(input.stream.getAudioTracks()[0],context,undefined,(mode)=>modes.push(mode));
+        const cleanedSource = context.createMediaStreamSource(new MediaStream([cleaned.track]));
+        source.disconnect(); cleanedSource.connect(analyser);
+        const deadline = performance.now()+7000;
+        while(!modes.includes('rnnoise') && performance.now()<deadline) await new Promise(resolve=>setTimeout(resolve,30));
+        if(!modes.includes('rnnoise')) throw new Error('RNNoise never became active: '+modes.join(','));
+        threshold = '0';
+        const denoised = await readLevel();
+        if(denoised <= 1e-9) throw new Error('The loudness gate cut RNNoise output');
+        threshold = '-80';
+        const originalOutput = cleaned.track;
+        rnnoise = 'off'; window.dispatchEvent(new Event(microphoneProcessingChanged));
+        const rnnoiseDisabled = await readLevel();
+        rnnoise = 'on'; window.dispatchEvent(new Event(microphoneProcessingChanged));
+        rnnoise = 'off'; window.dispatchEvent(new Event(microphoneProcessingChanged));
+        await new Promise(resolve=>setTimeout(resolve,50));
+        if(modes.at(-1)!=='browser') throw new Error('An obsolete RNNoise request reattached after disabling');
+        rnnoise = 'on'; window.dispatchEvent(new Event(microphoneProcessingChanged));
+        const enableDeadline = performance.now()+7000;
+        while(modes.at(-1)!=='rnnoise' && performance.now()<enableDeadline) await new Promise(resolve=>setTimeout(resolve,30));
+        if(modes.at(-1)!=='rnnoise') throw new Error('RNNoise did not re-enable');
+        const rnnoiseReenabled = await readLevel();
+        const outputStable = cleaned.track === originalOutput;
+        async function waitForRnnoise() {
+          const until=performance.now()+7000;
+          while(modes.at(-1)!=='rnnoise' && performance.now()<until) await new Promise(resolve=>setTimeout(resolve,30));
+          if(modes.at(-1)!=='rnnoise') throw new Error('Echo preference interrupted RNNoise');
+        }
+        echo='on'; window.dispatchEvent(new Event(microphoneProcessingChanged)); await waitForRnnoise();
+        const echoEnabled = constraintsApplied.at(-1)?.echoCancellation === true;
+        echo='off'; window.dispatchEvent(new Event(microphoneProcessingChanged)); await waitForRnnoise();
+        const echoDisabled = constraintsApplied.at(-1)?.echoCancellation === false;
+        setMicrophoneDeafened(true); const deafened = await readLevel(); setMicrophoneDeafened(false);
+        activeFilter.node.dispatchEvent(new Event('processorerror'));
+        let fallback = await readLevel();
+        // The gain gate samples on a timer; wait for audio to resume after deafen
+        // even when a busy/background browser delays that timer.
+        const fallbackDeadline = performance.now()+2500;
+        while(fallback <= 0.01 && performance.now()<fallbackDeadline) fallback = await readLevel();
+        const echoFallbackDisabled = constraintsApplied.at(-1)?.echoCancellation === false;
+        mode='raw'; threshold='0'; echo='on'; window.dispatchEvent(new Event(microphoneProcessingChanged));
+        const rawAudio = await readLevel();
+        const rawConstraints = constraintsApplied.at(-1);
+        const rawBypass = rawConstraints.echoCancellation === false && rawConstraints.noiseSuppression === false && rawConstraints.autoGainControl === false && modes.at(-1)==='raw';
+        cleaned.stop(); noisy.stop(); input.stream.getTracks().forEach(track=>track.stop());
         await context.close();
-        return { quiet, speech, blocked, disabled, stopped };
+        return { quiet, speech, blocked, disabled, stopped, denoised, rnnoiseDisabled, rnnoiseReenabled, outputStable, echoEnabled, echoDisabled, echoFallbackDisabled, rawAudio, rawBypass, deafened, fallback, modes, cleanedStopped:cleaned.track.readyState };
       })()`
           : navigation
             ? `${navigationCode}; window.runCallNavigationTest()`
@@ -653,6 +808,7 @@ try {
           ? ["verifyHelpAndSkeletons"]
           : [
               "verifyWorkspaceAdditions",
+              "verifyMicrophonePosition",
               ...(mobile ? ["verifySoundboard"] : []),
               "verifyWorkspaceActivity",
               "verifyCallContext",
@@ -927,6 +1083,30 @@ try {
       "Disabling the gate must pass quiet input",
     );
     assert.equal(data.stopped, "ended");
+    assert.ok(
+      data.denoised < 0.006,
+      "RNNoise must reduce generated background noise",
+    );
+    assert.ok(data.deafened < 0.000001, "Deafen must silence RNNoise output");
+    assert.ok(
+      data.fallback > 0.01,
+      `Worklet failure must reconnect the browser capture path: ${JSON.stringify(data)}`,
+    );
+    assert.equal(data.modes.at(-1), "raw");
+    assert.ok(
+      data.rawBypass && data.rawAudio > 0.01,
+      "Raw must bypass all processing and the saved threshold",
+    );
+    assert.equal(data.cleanedStopped, "ended");
+    assert.ok(
+      data.rnnoiseDisabled > 0.01 && data.rnnoiseReenabled < 0.006,
+      "RNNoise switch must update an already active microphone graph",
+    );
+    assert.equal(data.outputStable, true);
+    assert.ok(
+      data.echoEnabled && data.echoDisabled && data.echoFallbackDisabled,
+      "Echo preference must survive RNNoise startup and browser fallback",
+    );
     console.log("Real browser microphone gate passed:", JSON.stringify(data));
   } else if (navigation) {
     assert.equal(data.groupRoomPreserved, true);
@@ -964,6 +1144,10 @@ try {
     );
   }
 } finally {
+  if (noiseServer) {
+    noiseServer.closeAllConnections();
+    await new Promise((resolve) => noiseServer.close(resolve));
+  }
   socket?.close();
   browser.kill();
   await new Promise((resolve) =>

@@ -156,7 +156,12 @@ function mergeChatMessages(incoming: ChatMessage[], current: ChatMessage[]) {
   ];
 }
 
-type Server = { id: string; name: string; role?: "owner" | "member" };
+type Server = {
+  id: string;
+  name: string;
+  role?: "owner" | "member";
+  joinSoundId?: string | null;
+};
 type Friend = {
   id: string;
   name: string;
@@ -165,6 +170,7 @@ type Friend = {
   status: "pending" | "accepted";
   incoming: boolean;
   lastActivityAt: string | null;
+  lastMessage?: { senderId: string; text: string } | null;
 };
 type ChannelType = "text" | "voice_direct" | "voice_group";
 type Channel = {
@@ -582,7 +588,7 @@ export default function Home() {
   const messageCooldown = useMessageCooldown();
   const [noticeMessage, setNoticeMessage] = useState("");
   const [legalDocument, setLegalDocument] = useState<
-    "impressum" | "privacy" | null
+    "impressum" | "privacy" | "licenses" | null
   >(null);
   const [microphones, setMicrophones] = useState<MediaDeviceOption[]>([]);
   const [cameras, setCameras] = useState<MediaDeviceOption[]>([]);
@@ -603,9 +609,15 @@ export default function Home() {
   const [voiceTransferOpen, setVoiceTransferOpen] = useState(false);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState("");
+  const [activeVoiceChannelSnapshot, setActiveVoiceChannelSnapshot] =
+    useState<Channel | null>(null);
   const directSoundSpeaking = useRef(false);
   const directMicSpeaking = useRef(false);
   const soundboard = useSoundboard(activeVoiceChannelId, {
+    serverId: activeVoiceChannelSnapshot?.serverId,
+    joinSoundId: servers.find(
+      (server) => server.id === activeVoiceChannelSnapshot?.serverId,
+    )?.joinSoundId,
     outputVolume,
     outputId,
     deafened,
@@ -619,8 +631,6 @@ export default function Home() {
   const pendingVoiceChannel = useRef("");
   activeVoiceChannelRef.current = activeVoiceChannelId;
   const [connectedGroupChannelId, setConnectedGroupChannelId] = useState("");
-  const [activeVoiceChannelSnapshot, setActiveVoiceChannelSnapshot] =
-    useState<Channel | null>(null);
   const [callViewOpen, setCallViewOpen] = useState(false);
   const [hiddenDirectTiles, setHiddenDirectTiles] = useState<string[]>([
     "local",
@@ -2231,6 +2241,7 @@ export default function Home() {
         ) {
           const edit = message.edit,
             key = `direct:${message.fromUserId}`;
+          void loadFriends();
           const cached = conversationCache.current.get(currentUserId, key);
           if (cached)
             conversationCache.current.set(currentUserId, key, {
@@ -2657,7 +2668,7 @@ export default function Home() {
       setJoining(false);
       setJoined(true);
       setStatus("Waiting for another person...");
-      if (!directReconnectInProgress.current) playVoiceSound("join");
+      if (!directReconnectInProgress.current) soundboard.playJoinSound();
       directReconnectInProgress.current = false;
       directReconnectAttempt.current = 0;
       send({
@@ -2682,7 +2693,7 @@ export default function Home() {
     }
     if (message.type === "peer-joined") {
       setCallPeerPresent(true);
-      playVoiceSound("join");
+      soundboard.playJoinSound();
       connection.current?.restartIce();
       await createOffer();
       send({ type: "camera-state", enabled: !cameraOff });
@@ -3146,6 +3157,7 @@ export default function Home() {
     directMicSpeaking.current = false;
     soundPlayerRef.current?.stop();
     soundboard.preview.current?.stop();
+    soundboard.stopJoinSound();
     soundboard.setOpen(false);
     soundboardSender.current = null;
     if (remoteSoundboardAudio.current)
@@ -3538,6 +3550,7 @@ export default function Home() {
       } else if (lastTextChannelId.current === editing.channelId)
         setMessages((current) => applyMessageEdit(current, edit));
       updateContext(edit, editing.key);
+      if (editing.userId) await loadFriends();
       setEditingMessage((current) => (current === editing ? null : current));
     } catch (error) {
       setErrorMessage(
@@ -4481,6 +4494,12 @@ export default function Home() {
   const compactLegalLinks = (
     <div className="compactWorkspaceLinks">{legalLinks}</div>
   );
+  const legalTitle =
+    legalDocument === "impressum"
+      ? "Impressum"
+      : legalDocument === "licenses"
+        ? "Third-party licenses"
+        : "Privacy notice";
   const legalOverlay = legalDocument && (
     <div
       className="modalBackdrop legalModalBackdrop"
@@ -4490,15 +4509,11 @@ export default function Home() {
         className="legalModal"
         role="dialog"
         aria-modal="true"
-        aria-label={
-          legalDocument === "impressum" ? "Impressum" : "Privacy notice"
-        }
+        aria-label={legalTitle}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
-          <strong>
-            {legalDocument === "impressum" ? "Impressum" : "Privacy notice"}
-          </strong>
+          <strong>{legalTitle}</strong>
           <button
             type="button"
             aria-label="Close legal document"
@@ -4507,10 +4522,7 @@ export default function Home() {
             ×
           </button>
         </header>
-        <iframe
-          title={legalDocument === "impressum" ? "Impressum" : "Privacy notice"}
-          src={`/${legalDocument}`}
-        />
+        <iframe title={legalTitle} src={`/${legalDocument}`} />
       </section>
     </div>
   );
@@ -4605,31 +4617,6 @@ export default function Home() {
           ? "Waiting for browser..."
           : "Grant microphone & camera access"}
       </button>
-      <details className="settingsDeviceChoices" open>
-        <summary>Input/output devices</summary>
-        <DeviceSelection
-          label="Microphone"
-          devices={microphones}
-          selectedId={microphoneId}
-          onSelect={(deviceId) => {
-            if (activeVoiceChannel?.type === "voice_direct" && joined)
-              void changeActiveMicrophone(deviceId);
-            else selectMicrophone(deviceId);
-          }}
-        />
-        {renderAudioDeviceOptions("both")}
-      </details>
-      <DeviceSelection
-        label="Camera"
-        devices={cameras}
-        selectedId={cameraId}
-        onSelect={selectCamera}
-      />
-      <small>
-        Camera access is requested here for setup, but your camera remains off
-        when joining a channel.
-      </small>
-      {cameraResolutionOptions}
       <MediaTests
         microphoneId={microphoneId}
         cameraId={cameraId}
@@ -4637,6 +4624,36 @@ export default function Home() {
         outputVolume={outputVolume}
         outputId={outputId}
         deafened={deafened}
+        audioDevices={
+          <>
+            <DeviceSelection
+              label="Microphone"
+              devices={microphones}
+              selectedId={microphoneId}
+              onSelect={(deviceId) => {
+                if (activeVoiceChannel?.type === "voice_direct" && joined)
+                  void changeActiveMicrophone(deviceId);
+                else selectMicrophone(deviceId);
+              }}
+            />
+            {renderAudioDeviceOptions("both")}
+          </>
+        }
+        cameraDevices={
+          <>
+            <DeviceSelection
+              label="Camera"
+              devices={cameras}
+              selectedId={cameraId}
+              onSelect={selectCamera}
+            />
+            <small>
+              Camera access is requested here for setup, but your camera remains
+              off when joining a channel.
+            </small>
+            {cameraResolutionOptions}
+          </>
+        }
       />
     </div>
   );
@@ -4814,8 +4831,31 @@ export default function Home() {
       }
     />
   );
+  const serverSoundSettings = (
+    <SoundManager
+      key={selectedServerId}
+      serverId={selectedServerId}
+      joinSoundOnly={!isSelectedServerOwner}
+      joinSoundId={
+        servers.find((server) => server.id === selectedServerId)?.joinSoundId ??
+        null
+      }
+      onJoinSoundChange={(joinSoundId) =>
+        setServers((current) =>
+          current.map((server) =>
+            server.id === selectedServerId
+              ? { ...server, joinSoundId }
+              : server,
+          ),
+        )
+      }
+      output={{ outputVolume, outputId, deafened }}
+    />
+  );
   const settingsOverlay = session &&
-    (accountMenuOpen || (serverSettingsOpen && isSelectedServerOwner)) && (
+    (accountMenuOpen ||
+      (serverSettingsOpen &&
+        servers.some((server) => server.id === selectedServerId))) && (
       <SettingsModal
         title={accountMenuOpen ? "User settings" : "Server settings"}
         onClose={() => {
@@ -4833,9 +4873,17 @@ export default function Home() {
             </p>
             <SettingsNavigation
               account={accountMenuOpen}
-              owner={session.user.role === "owner"}
+              owner={
+                accountMenuOpen
+                  ? session.user.role === "owner"
+                  : isSelectedServerOwner
+              }
               selected={
-                accountMenuOpen ? userSettingsSection : serverSettingsSection
+                accountMenuOpen
+                  ? userSettingsSection
+                  : isSelectedServerOwner
+                    ? serverSettingsSection
+                    : "join-sound"
               }
               onSelect={(id) => {
                 if (id === "logout") {
@@ -4967,6 +5015,8 @@ export default function Home() {
               />
             )}
           </>
+        ) : !isSelectedServerOwner ? (
+          serverSoundSettings
         ) : (
           <>
             {serverSettingsSection === "overview" && (
@@ -5073,13 +5123,7 @@ export default function Home() {
                 />
               </>
             )}
-            {serverSettingsSection === "soundboard" && (
-              <SoundManager
-                key={selectedServerId}
-                serverId={selectedServerId}
-                output={{ outputVolume, outputId, deafened }}
-              />
-            )}
+            {serverSettingsSection === "soundboard" && serverSoundSettings}
             {serverSettingsSection === "members" && (
               <SettingsMembers
                 members={members}
@@ -5377,6 +5421,10 @@ export default function Home() {
       channelId={activeVoiceChannel.id}
       sessionId={currentVoiceSessionId}
       serverId={activeVoiceChannel.serverId}
+      joinSoundId={
+        servers.find((server) => server.id === activeVoiceChannel.serverId)
+          ?.joinSoundId
+      }
       serverName={activeVoiceChannel.serverName}
       currentUserName={session.user.name ?? "You"}
       cameraResolution={cameraResolution}
@@ -6262,6 +6310,14 @@ export default function Home() {
                     </time>
                   )}
                 </span>
+                {friend.lastMessage && (
+                  <small>
+                    {friend.lastMessage.senderId === session.user.id
+                      ? "You: "
+                      : ""}
+                    {friend.lastMessage.text}
+                  </small>
+                )}
                 {notificationsEnabled &&
                   (visibleDirectCounts[friend.id] ?? 0) > 0 && (
                     <span className="conversationUnreadBadge">
@@ -6717,7 +6773,6 @@ export default function Home() {
                   devices={microphones}
                   selectedId={microphoneId}
                   onAction={toggleAudio}
-                  onRestart={() => void changeActiveMicrophone(microphoneId)}
                   onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
                 />
                 <DeviceMenu
@@ -6957,27 +7012,30 @@ export default function Home() {
               </svg>
             </button>
           )}
-          {isSelectedServerOwner && selectedServerId && (
-            <div
-              className={`accountMenu serverActions ${serverSettingsOpen ? "open" : ""}`}
-            >
-              <button
-                className="accountMenuTrigger"
-                aria-label="Server settings"
-                aria-haspopup="dialog"
-                title="Server settings"
-                aria-expanded={serverSettingsOpen}
-                onClick={() => {
-                  setServerSettingsSection("overview");
-                  setFormName("");
-
-                  setServerSettingsOpen((current) => !current);
-                }}
+          {selectedServerId &&
+            servers.some((server) => server.id === selectedServerId) && (
+              <div
+                className={`accountMenu serverActions ${serverSettingsOpen ? "open" : ""}`}
               >
-                <SettingsIcon />
-              </button>
-            </div>
-          )}
+                <button
+                  className="accountMenuTrigger"
+                  aria-label="Server settings"
+                  aria-haspopup="dialog"
+                  title="Server settings"
+                  aria-expanded={serverSettingsOpen}
+                  onClick={() => {
+                    setServerSettingsSection(
+                      isSelectedServerOwner ? "overview" : "join-sound",
+                    );
+                    setFormName("");
+
+                    setServerSettingsOpen((current) => !current);
+                  }}
+                >
+                  <SettingsIcon />
+                </button>
+              </div>
+            )}
         </header>
         <nav>
           <p className="sectionLabel">TEXT CHANNELS</p>
@@ -7270,7 +7328,6 @@ export default function Home() {
                 devices={microphones}
                 selectedId={microphoneId}
                 onAction={toggleAudio}
-                onRestart={() => void changeActiveMicrophone(microphoneId)}
                 onSelect={(deviceId) => void changeActiveMicrophone(deviceId)}
               />
               <DeviceMenu

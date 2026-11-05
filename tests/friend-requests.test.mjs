@@ -4,6 +4,8 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { normalizeUserHandle } from "../user-handle.ts";
+import { sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const actorId = "11111111-1111-4111-8111-111111111111";
 const targetId = "22222222-2222-4222-8222-222222222222";
@@ -12,7 +14,7 @@ const source = await readFile(
   "utf8",
 );
 
-test("Friends list fetches only scoped friendship and profile metadata, never DM history", async () => {
+test("Friends list scopes metadata and bounded last-message previews to accepted friends", async () => {
   for (const mode of ["friends", "empty", "anonymous"]) {
     const schema = {
       friendships: { requesterId: "requesterId", recipientId: "recipientId" },
@@ -34,10 +36,12 @@ test("Friends list fetches only scoped friendship and profile metadata, never DM
       },
     ];
     const reads = [];
+    const previewQueries = [];
     const dependencies = {
-      "drizzle-orm": Object.fromEntries(
-        ["eq", "and", "or"].map((op) => [op, (...args) => ({ op, args })]),
-      ),
+      "drizzle-orm": Object.fromEntries([
+        ...["eq", "and", "or"].map((op) => [op, (...args) => ({ op, args })]),
+        ["sql", sql],
+      ]),
       "next/server": { NextResponse: { json: Response.json } },
       "../../../auth": {
         auth: async () =>
@@ -46,6 +50,19 @@ test("Friends list fetches only scoped friendship and profile metadata, never DM
       "../../../db/schema": schema,
       "../../../db": {
         db: {
+          execute: async (query) => {
+            const compiled = new PgDialect().sqlToQuery(query);
+            previewQueries.push(compiled);
+            assert.match(compiled.sql, /f.status = 'accepted'/);
+            assert.equal((compiled.sql.match(/limit 1/g) ?? []).length, 3);
+            assert.match(compiled.sql, /left\(latest.content, 160\)/);
+            assert.ok(compiled.params.every((value) => value === actorId));
+            return {
+              rows: [
+                { id: targetId, senderId: targetId, text: "Latest message" },
+              ],
+            };
+          },
           select: () => ({
             from: (table) => ({
               where: async (predicate) => {
@@ -93,6 +110,7 @@ test("Friends list fetches only scoped friendship and profile metadata, never DM
     );
     const response = await exports.GET();
     assert.equal(response.status, mode === "anonymous" ? 401 : 200);
+    assert.equal(previewQueries.length, mode === "friends" ? 1 : 0);
     assert.equal(
       reads.length,
       mode === "anonymous" ? 0 : mode === "empty" ? 1 : 2,
@@ -119,6 +137,7 @@ test("Friends list fetches only scoped friendship and profile metadata, never DM
         status: "accepted",
         incoming: false,
         lastActivityAt: activity,
+        lastMessage: { senderId: targetId, text: "Latest message" },
       },
       {
         id: "incoming",
@@ -128,6 +147,7 @@ test("Friends list fetches only scoped friendship and profile metadata, never DM
         status: "pending",
         incoming: true,
         lastActivityAt: null,
+        lastMessage: null,
       },
     ]);
   }

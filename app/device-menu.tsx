@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { DeviceSelection } from "./device-selection";
+import {
+  MicrophoneModeSelector,
+  EchoCancellationToggle,
+} from "./microphone-processing";
 
 export type MediaDeviceOption = { deviceId: string; label: string };
 
@@ -15,7 +19,6 @@ type DeviceMenuProps = {
   selectedId: string;
   onAction: () => void;
   onSelect: (deviceId: string) => void;
-  onRestart?: () => void;
 };
 
 export function DeviceMenu({
@@ -28,10 +31,8 @@ export function DeviceMenu({
   selectedId,
   onAction,
   onSelect,
-  onRestart,
 }: DeviceMenuProps) {
   const [open, setOpen] = useState(false);
-  const [processing, setProcessing] = useState(true);
   const menu = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,9 +89,6 @@ export function DeviceMenu({
         aria-label={kind === "headphones" ? "Output options" : `Choose ${kind}`}
         aria-expanded={open}
         onClick={() => {
-          setProcessing(
-            localStorage.getItem("lc.microphoneProcessing") !== "off",
-          );
           setOpen((current) => !current);
         }}
       >
@@ -100,36 +98,8 @@ export function DeviceMenu({
         <div className="deviceDropdown">
           {kind === "microphone" && (
             <>
-              <button
-                disabled={!onRestart}
-                title={
-                  onRestart
-                    ? "Reopens the selected microphone and reconnects its audio track."
-                    : "Join a voice channel to restart its microphone."
-                }
-                onClick={() => {
-                  onRestart?.();
-                  setOpen(false);
-                }}
-              >
-                Restart microphone
-              </button>
-              <button
-                title="Toggles browser echo cancellation, noise suppression and automatic gain control, then restarts capture. Volume and voice threshold remain active."
-                onClick={() => {
-                  const next =
-                    localStorage.getItem("lc.microphoneProcessing") === "off";
-                  localStorage.setItem(
-                    "lc.microphoneProcessing",
-                    next ? "on" : "off",
-                  );
-                  setProcessing(next);
-                  onRestart?.();
-                  setOpen(false);
-                }}
-              >
-                {processing ? "Disable" : "Enable"} microphone processing
-              </button>
+              <MicrophoneModeSelector />
+              <EchoCancellationToggle />
             </>
           )}
           {kind !== "headphones" && (

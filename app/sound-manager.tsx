@@ -225,9 +225,15 @@ export function SoundUploadDialog({
 export function SoundManager({
   serverId,
   output,
+  joinSoundId = null,
+  onJoinSoundChange,
+  joinSoundOnly = false,
 }: {
   serverId: string;
   output?: SoundPreviewOutput;
+  joinSoundId?: string | null;
+  onJoinSoundChange?: (soundId: string | null) => void;
+  joinSoundOnly?: boolean;
 }) {
   const [sounds, setSounds] = useState<Sound[]>([]);
   const [canManage, setCanManage] = useState(false);
@@ -237,6 +243,29 @@ export function SoundManager({
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [removing, setRemoving] = useState("");
+  const [savingJoinSound, setSavingJoinSound] = useState(false);
+  async function saveJoinSound(soundId: string) {
+    if (savingJoinSound) return;
+    setSavingJoinSound(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/servers/${serverId}/join-sound`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ joinSoundId: soundId || null }),
+      });
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(result.error ?? "Could not save join sound");
+      onJoinSoundChange?.(result.joinSoundId);
+    } catch (error) {
+      setError(
+        error instanceof Error ? error.message : "Could not save join sound",
+      );
+    } finally {
+      setSavingJoinSound(false);
+    }
+  }
   useEffect(() => {
     const abort = new AbortController();
     void fetch(`/api/servers/${serverId}/soundboard`, { signal: abort.signal })
@@ -263,7 +292,7 @@ export function SoundManager({
     return () => abort.abort();
   }, [serverId]);
   async function remove(sound: Sound) {
-    if (removing) return;
+    if (removing || savingJoinSound) return;
     setRemoving(sound.id);
     setError("");
     try {
@@ -276,6 +305,7 @@ export function SoundManager({
         throw new Error(result.error ?? "Could not remove sound");
       }
       setSounds((current) => current.filter((item) => item.id !== sound.id));
+      if (joinSoundId === sound.id) onJoinSoundChange?.(null);
       if (preview?.id === sound.id) setPreview(null);
     } catch (error) {
       setError(
@@ -288,66 +318,121 @@ export function SoundManager({
   const visible = sounds.filter((sound) =>
     sound.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
+  const selectedJoinSound = sounds.find((sound) => sound.id === joinSoundId);
   return (
     <section className="soundManager" aria-label="Manage soundboard">
-      <h3>Soundboard</h3>
-      <p>Add sounds for everyone in this server. Previews play only for you.</p>
-      {canManage && (
-        <button type="button" onClick={() => setUploadOpen(true)}>
-          Add custom sound
-        </button>
-      )}
-      <input
-        className="soundboardSearch"
-        type="search"
-        aria-label="Search managed sounds"
-        placeholder="Search sounds"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-      />
-      {loading ? (
-        <p role="status">Loading sounds…</p>
-      ) : (
-        <div className="soundManagerList">
-          {visible.map((sound) => (
-            <div className="soundManagerRow" key={sound.id}>
-              <span>
-                {sound.name}
-                {sound.durationMs ? (
-                  <small>{(sound.durationMs / 1000).toFixed(1)} seconds</small>
-                ) : null}
-              </span>
-              <button
-                type="button"
-                className="soundPreviewButton"
-                aria-label={`Preview ${sound.name}`}
-                title="Preview only for you"
-                onClick={() => setPreview(sound)}
-              >
-                <SoundPreviewIcon />
-              </button>
-              {canManage && (
-                <button
-                  type="button"
-                  disabled={Boolean(removing)}
-                  aria-label={`Remove ${sound.name}`}
-                  onClick={() => void remove(sound)}
-                >
-                  {removing === sound.id ? "Removing…" : "Remove"}
-                </button>
-              )}
-            </div>
-          ))}
-          {visible.length === 0 && (
-            <p>No sounds{search.trim() ? " match your search." : " yet."}</p>
-          )}
+      <h3>{joinSoundOnly ? "Voice channel join sound" : "Soundboard"}</h3>
+      <p>
+        {joinSoundOnly
+          ? "Choose the sound everyone hears when someone joins a voice channel in this server. Previews play only for you."
+          : "Add sounds for everyone in this server. Previews play only for you."}
+      </p>
+      {!loading && (
+        <div className="deviceSelection">
+          <label>
+            Voice channel join sound
+            <select
+              aria-label="Voice channel join sound"
+              value={joinSoundId ?? ""}
+              disabled={loading || savingJoinSound || Boolean(removing)}
+              onChange={(event) => void saveJoinSound(event.target.value)}
+            >
+              <option value="">Default</option>
+              {sounds.map((sound) => (
+                <option key={sound.id} value={sound.id}>
+                  {sound.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <small className="deviceSelectionNote">
+            Played when someone joins a voice channel in this server. Removing
+            the selected sound restores Default.
+          </small>
+          {savingJoinSound && <small role="status">Saving join sound…</small>}
         </div>
       )}
-      {preview && (
-        <LocalSoundPreview key={preview.id} sound={preview} output={output} />
+      {!joinSoundOnly && (
+        <>
+          {canManage && (
+            <button
+              className="primary"
+              type="button"
+              onClick={() => setUploadOpen(true)}
+            >
+              Add custom sound
+            </button>
+          )}
+          <input
+            className="soundboardSearch"
+            type="search"
+            aria-label="Search managed sounds"
+            placeholder="Search sounds"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          {loading ? (
+            <p role="status">Loading sounds…</p>
+          ) : (
+            <div className="soundManagerList">
+              {visible.map((sound) => (
+                <div className="soundManagerRow" key={sound.id}>
+                  <span>
+                    {sound.name}
+                    {sound.durationMs ? (
+                      <small>
+                        {(sound.durationMs / 1000).toFixed(1)} seconds
+                      </small>
+                    ) : null}
+                  </span>
+                  <button
+                    type="button"
+                    className="soundPreviewButton"
+                    aria-label={`Preview ${sound.name}`}
+                    title="Preview only for you"
+                    onClick={() => setPreview(sound)}
+                  >
+                    <SoundPreviewIcon />
+                  </button>
+                  {canManage && (
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={Boolean(removing) || savingJoinSound}
+                      aria-label={`Remove ${sound.name}`}
+                      onClick={() => void remove(sound)}
+                    >
+                      {removing === sound.id ? "Removing…" : "Remove"}
+                    </button>
+                  )}
+                </div>
+              ))}
+              {visible.length === 0 && (
+                <p>
+                  No sounds{search.trim() ? " match your search." : " yet."}
+                </p>
+              )}
+            </div>
+          )}
+          {preview && (
+            <LocalSoundPreview
+              key={preview.id}
+              sound={preview}
+              output={output}
+            />
+          )}
+        </>
+      )}
+      {joinSoundOnly && loading && <p role="status">Loading sounds…</p>}
+      {joinSoundOnly && selectedJoinSound && (
+        <LocalSoundPreview
+          key={selectedJoinSound.id}
+          sound={selectedJoinSound}
+          output={output}
+        />
       )}
       {error && <p role="alert">{error}</p>}
-      {uploadOpen && (
+      {uploadOpen && canManage && !joinSoundOnly && (
         <SoundUploadDialog
           serverId={serverId}
           output={output}

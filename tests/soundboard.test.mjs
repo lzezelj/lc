@@ -8,7 +8,7 @@ import {
   resetRateLimitsForTests,
 } from "../server/rate-limit.ts";
 
-async function moduleAt(path, deps = {}) {
+async function moduleAt(path, deps = {}, globals = {}) {
   const exports = {};
   vm.runInNewContext(
     ts.transpile(await readFile(new URL(path, import.meta.url), "utf8"), {
@@ -26,6 +26,7 @@ async function moduleAt(path, deps = {}) {
       Uint8Array,
       DataView,
       Buffer,
+      ...globals,
     },
   );
   return exports;
@@ -37,6 +38,210 @@ const catalog = await moduleAt("./sound-wave.ts");
 const uploads = await moduleAt("../server/sound-upload.ts");
 const serverId = "11111111-1111-4111-8111-111111111111";
 const clipId = "22222222-2222-4222-8222-222222222222";
+
+test("server join sound changes require membership and a sound from the same server", async () => {
+  async function fixture({
+    role = "owner",
+    authenticated = true,
+    soundExists = true,
+    limited = false,
+    accountRole = "member",
+  } = {}) {
+    const members = { serverId: "member.server", userId: "member.user" };
+    const sounds = { id: "sound.id", serverId: "sound.server" };
+    const servers = { id: "server.id", joinSoundId: "server.join" };
+    const writes = [],
+      predicates = [],
+      notifications = [];
+    const db = {
+      select: () => ({
+        from: (table) => ({
+          where: (predicate) => {
+            predicates.push(predicate);
+            return {
+              for: async () =>
+                table === members
+                  ? role
+                    ? [{ role }]
+                    : []
+                  : soundExists
+                    ? [{ id: clipId }]
+                    : [],
+            };
+          },
+        }),
+      }),
+      update: () => ({
+        set: (value) => ({
+          where: () => ({
+            returning: async () => {
+              writes.push(value);
+              return [value];
+            },
+          }),
+        }),
+      }),
+      transaction: async (callback) => callback(db),
+    };
+    const route = await moduleAt(
+      "../app/api/servers/[serverId]/join-sound/route.ts",
+      {
+        "drizzle-orm": {
+          and: (...values) => values,
+          eq: (...values) => values,
+        },
+        "next/server": { NextResponse: { json: Response.json } },
+        "../../../../../auth": {
+          auth: async () =>
+            authenticated ? { user: { id: "actor", role: accountRole } } : null,
+        },
+        "../../../../../db": { db },
+        "../../../../../db/schema": {
+          serverMembers: members,
+          servers,
+          serverSounds: sounds,
+        },
+        "../../../../../server/rate-limit": {
+          checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 10 }),
+          rateLimits: { serverMutation: {} },
+        },
+        "../../../../../server/notify-server": {
+          notifyServer: async (id) => notifications.push(id),
+        },
+      },
+    );
+    const save = (joinSoundId) =>
+      route.PATCH(
+        new Request("https://lc.test/join-sound", {
+          method: "PATCH",
+          body: JSON.stringify({ joinSoundId }),
+        }),
+        { params: Promise.resolve({ serverId }) },
+      );
+    return { save, writes, predicates, notifications };
+  }
+  for (const [options, value, status] of [
+    [{ authenticated: false }, clipId, 401],
+    [{ role: null }, clipId, 403],
+    [{ soundExists: false }, clipId, 404],
+    [{ limited: true }, clipId, 429],
+    [{}, "not-a-sound", 400],
+  ]) {
+    const current = await fixture(options);
+    assert.equal((await current.save(value)).status, status);
+    assert.equal(current.writes.length, 0);
+    assert.equal(current.notifications.length, 0);
+  }
+  const current = await fixture();
+  assert.equal((await current.save(clipId)).status, 200);
+  assert.deepEqual(JSON.parse(JSON.stringify(current.predicates[1])), [
+    ["sound.id", clipId],
+    ["sound.server", serverId],
+  ]);
+  assert.equal(current.writes[0].joinSoundId, clipId);
+  assert.equal((await current.save(null)).status, 200);
+  assert.equal(current.writes[1].joinSoundId, null, "Default persists as null");
+  assert.deepEqual(current.notifications, [serverId, serverId]);
+  for (const accountRole of ["member", "demo"]) {
+    const member = await fixture({ role: "member", accountRole });
+    assert.equal((await member.save(clipId)).status, 200);
+    assert.equal((await member.save(null)).status, 200);
+    assert.equal(
+      member.writes.length,
+      2,
+      "members can change only the join-sound field",
+    );
+    assert.deepEqual(Object.keys(member.writes[0]), ["joinSoundId"]);
+  }
+});
+
+test("join sound playback is local, honors output/deafen and cancels stale loads", async () => {
+  const audio = [],
+    tones = [],
+    revoked = [];
+  let load = async () => new ArrayBuffer(2);
+  const { ServerJoinSoundPlayer } = await moduleAt(
+    "../app/server-join-sound.ts",
+    {
+      "./audio-output": {
+        applyCallOutput: async (element, volume, deafened, outputId) => {
+          Object.assign(element, { volume, muted: deafened, outputId });
+        },
+      },
+      "./call-sounds": { playVoiceSound: (type) => tones.push(type) },
+      "./soundboard-library": {
+        loadSoundAudio: (server, clip) => {
+          assert.equal(server, serverId);
+          assert.equal(clip, clipId);
+          return load();
+        },
+      },
+    },
+    {
+      Blob,
+      URL: {
+        createObjectURL: () => "blob:join",
+        revokeObjectURL: (url) => revoked.push(url),
+      },
+      Audio: class {
+        plays = 0;
+        pauses = 0;
+        constructor() {
+          audio.push(this);
+        }
+        async play() {
+          this.plays++;
+        }
+        pause() {
+          this.pauses++;
+        }
+        removeAttribute() {}
+        load() {}
+      },
+    },
+  );
+  const player = new ServerJoinSoundPlayer();
+  const options = {
+    serverId,
+    joinSoundId: clipId,
+    outputVolume: 40,
+    outputId: "headphones",
+  };
+  player.update(options);
+  await player.play();
+  assert.equal(audio[0].plays, 1);
+  assert.equal(audio[0].volume, 40);
+  assert.equal(audio[0].outputId, "headphones");
+  player.update({ ...options, outputVolume: 20 });
+  assert.equal(audio[0].volume, 20);
+  player.update({ ...options, deafened: true });
+  assert.ok(audio[0].pauses > 0);
+  assert.equal(revoked.length, 1);
+  await player.play();
+  assert.equal(audio.length, 1, "deafen suppresses joins");
+  player.update(options);
+  let resolve;
+  load = () =>
+    new Promise((done) => {
+      resolve = done;
+    });
+  const pending = player.play();
+  player.stop();
+  resolve(new ArrayBuffer(2));
+  await pending;
+  assert.equal(audio.length, 1, "leaving cancels late audio");
+  load = async () => {
+    throw new Error("deleted or unavailable");
+  };
+  await player.play();
+  assert.deepEqual(tones, ["join"], "unavailable sound falls back to Default");
+  player.update({ ...options, joinSoundId: null });
+  await player.play();
+  assert.equal(tones.length, 2);
+  player.update({ ...options, outputVolume: 0 });
+  await player.play();
+  assert.equal(tones.length, 2);
+});
 
 async function customRoute({
   authenticated = true,
@@ -153,6 +358,7 @@ async function customRoute({
         serverSounds: sounds,
       },
       "../../../../../server/sound-upload": uploads,
+      "../../../../../server/notify-server": { notifyServer: async () => {} },
       "../../../../../server/rate-limit": {
         checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 12 }),
       },
@@ -512,6 +718,9 @@ test("metadata and audio each require current session and target server membersh
             serverSounds: "sounds",
           },
           "../../../../../server/sound-upload": uploads,
+          "../../../../../server/notify-server": {
+            notifyServer: async () => {},
+          },
           "../../../../../server/rate-limit": {
             checkRateLimit: () => ({ allowed: true }),
           },

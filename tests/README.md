@@ -1,5 +1,44 @@
 # Test coverage
 
+Server join-sound regressions cover member authorization, outsider denial, same-server sound
+selection, Default reset, member refresh notifications and local playback
+cancellation/output/deafen. The existing soundboard tests run in `npm test` and
+the GitHub Actions core job. The PostgreSQL suite verifies default null, deleting
+the selected sound resets the setting, and server deletion still cascades; it
+runs in the existing database job. Muted media-options browser checks exercise
+the server-settings selector and save/reset requests.
+
+Processing-mode regressions cover migration of retired preferences, persisted
+Raw/Browser/RNNoise choices and independent echo preferences. The real-WASM check
+verifies Raw requests all browser processing off and bypasses a high threshold;
+desktop/mobile menu checks select and persist all three modes.
+
+Microphone preview regressions verify automatic playback after permission,
+no playback after cancelled grants, Deafen, pause/cleanup and retained captures.
+Voice-activity tests cover independent saved echo constraints before capture.
+The real-WASM microphone check verifies echo on/off remains honored after RNNoise
+initialization and browser fallback; it emits no speaker audio.
+
+`noise-suppression.test.mjs` runs in the default/CI suite and covers worklet
+readiness, shared loading, failure/cancellation cleanup, PCM frame buffering and
+late model initialization. `--microphone` now loads the real RNNoise WASM library
+from a local HTTP fixture and tests generated-noise attenuation, deafen, injected
+processor-error fallback and track cleanup with no speaker output. These checks
+also ensure a high saved threshold cannot gate active RNNoise output. The
+desktop/mobile media-options checks exercise shared RNNoise controls in the idle
+and joined footer, sidebar-bounded menu geometry and stacking over chat content.
+Fallback continues to use the threshold; microphone mute/deafen stay independent.
+These checks
+do not establish human speech quality, voice isolation or physical mic behavior.
+`--chat-tools` includes the actual personal-message dialog and checks matching User
+settings dimensions, two desktop columns/one mobile column, and unchanged wrapping.
+
+Friends-list regressions now cover bounded accepted-conversation previews.
+The PostgreSQL suite runs the actual route to verify incoming/outgoing selection,
+160-character truncation, pending-request exclusion and deleted/attachment labels.
+The muted composer browser check also decodes a selected image thumbnail before
+upload and verifies removal clears it.
+
 `notifications.test.mjs` covers typed mention boundaries/ambiguity, independent
 notification preferences, expiry, actor/access checks, validated settings and
 read acknowledgements. `notifications.database.test.mjs` runs the actual channel

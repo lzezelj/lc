@@ -529,6 +529,7 @@ test("actual Home send handlers edit through the current composer, preserve draf
       messageCooldown: { blocked: () => false, handleResponse: () => false },
       setSendingMessage: () => {},
       setErrorMessage: (message) => assert.fail(message),
+      loadFriends: async () => {},
       selectedFriendId: { current: friend },
       lastTextChannelId: { current: channelId },
       setDirectMessages: (action) => {

@@ -1,4 +1,4 @@
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
@@ -34,6 +34,44 @@ export async function GET() {
         .where(or(...ids.map((id) => eq(users.id, id))))
     : [];
   const byId = new Map(people.map((person) => [person.id, person]));
+  // Each direction uses the existing pair/timeline index and returns one row.
+  // Do not load conversation pages merely to populate the sidebar.
+  const previews = rows.some((row) => row.status === "accepted")
+    ? await db.execute(sql`
+        select peer.id, latest.sender_id as "senderId",
+          case when latest.deleted_at is not null then 'Deleted message'
+            when latest.content = '' then 'Attachment'
+            else left(latest.content, 160) end as text
+        from friendships f
+        cross join lateral (select case when f.requester_id = ${session.user.id}::uuid then f.recipient_id else f.requester_id end as id) peer
+        left join lateral (
+          select * from (
+            (select m.id, m.sender_id, m.content, m.deleted_at, m.created_at
+             from direct_messages m where m.sender_id = ${session.user.id}::uuid and m.recipient_id = peer.id and m.kind = 'message'
+             order by m.created_at desc, m.id desc limit 1)
+            union all
+            (select m.id, m.sender_id, m.content, m.deleted_at, m.created_at
+             from direct_messages m where m.sender_id = peer.id and m.recipient_id = ${session.user.id}::uuid and m.kind = 'message'
+             order by m.created_at desc, m.id desc limit 1)
+          ) candidates order by created_at desc, id desc limit 1
+        ) latest on true
+        where f.status = 'accepted' and (f.requester_id = ${session.user.id}::uuid or f.recipient_id = ${session.user.id}::uuid)
+      `)
+    : { rows: [] };
+  const previewById = new Map(
+    (
+      previews.rows as {
+        id: string;
+        senderId: string | null;
+        text: string | null;
+      }[]
+    ).map((preview) => [
+      preview.id,
+      preview.senderId
+        ? { senderId: preview.senderId, text: preview.text }
+        : null,
+    ]),
+  );
   return NextResponse.json(
     rows.map((row) => ({
       ...byId.get(
@@ -42,6 +80,14 @@ export async function GET() {
       status: row.status,
       incoming: row.recipientId === session.user.id,
       lastActivityAt: row.lastActivityAt,
+      lastMessage:
+        row.status === "accepted"
+          ? (previewById.get(
+              row.requesterId === session.user.id
+                ? row.recipientId
+                : row.requesterId,
+            ) ?? null)
+          : null,
     })),
   );
 }

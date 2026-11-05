@@ -9,6 +9,7 @@ import {
   validateSoundWave,
 } from "../../../../../server/sound-upload";
 import { checkRateLimit } from "../../../../../server/rate-limit";
+import { notifyServer } from "../../../../../server/notify-server";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const metadata = {
@@ -210,7 +211,7 @@ export async function DELETE(
       { error: "Invalid custom sound" },
       { status: 400 },
     );
-  return db.transaction(async (tx) => {
+  const response = await db.transaction(async (tx) => {
     const [owner] = await tx
       .select()
       .from(serverMembers)
@@ -233,4 +234,6 @@ export async function DELETE(
       ? NextResponse.json(removed)
       : NextResponse.json({ error: "Sound not found" }, { status: 404 });
   });
+  if (response.ok) void notifyServer(serverId);
+  return response;
 }

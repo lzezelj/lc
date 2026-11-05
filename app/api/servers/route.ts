@@ -17,7 +17,12 @@ export async function GET() {
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const result = await db
-    .select({ id: servers.id, name: servers.name, role: serverMembers.role })
+    .select({
+      id: servers.id,
+      name: servers.name,
+      role: serverMembers.role,
+      joinSoundId: servers.joinSoundId,
+    })
     .from(serverMembers)
     .innerJoin(servers, eq(servers.id, serverMembers.serverId))
     .innerJoin(users, eq(users.id, serverMembers.userId))

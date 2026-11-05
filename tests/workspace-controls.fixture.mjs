@@ -183,6 +183,37 @@ window.verifyMessageComposer = async () => {
         ?.textContent.includes("dropped.pdf"),
       "File picker did not stage attachment",
     );
+    const picture = new DataTransfer();
+    picture.items.add(
+      new File(
+        [
+          Uint8Array.from(
+            atob(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+            ),
+            (char) => char.charCodeAt(0),
+          ),
+        ],
+        "preview.png",
+        { type: "image/png" },
+      ),
+    );
+    picker.files = picture.files;
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait();
+    const preview = container.querySelector(".pendingImage");
+    check(
+      preview?.src.startsWith("blob:") &&
+        preview.complete &&
+        preview.naturalWidth === 1,
+      "Selected image did not show a local thumbnail before sending",
+    );
+    container.querySelector('[aria-label="Remove preview.png"]').click();
+    await wait();
+    check(
+      !container.querySelector(".pendingImage"),
+      "Removing an image left its preview behind",
+    );
     return {
       growShrink: true,
       wrappedText: true,
@@ -191,6 +222,7 @@ window.verifyMessageComposer = async () => {
       drop: true,
       picker: true,
       remove: true,
+      pendingImagePreview: true,
     };
   } finally {
     root.unmount();
@@ -361,6 +393,7 @@ window.verifyAttachmentPreview = async () => {
   }
 };
 window.verifyChatTools = async () => {
+  await verifyPrivacyManagement();
   verifyWorkspaceHeaderLayout();
   const container = document.createElement("div");
   container.style.cssText = "position:fixed;inset:0;z-index:10000";
@@ -2125,7 +2158,18 @@ async function verifySoundboard() {
   ];
   let uploads = 0,
     removals = 0;
+  const joinSoundChanges = [];
+  let canManageSounds = true;
   window.fetch = async (url, options = {}) => {
+    if (String(url) === "/api/servers/call-server/join-sound") {
+      check(
+        options.method === "PATCH",
+        "Join sound changes must be saved on the server",
+      );
+      const body = JSON.parse(options.body);
+      joinSoundChanges.push(body.joinSoundId);
+      return Response.json(body);
+    }
     check(
       String(url).startsWith("/api/servers/call-server/soundboard"),
       "The board must use the active call's server",
@@ -2163,7 +2207,7 @@ async function verifySoundboard() {
     return String(url).includes("?clip=")
       ? new Response(soundWave("celebrate-v1"))
       : Response.json({
-          canManage: true,
+          canManage: canManageSounds,
           sounds: soundList,
         });
   };
@@ -2454,6 +2498,7 @@ async function verifySoundboard() {
             onClose() {},
             navigation: h(SettingsNavigation, {
               account: false,
+              owner: true,
               selected: "soundboard",
               onSelect() {},
             }),
@@ -2463,6 +2508,57 @@ async function verifySoundboard() {
       );
       await wait();
       const manager = document.querySelector(".soundManager");
+      const previewButton = manager.querySelector(
+        '[aria-label="Preview Uploaded"]',
+      );
+      const previewBounds = previewButton.getBoundingClientRect();
+      const iconBounds = previewButton
+        .querySelector("svg")
+        .getBoundingClientRect();
+      check(
+        Math.abs(
+          (previewBounds.left + previewBounds.right) / 2 -
+            (iconBounds.left + iconBounds.right) / 2,
+        ) < 1 &&
+          Math.abs(
+            (previewBounds.top + previewBounds.bottom) / 2 -
+              (iconBounds.top + iconBounds.bottom) / 2,
+          ) < 1,
+        "Sound preview icon must be centered inside its button",
+      );
+      check(
+        getComputedStyle(previewButton).backgroundColor === "rgb(34, 44, 64)",
+        "Preview uses the shared neutral button style",
+      );
+      check(
+        getComputedStyle(manager.querySelector("button.primary"))
+          .backgroundColor === "rgb(120, 164, 255)",
+        "Standalone Add custom sound uses the blue accent",
+      );
+      check(
+        getComputedStyle(manager.querySelector("button.danger")).color ===
+          "rgb(255, 137, 156)",
+        "Sound removal uses the red danger style",
+      );
+      const joinSound = manager.querySelector(
+        '[aria-label="Voice channel join sound"]',
+      );
+      check(
+        joinSound &&
+          joinSound.value === "" &&
+          joinSound.options[0].textContent === "Default",
+        "Server join sound starts at Default",
+      );
+      joinSound.value = "custom-test";
+      joinSound.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait();
+      joinSound.value = "";
+      joinSound.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait();
+      check(
+        joinSoundChanges.join(",") === "custom-test,",
+        "Server settings saves a soundboard clip and resets to Default",
+      );
       check(
         manager &&
           document.querySelector('.settingsNavigation [aria-current="page"]')
@@ -2493,6 +2589,13 @@ async function verifySoundboard() {
         nested && nested.querySelector('[aria-label="Sound file"]'),
         "Settings must reuse the upload dialog",
       );
+      check(
+        [...nested.querySelectorAll(".modalActions button")].every(
+          (button) =>
+            getComputedStyle(button).backgroundColor === "rgb(34, 44, 64)",
+        ),
+        "Grouped upload actions use the same neutral button style",
+      );
       nested.querySelector('.modalActions button[type="button"]').click();
       await wait();
       check(
@@ -2505,6 +2608,46 @@ async function verifySoundboard() {
           document.querySelector('[data-lc-soundboard-local="playback"]') ===
             callAudio,
         "Managing sounds must preserve the call's audio owner",
+      );
+      canManageSounds = false;
+      managerRoot.render(
+        h(
+          SettingsModal,
+          {
+            title: "Server settings",
+            onClose() {},
+            navigation: h(SettingsNavigation, {
+              account: false,
+              owner: false,
+              selected: "join-sound",
+              onSelect() {},
+            }),
+          },
+          h(SoundManager, {
+            key: "member",
+            serverId: "call-server",
+            joinSoundOnly: true,
+          }),
+        ),
+      );
+      await wait();
+      const memberSettings = document.querySelector(".soundManager");
+      const memberChoice = memberSettings.querySelector(
+        '[aria-label="Voice channel join sound"]',
+      );
+      check(
+        memberChoice &&
+          !memberSettings.querySelector(
+            "button, .soundboardSearch, .soundManagerList",
+          ),
+        "Members can choose the join sound without soundboard management actions",
+      );
+      memberChoice.value = "celebrate-v1";
+      memberChoice.dispatchEvent(new Event("change", { bubbles: true }));
+      await wait();
+      check(
+        joinSoundChanges.at(-1) === "celebrate-v1",
+        "Members save the shared server join-sound choice",
       );
     } finally {
       managerRoot.unmount();
@@ -2994,8 +3137,8 @@ async function verifyPrivacyManagement() {
     await wait();
     check(
       container.querySelectorAll(".messageDestinationList button").length ===
-        2 && !container.querySelector("article"),
-      "My messages must initially show only server and DM destinations",
+        1 && !container.querySelector("article"),
+      "My messages must initially show server destinations",
     );
     container.querySelector(".messageDestinationList button").click();
     await wait();
@@ -3003,6 +3146,33 @@ async function verifyPrivacyManagement() {
     check(
       dialog && dialog.querySelectorAll("article").length === 2,
       "Opening a server must show its messages in a new window",
+    );
+    const cards = [...dialog.querySelectorAll("article")].map((card) =>
+      card.getBoundingClientRect(),
+    );
+    const reference = document.createElement("dialog");
+    reference.className = "settingsModal settingsWorkspace";
+    document.body.append(reference);
+    reference.showModal();
+    const expected = reference.getBoundingClientRect();
+    reference.close();
+    reference.remove();
+    check(
+      Math.abs(dialog.getBoundingClientRect().width - expected.width) < 2 &&
+        Math.abs(dialog.getBoundingClientRect().height - expected.height) < 2,
+      "Message window does not match the User settings dimensions",
+    );
+    check(
+      innerWidth > 650
+        ? cards[1].left > cards[0].right &&
+            Math.abs(cards[1].top - cards[0].top) < 1
+        : cards[1].top > cards[0].bottom,
+      "Message cards did not use two desktop columns and one mobile column",
+    );
+    check(
+      getComputedStyle(dialog.querySelector("article p")).whiteSpace ===
+        "pre-wrap",
+      "Message text wrapping changed",
     );
     await type(dialog.querySelector('input[type="search"]'), "needle");
     check(
@@ -3018,6 +3188,10 @@ async function verifyPrivacyManagement() {
       "Message deletion must target the selected row and server",
     );
     dialog.querySelector(".settingsClose").click();
+    await wait();
+    [...container.querySelectorAll(".settingsDestinations button")]
+      .find((button) => button.textContent === "People")
+      .click();
     await wait();
     await type(container.querySelector('input[type="search"]'), "Bob");
     check(
@@ -3108,6 +3282,7 @@ async function verifySettingsCategories() {
   root.render(
     h(SettingsNavigation, {
       account: false,
+      owner: true,
       selected: "invite-friends",
       onSelect: (id) => {
         selected = id;
@@ -3130,6 +3305,21 @@ async function verifySettingsCategories() {
   check(
     container.querySelectorAll(".settingsNavCategory").length === 4,
     "Server navigation must have visible categories",
+  );
+  root.render(
+    h(SettingsNavigation, {
+      account: false,
+      owner: false,
+      selected: "join-sound",
+      onSelect() {},
+    }),
+  );
+  await wait();
+  check(
+    container.querySelectorAll("button").length === 1 &&
+      container.querySelector("button").textContent ===
+        "Voice channel join sound",
+    "Member server settings must expose only the join-sound section",
   );
   root.render(
     h(SettingsNavigation, {
@@ -3900,6 +4090,69 @@ window.setupWorkspaceControlsTest = async () => {
 };
 
 window.verifyMicrophonePosition = async () => {
+  async function checkDeviceMenu(selector, microphone) {
+    document.body.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true }),
+    );
+    document.querySelector(selector).click();
+    await wait();
+    const dropdown = document.querySelector(".deviceDropdown");
+    const box = dropdown.getBoundingClientRect(),
+      sidebar = document
+        .querySelector(".channelSidebar")
+        .getBoundingClientRect();
+    check(
+      box.left >= sidebar.left && box.right <= sidebar.right + 1,
+      "Device menu escaped channel sidebar width",
+    );
+    check(
+      box.top >= 0 && box.bottom < innerHeight,
+      "Device menu escaped viewport",
+    );
+    const cover = document.createElement("div");
+    cover.style.cssText = `position:fixed;left:${box.left}px;top:${box.top}px;width:${box.width}px;height:${box.height}px;z-index:110;background:#1b2232`;
+    document.body.append(cover);
+    check(
+      dropdown.contains(
+        document.elementFromPoint(
+          box.left + box.width / 2,
+          box.top + box.height / 2,
+        ),
+      ),
+      "Device menu was covered by chat content",
+    );
+    cover.remove();
+    const option = dropdown.querySelector(
+      'select[aria-label="Microphone processing mode"]',
+    );
+    check(
+      !!option === microphone,
+      "Processing selector belongs only in microphone menu",
+    );
+    if (option) {
+      const previous = option.value;
+      for (const mode of ["raw", "browser", "rnnoise", previous]) {
+        option.value = mode;
+        option.dispatchEvent(new Event("change", { bubbles: true }));
+        await wait();
+        check(
+          option.value === mode &&
+            localStorage.getItem("lc.microphoneMode") === mode,
+          "Processing mode did not persist",
+        );
+      }
+    }
+    check(
+      !/Restart microphone|Disable microphone processing/.test(
+        dropdown.textContent,
+      ),
+      "Retired microphone actions remain in the menu",
+    );
+    document.body.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true }),
+    );
+    await wait();
+  }
   const arrowPosition = (selector) => {
     const range = document.createRange();
     range.selectNodeContents(document.querySelector(selector));
@@ -3914,6 +4167,11 @@ window.verifyMicrophonePosition = async () => {
     .querySelector(".profileMicrophone .mediaToggle svg")
     .getBoundingClientRect();
   const idleArrow = arrowPosition(".profileMicrophone .deviceMenuTrigger");
+  await checkDeviceMenu(
+    '.profileMicrophone [aria-label="Choose microphone"]',
+    true,
+  );
+  await checkDeviceMenu('.profileDeafen [aria-label="Output options"]', false);
   window.setWorkspaceCallJoined(true);
   await wait();
   const joinedLegal = document
@@ -3931,6 +4189,8 @@ window.verifyMicrophonePosition = async () => {
   const joinedArrow = arrowPosition(
     ".voiceDock > .deviceControl:first-of-type .deviceMenuTrigger",
   );
+  await checkDeviceMenu('.voiceDock [aria-label="Choose microphone"]', true);
+  await checkDeviceMenu('.profileDeafen [aria-label="Output options"]', false);
   check(
     Math.abs(idle.x - joined.x) < 0.1 && Math.abs(idle.y - joined.y) < 0.1,
     `Microphone moved on join: idle (${idle.x}, ${idle.y}), joined (${joined.x}, ${joined.y})`,

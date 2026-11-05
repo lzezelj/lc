@@ -890,7 +890,13 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .workspace .profileDeafen .deviceMenuTrigger { width: 20px; min-width: 20px; display: grid; place-items: center; padding: 0; line-height: 1; }
 .profileDeafen button { padding: 7px 6px; font-size: 11px; }
 .profileDeafen button:focus-visible { outline: 2px solid #91a7c4; outline-offset: 2px; }
-.profileDeafen .deviceDropdown { position: fixed; bottom: calc(var(--audio-controls-bottom) + 48px); left: clamp(16px, calc(var(--rail-width) + var(--sidebar-width) - 300px), calc(100vw - 316px)); }
+.workspace .profileDeafen .deviceDropdown,
+.workspace .profileMicrophone .deviceDropdown,
+.workspace .voiceDock .deviceDropdown { position: fixed; bottom: calc(var(--audio-controls-bottom) + 48px); left: calc(var(--rail-width) + var(--footer-inset)); width: calc(var(--sidebar-width) - 2 * var(--footer-inset)); max-width: calc(100vw - 16px); max-height: min(360px, calc(100dvh - var(--audio-controls-bottom) - 64px)); z-index: 120; }
+.workspace .voiceDock:has(.deviceControl.open), .profileBar:has(.deviceControl.open), .profileMenu:has(.deviceControl.open) { z-index: 120; }
+.rnnoiseToggle, .settingsContent .rnnoiseToggle { display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px; color: var(--ink); }
+.rnnoiseToggle input { flex: 0 0 auto; accent-color: var(--accent); }
+.rnnoiseToggle span { min-width: 0; overflow-wrap: anywhere; }
 .workspace .profileBar .profileMenu.open { z-index: 100; }
 .workspace .profileMenu .accountMenuDropdown { z-index: 101; bottom: 64px; left: -46px; width: 276px; }
 .workspace .profileConnectionDetails { position: absolute; bottom: calc(var(--profile-row-height) - 1px); left: -1px; width: calc(100% + 2px); height: var(--connection-row-height); padding: 10px 12px; gap: 8px; border: 1px solid #30384b; border-bottom: 0; background: #151b2a; }
@@ -1394,8 +1400,11 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .messageDestinationList { display: grid; gap: 8px; margin: 18px 0; }
 .messageDestinationList > button { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border: 1px solid #39445b; background: #1b2232; color: var(--ink); text-align: left; }
 .messageDestinationList > button:hover { background: #2a3449; }
-.messageDestinationList small { color: var(--muted); }
 .personalMessageWindow { display: grid; gap: 16px; }
+.personalMessagesModal > .settingsActions { overflow-y: auto; min-height: 0; padding: 24px 28px; }
+.personalMessageGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.personalMessageGrid article { min-width: 0; }
+@media (max-width: 650px) { .personalMessageGrid { grid-template-columns: minmax(0, 1fr); } }
 .personalMessageWindow > label { display: grid; gap: 8px; }
 .personalMessageWindow input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #48546e; border-radius: 6px; background: #151925; color: var(--ink); }
 .personalMessageWindow article { padding: 16px; border: 1px solid #39445b; border-radius: 8px; background: #1b2232; }
@@ -1427,7 +1436,17 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .settingsContent label, .settingsNameForm { display: grid; gap: 10px; }
 .settingsNameForm { gap: 20px; }
 .settingsContent input:not([type="checkbox"]):not([type="range"]), .settingsContent select { width: 100%; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 6px; background: #151925; color: var(--ink); }
-.settingsContent button { padding: 10px 16px; border-radius: 6px; }
+.settingsModal :where(button) { padding: 10px 14px; border: 1px solid #354158; border-radius: 7px; background: #222c40; color: var(--ink); }
+.settingsContent button { padding: 10px 14px; border: 1px solid #354158; border-radius: 7px; background: #222c40; color: var(--ink); }
+.settingsModal :where(button):hover { background: #303950; border-color: #71829d; }
+.settingsModal button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.settingsModal button.primary:hover { background: #91b5ff; }
+.settingsModal :is(.modalActions, .helpActions, .managedChannelActions, .demoSettingsActions) > button { padding: 10px 14px; border: 1px solid #354158; border-radius: 7px; background: #222c40; color: var(--ink); font-weight: 400; }
+.settingsModal :is(.modalActions, .helpActions, .managedChannelActions, .demoSettingsActions) > button:hover { background: #303950; border-color: #71829d; }
+.settingsModal button.danger { color: #ff899c; border: 1px solid #a44455; background: #85283b22; }
+.settingsModal button.danger:hover { background: #85283b55; border-color: #c15b70; }
+.settingsModal button:disabled { cursor: not-allowed; opacity: .55; }
+.settingsModal .soundPreviewButton { display: grid; place-items: center; flex: 0 0 42px; width: 42px; height: 42px; min-height: 42px; padding: 0; line-height: 0; }
 .settingsNameForm > button { justify-self: start; }
 .settingsAccountCard { display: flex; align-items: center; gap: 18px; padding: 24px; border: 1px solid var(--line); background: #151925; border-radius: 10px; margin-bottom: 28px; }
 .settingsAccountCard p { color: var(--muted); margin: 6px 0; }
@@ -1735,12 +1754,12 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .activityDot { position: absolute; width: 11px; height: 11px; border-radius: 50%; background: var(--ink); }
 .activityMentionCount { position: relative; z-index: 1; display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid #101420; border-radius: 10px; background: #d65065; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; }
 .serverActivityIndicator { position: absolute; top: -2px; right: -2px; margin: 0; }
-.notificationSettings { display: grid; gap: 10px; }
-.notificationSettings > input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #354158; border-radius: 7px; background: #111724; color: var(--ink); font: inherit; }
+.notificationSettings, .personalMessages, .settingsDestinations { display: grid; gap: 10px; }
+.settingsDestinations > input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #354158; border-radius: 7px; background: #111724; color: var(--ink); font: inherit; }
 .notificationMuteMenu { position: fixed; z-index: 160; width: min(360px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 10px; border: 1px solid #354158; border-radius: 10px; background: #151925; box-shadow: 0 12px 36px #0008; }
 .notificationMuteMenu > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .notificationMuteMenu > header > button { padding: 5px 9px; border: 0; border-radius: 5px; background: #272e40; color: var(--ink); }
-.notificationSettings h4 { margin: 14px 0 0; }
+.settingsDestinations h4 { margin: 14px 0 0; }
 .notificationPreference { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: #1b2232; }
 .notificationPreference > strong { overflow-wrap: anywhere; }
 .notificationPreference label { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
@@ -1795,6 +1814,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .composerHint { padding: 4px 8px; font-size: 12px; color: var(--muted); }
 .pendingAttachments { list-style: none; margin: 0; padding: 4px 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 .pendingAttachments li { display: flex; align-items: center; min-width: 0; max-width: 100%; background: #1c2232; border-radius: 6px; }
+.pendingImage { display: block; flex: 0 0 64px; width: 64px; height: 64px; object-fit: contain; border-radius: 6px 0 0 6px; background: #111724; }
 .pendingAttachments span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 8px; font-size: 12px; }
 .chat .pendingAttachments button { padding: 4px 8px; background: transparent; }
 .messageAttachments { display: grid; gap: 8px; max-width: min(360px, 100%); margin-top: 6px; }
@@ -2388,9 +2408,11 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .mediaSettings > *, .mediaTests > *, .mediaSettings label { min-width: 0; max-width: 100%; }
 .mediaSettings select { width: 100%; }
 .mediaTests { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+.mediaSettingsGroup { display: grid; gap: 12px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
+.mediaSettingsGroup h4 { margin: 0; }
+.licenseText { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.6; }
 .mediaTests input[type="range"], .mediaTests meter { display: block; width: 100%; padding: 0; }
 .mediaTests button { padding: 10px 14px; border: 1px solid #3c4560; border-radius: 7px; background: #272e40; color: var(--ink); }
-.mediaTests .listenTest { display: flex; align-items: center; gap: 8px; }
 .settingsCameraPreview { width: 100%; aspect-ratio: 16 / 9; max-height: 260px; object-fit: contain; border-radius: 8px; background: #080b12; }
 
 .mediaSettings p,
