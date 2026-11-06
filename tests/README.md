@@ -1,5 +1,47 @@
 # Test coverage
 
+Pending server invitations use the existing default server-invites suite for
+owner/friend/search validation and action authentication/rate limits. The database
+suite exercises actual invitation SQL and channel authorization: no access while
+pending, recipient-only acceptance, sender cancellation, decline/replay behavior,
+deduplication, active-account/current-owner checks and cascading cleanup. Both
+suites run in their existing GitHub Actions jobs. Optional muted desktop/mobile
+checks run with `node tests/direct-webrtc.browser.mjs --server-invitations` and
+cover sending, inbox/outbox actions, acceptance-event deduplication, retained
+background rows and account isolation.
+
+`node tests/direct-webrtc.browser.mjs --participant-audio` provides focused muted
+desktop/mobile coverage for centered personal controls/icons, server status
+precedence/red icons, explicit server unmute/undeafen actions and crowded names.
+Default tests reject premature LiveKit permission calls in connecting/reconnecting
+states and verify that self-undeafen cannot bypass server moderation.
+
+Crop and voice-policy regressions run in the existing default/CI suites:
+account-privacy covers crop geometry; call-grid covers serial native sender
+updates, incoming gain and selective publisher permissions; voice-move covers
+owner authorization, independent flags, commit/event order, SFU failure reporting
+and exact account identity matching; voice-session covers restricted fresh tokens.
+Ownership tests cover clearing restrictions on promotion. The existing PostgreSQL
+job checks default flags, per-member/server isolation and membership reset.
+Optional muted desktop/mobile composer checks cover crop preview/confirmation/
+cancel, separate mute/deafen controls and icons, owner menus, overflow download
+suppression and a real generated-media native peer's encoding disable/restore.
+These do not exercise an actual multi-account LiveKit SFU.
+
+Image galleries and participant playback use the existing default/CI attachment
+and call-grid suites: 12-file acceptance, excessive files and byte bounds, per-user
+gain/mute, LiveKit session-identity mapping, and source/deafen composition. Muted
+desktop/mobile composer checks cover circular avatars and fallback, smaller voice
+avatars, local volume/mute and account isolation, non-owner playback menus,
+up to two whole pictures plus overflow, three-column scrolling galleries, nested
+preview and the explicit authenticated Download picture menu inside a modal.
+Muted-person icons, borderless account/session navigation and actual browser
+profile upload/re-encoding/removal/error handling are checked there as well.
+The default account-privacy suite checks profile byte/dimension limits, session
+ownership, authentication, authorized reads and notification-after-commit order.
+PostgreSQL tests verify single-row replacement and image-removal cleanup.
+PDF details/downloads remain covered.
+
 Reconnect regressions in the default suites check protocol pings/pongs, idle
 connection survival and unresponsive-client cleanup. History recovery tests run
 the actual channel/DM loader effects, retaining visible rows/loading-ready state,

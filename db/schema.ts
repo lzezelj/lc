@@ -2,6 +2,7 @@ import {
   type AnyPgColumn,
   customType,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -140,6 +141,8 @@ export const serverMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     role: serverRole("role").default("member").notNull(),
+    voiceMuted: boolean("voice_muted").default(false).notNull(),
+    voiceDeafened: boolean("voice_deafened").default(false).notNull(),
     joinSoundId: uuid("join_sound_id").references(
       (): AnyPgColumn => serverSounds.id,
       { onDelete: "set null" },
@@ -151,6 +154,37 @@ export const serverMembers = pgTable(
   (table) => [
     primaryKey({ columns: [table.serverId, table.userId] }),
     index("server_members_user_id_idx").on(table.userId),
+  ],
+);
+
+export const serverInvitations = pgTable(
+  "server_invitations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    serverId: uuid("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    inviterId: uuid("inviter_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    recipientId: uuid("recipient_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("server_invitations_server_recipient_unique").on(
+      table.serverId,
+      table.recipientId,
+    ),
+    index("server_invitations_recipient_idx").on(table.recipientId),
+    index("server_invitations_inviter_idx").on(table.inviterId),
+    check(
+      "server_invitations_distinct_people",
+      sql`${table.inviterId} <> ${table.recipientId}`,
+    ),
   ],
 );
 
@@ -171,6 +205,12 @@ export const channels = pgTable(
 );
 
 const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
+export const userAvatars = pgTable("user_avatars", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  data: bytea("data").notNull(),
+});
 
 export const serverSounds = pgTable(
   "server_sounds",

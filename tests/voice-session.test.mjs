@@ -42,6 +42,7 @@ function fixture(options = {}) {
         ({
           "drizzle-orm": { and() {}, eq() {} },
           "livekit-server-sdk": {
+            TrackSource: { CAMERA: 1, SCREEN_SHARE: 3 },
             AccessToken: class {
               constructor(_key, _secret, settings) {
                 events.push({ settings });
@@ -80,6 +81,13 @@ function fixture(options = {}) {
             checkRateLimit: () => ({ allowed: true }),
             rateLimits: { livekitToken: {} },
           },
+          "../../../../../server/voice-moderation": {
+            readVoicePolicies: async () => options.voicePolicies ?? {},
+          },
+          "../../../../voice-policy": {
+            voiceBlocked: (policy) =>
+              Boolean(policy?.voiceMuted || policy?.voiceDeafened),
+          },
         })[name],
     },
   );
@@ -114,6 +122,25 @@ test("group admission fails closed without issuing tokens when coordination fail
     const result = fixture(options);
     assert.equal((await result.run()).status, 503);
     assert.equal(result.events.length, 1);
+  }
+});
+
+test("server mute and deafen restrict fresh group tokens to video sources", async () => {
+  for (const policy of [{ voiceMuted: true }, { voiceDeafened: true }]) {
+    const f = fixture({ voicePolicies: { account: policy } });
+    const response = await f.run();
+    assert.equal(response.status, 201);
+    assert.equal(
+      f.events.find((event) => event.grant).grant.canSubscribe,
+      !policy.voiceDeafened,
+    );
+    assert.deepEqual(
+      [...f.events.find((event) => event.grant).grant.canPublishSources],
+      [1, 3],
+    );
+    assert.deepEqual((await response.json()).voicePolicies, {
+      account: policy,
+    });
   }
 });
 

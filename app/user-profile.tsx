@@ -3,10 +3,12 @@
 import { SettingsModal } from "./settings-modal";
 import { formatUserHandle } from "../user-handle";
 import { useState } from "react";
+import { Avatar } from "./avatar";
 
 export type ProfileUser = {
   id: string;
   name: string;
+  image?: string | null;
   handle?: string | null;
   role?: string;
 };
@@ -61,9 +63,7 @@ export function UserProfile({
         <span>LC</span>
       </div>
       <div className="profileDetails">
-        <span className="avatar profileAvatar" aria-hidden="true">
-          {user.name[0]?.toUpperCase()}
-        </span>
+        <Avatar name={user.name} image={user.image} className="profileAvatar" />
         <h3>{user.name}</h3>
         {user.handle && <p>{formatUserHandle(user.handle)}</p>}
         <p className="profilePresence">

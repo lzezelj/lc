@@ -15,13 +15,15 @@ export function ServerInvites({
   mode,
   friends,
   memberIds,
-  onAdded,
+  pendingIds = [],
+  onSent,
 }: {
   serverId: string;
   mode: "friends" | "people";
   friends: InvitePerson[];
   memberIds: string[];
-  onAdded: (people: InvitePerson[]) => void;
+  pendingIds?: string[];
+  onSent: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<InvitePerson[]>([]);
@@ -124,7 +126,11 @@ export function ServerInvites({
             <input
               type="checkbox"
               checked={selected.some((item) => item.id === person.id)}
-              disabled={busy || memberIds.includes(person.id)}
+              disabled={
+                busy ||
+                memberIds.includes(person.id) ||
+                pendingIds.includes(person.id)
+              }
               onChange={(event) =>
                 setSelected((current) =>
                   event.target.checked
@@ -142,6 +148,10 @@ export function ServerInvites({
               {memberIds.includes(person.id) && (
                 <small className="inviteMembership">Already in server</small>
               )}
+              {!memberIds.includes(person.id) &&
+                pendingIds.includes(person.id) && (
+                  <small className="inviteMembership">Invitation pending</small>
+                )}
             </span>
           </label>
         ))}
@@ -180,12 +190,10 @@ export function ServerInvites({
               if (!active.current) return;
               if (!response.ok)
                 throw new Error(data.error ?? "People could not be invited.");
-              onAdded(
-                selected.filter((person) => data.added.includes(person.id)),
-              );
+              onSent();
               setSelected([]);
               setNotice(
-                `${data.added.length} ${data.added.length === 1 ? "person" : "people"} added to the server.`,
+                `${data.invited.length} ${data.invited.length === 1 ? "invitation" : "invitations"} sent. Recipients can accept in Pending invites.`,
               );
             } catch (failure) {
               setError(

@@ -72,7 +72,7 @@ export function SettingsNavigation({
             <button
               key={id}
               type="button"
-              className={`${id.startsWith("delete") || id === "logout" ? "danger" : ""} ${id === selected ? "active" : ""}`}
+              className={`${id.startsWith("delete") || id === "logout" ? "danger" : ""} ${id === "delete-account" || id === "logout" ? "settingsNavPlainDanger" : ""} ${id === selected ? "active" : ""}`}
               aria-current={id === selected ? "page" : undefined}
               onClick={() => onSelect(id)}
             >

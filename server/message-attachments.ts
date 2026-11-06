@@ -5,6 +5,7 @@ import { messageAttachments, users } from "../db/schema";
 import {
   attachmentMaxBytes,
   attachmentMaxCount,
+  attachmentMaxTotalBytes,
   type MessageAttachment,
 } from "../app/attachment-types";
 
@@ -16,7 +17,7 @@ type MessageBody = {
   durationSeconds?: number;
   files: Upload[];
 };
-const maxRequestBytes = attachmentMaxBytes * attachmentMaxCount + 64 * 1024;
+const maxRequestBytes = attachmentMaxTotalBytes + 64 * 1024;
 export const attachmentQuotaBytes = 100 * 1024 * 1024;
 
 export function attachmentMime(data: Buffer) {
@@ -87,7 +88,7 @@ export async function readMessageRequest(
     const files = form.getAll("files");
     if (files.length > attachmentMaxCount)
       return Response.json(
-        { error: "Attach up to four files per message." },
+        { error: `Attach up to ${attachmentMaxCount} files per message.` },
         { status: 400 },
       );
     const uploads: Upload[] = [];
@@ -120,6 +121,14 @@ export async function readMessageRequest(
         metadata: { id: randomUUID(), name, type, size: data.length },
       });
     }
+    if (
+      uploads.reduce((bytes, file) => bytes + file.data.length, 0) >
+      attachmentMaxTotalBytes
+    )
+      return Response.json(
+        { error: "Attach up to 40 MB in total per message." },
+        { status: 413 },
+      );
     const text = form.get("text");
     const replyToId = form.get("replyToId");
     if (

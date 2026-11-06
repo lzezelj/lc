@@ -14,6 +14,384 @@ import * as emojiCatalog from "../app/emoji-catalog.ts";
 
 const { Client } = pg;
 
+test("pending server invitations grant access only on recipient acceptance and isolate senders, accounts and server lifetimes", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const owner = randomUUID(),
+      recipient = randomUUID(),
+      outsider = randomUUID(),
+      demo = randomUUID(),
+      serverId = randomUUID();
+    await database.insert(schema.users).values([
+      { id: owner, name: "Inviter" },
+      { id: recipient, name: "Recipient" },
+      { id: outsider, name: "Outsider" },
+      { id: demo, name: "Demo", role: "demo" },
+    ]);
+    await database
+      .insert(schema.servers)
+      .values({ id: serverId, name: "Invitation test", createdBy: owner });
+    await database
+      .insert(schema.serverMembers)
+      .values({ serverId, userId: owner, role: "owner" });
+    await database
+      .insert(schema.channels)
+      .values({ serverId, name: "private", type: "text" });
+    const transactional = new Proxy(database, {
+      get(target, key) {
+        if (key === "transaction")
+          return async (run) => {
+            await client.query("SAVEPOINT invitations_test");
+            try {
+              const result = await run(database);
+              await client.query("RELEASE SAVEPOINT invitations_test");
+              return result;
+            } catch (error) {
+              await client.query("ROLLBACK TO SAVEPOINT invitations_test");
+              await client.query("RELEASE SAVEPOINT invitations_test");
+              throw error;
+            }
+          };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let actor = owner;
+    const events = [];
+    async function load(path, extra) {
+      const exports = {};
+      vm.runInNewContext(
+        ts.transpile(await readFile(new URL(path, import.meta.url), "utf8"), {
+          module: ts.ModuleKind.CommonJS,
+          target: ts.ScriptTarget.ES2022,
+        }),
+        {
+          exports,
+          Response,
+          require: (name) => {
+            const deps = { "drizzle-orm": orm, ...extra };
+            assert.ok(name in deps, name);
+            return deps[name];
+          },
+        },
+      );
+      return exports;
+    }
+    const service = await load("../server/server-invitations.ts", {
+      "../db": { db: transactional },
+      "../db/schema": schema,
+    });
+    const route = await load("../app/api/server-invitations/route.ts", {
+      "../../../auth": {
+        auth: async () => (actor ? { user: { id: actor } } : null),
+      },
+      "../../../db": { db: transactional },
+      "../../../db/schema": schema,
+      "../../../server/rate-limit": {
+        checkRateLimit: () => ({ allowed: true }),
+        rateLimits: { serverMutation: {} },
+      },
+      "../../../server/notify-user": {
+        notifyUser: async (id, event) => events.push({ id, event }),
+      },
+    });
+    const channelRoute = await load(
+      "../app/api/servers/[serverId]/channels/route.ts",
+      {
+        "../../../../../auth": { auth: async () => ({ user: { id: actor } }) },
+        "../../../../../db": { db: transactional },
+        "../../../../../db/schema": schema,
+        "next/server": { NextResponse: { json: Response.json } },
+        "../../../../../server/rate-limit": {},
+        "../../../../../server/notify-server": {},
+        "../../../../../server/remove-channel-media": {},
+      },
+    );
+    const channels = () =>
+      channelRoute.GET(null, { params: Promise.resolve({ serverId }) });
+    const list = async () => (await route.GET()).json();
+    const act = (id, action) =>
+      route.PATCH(
+        new Request("http://local/server-invitations", {
+          method: "PATCH",
+          body: JSON.stringify({ id, action }),
+        }),
+      );
+    const issue = () =>
+      service.createServerInvitations(serverId, owner, [recipient]);
+    assert.equal(
+      (await service.createServerInvitations(serverId, outsider, [recipient]))
+        .status,
+      403,
+    );
+    assert.equal(
+      (await service.createServerInvitations(serverId, owner, [demo])).status,
+      400,
+    );
+    assert.deepEqual(Array.from((await issue()).invited), [recipient]);
+    await issue();
+    assert.equal(
+      (await database.select().from(schema.serverInvitations)).length,
+      1,
+      "Repeated sends preserve one pending invitation",
+    );
+    actor = recipient;
+    assert.equal(
+      (await channels()).status,
+      403,
+      "Invitation is not server membership",
+    );
+    const [invitation] = await list();
+    assert.equal(invitation.serverName, "Invitation test");
+    assert.equal(invitation.incoming, true);
+    assert.equal((await act(invitation.id, "cancel")).status, 403);
+    actor = outsider;
+    assert.deepEqual(await list(), []);
+    assert.equal((await act(invitation.id, "accept")).status, 403);
+    actor = owner;
+    assert.equal((await list())[0].incoming, false);
+    assert.equal((await act(invitation.id, "accept")).status, 403);
+    actor = recipient;
+    assert.equal((await act(invitation.id, "decline")).status, 200);
+    assert.equal((await channels()).status, 403);
+    await issue();
+    const [declinedReplacement] = await list();
+    actor = owner;
+    assert.equal((await act(declinedReplacement.id, "cancel")).status, 200);
+    actor = recipient;
+    assert.equal((await act(declinedReplacement.id, "accept")).status, 404);
+    await issue();
+    const [accepted] = await list();
+    assert.equal((await act(accepted.id, "accept")).status, 200);
+    assert.equal((await channels()).status, 200);
+    assert.deepEqual(await list(), []);
+    assert.equal((await act(accepted.id, "accept")).status, 404);
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.serverMembers)
+          .where(orm.eq(schema.serverMembers.userId, recipient))
+      ).length,
+      1,
+    );
+    assert.deepEqual(
+      Array.from((await issue()).invited),
+      [],
+      "Members are not invited again",
+    );
+    assert.ok(
+      events.every(({ event }) => event.type === "server-invitations-changed"),
+      "Invitation delivery never requests global access reset or call disconnect",
+    );
+    await database
+      .delete(schema.serverMembers)
+      .where(orm.eq(schema.serverMembers.userId, recipient));
+    await issue();
+    const [stale] = await list();
+    await database
+      .update(schema.servers)
+      .set({ createdBy: outsider })
+      .where(orm.eq(schema.servers.id, serverId));
+    assert.equal((await act(stale.id, "accept")).status, 410);
+    assert.deepEqual(await list(), []);
+    await database
+      .update(schema.servers)
+      .set({ createdBy: owner })
+      .where(orm.eq(schema.servers.id, serverId));
+    await database
+      .update(schema.users)
+      .set({ disabledAt: new Date() })
+      .where(orm.eq(schema.users.id, recipient));
+    assert.equal((await act(stale.id, "accept")).status, 410);
+    await database
+      .delete(schema.servers)
+      .where(orm.eq(schema.servers.id, serverId));
+    assert.equal(
+      (await database.select().from(schema.serverInvitations)).length,
+      0,
+    );
+    actor = null;
+    assert.equal((await route.GET()).status, 401);
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
+test("server voice moderation flags default off and stay isolated by member and server", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const owner = randomUUID(),
+      person = randomUUID(),
+      first = randomUUID(),
+      second = randomUUID();
+    await client.query(
+      "INSERT INTO users (id, role, name) VALUES ($1, 'owner', 'Owner'), ($2, 'member', 'Person')",
+      [owner, person],
+    );
+    await client.query(
+      "INSERT INTO servers (id, name, created_by) VALUES ($1, 'First', $3), ($2, 'Second', $3)",
+      [first, second, owner],
+    );
+    await client.query(
+      "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $3, 'owner'), ($1, $4, 'member'), ($2, $4, 'member')",
+      [first, second, owner, person],
+    );
+    let result = await client.query(
+      "SELECT voice_muted, voice_deafened FROM server_members WHERE server_id IN ($1, $2)",
+      [first, second],
+    );
+    assert.ok(
+      result.rows.every(
+        (row) => row.voice_muted === false && row.voice_deafened === false,
+      ),
+    );
+    await client.query(
+      "UPDATE server_members SET voice_deafened = true WHERE server_id = $1 AND user_id = $2",
+      [first, person],
+    );
+    result = await client.query(
+      "SELECT server_id, user_id, voice_muted, voice_deafened FROM server_members WHERE server_id IN ($1, $2)",
+      [first, second],
+    );
+    assert.equal(result.rows.filter((row) => row.voice_deafened).length, 1);
+    assert.ok(result.rows.every((row) => !row.voice_muted));
+    assert.equal(
+      result.rows.find((row) => row.voice_deafened).server_id,
+      first,
+    );
+    await client.query(
+      "DELETE FROM server_members WHERE server_id = $1 AND user_id = $2",
+      [first, person],
+    );
+    await client.query(
+      "INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, 'member')",
+      [first, person],
+    );
+    result = await client.query(
+      "SELECT voice_muted, voice_deafened FROM server_members WHERE server_id = $1 AND user_id = $2",
+      [first, person],
+    );
+    assert.deepEqual(result.rows, [
+      { voice_muted: false, voice_deafened: false },
+    ]);
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
+test("profile picture storage replaces one bounded row and cleans up when removed", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const userId = randomUUID();
+    const memberId = randomUUID(),
+      friendId = randomUUID(),
+      outsiderId = randomUUID(),
+      serverId = randomUUID();
+    const database = drizzle(client, { schema });
+    await client.query(
+      "INSERT INTO users(id,name,image) VALUES($1,'Avatar fixture','/api/avatar?v=first')",
+      [userId],
+    );
+    await database.insert(schema.users).values([
+      { id: memberId, name: "Avatar member" },
+      { id: friendId, name: "Avatar friend" },
+      { id: outsiderId, name: "Avatar outsider" },
+    ]);
+    await database
+      .insert(schema.servers)
+      .values({ id: serverId, createdBy: userId, name: "Avatar access" });
+    await database.insert(schema.serverMembers).values([
+      { serverId, userId },
+      { serverId, userId: memberId },
+    ]);
+    await database.insert(schema.friendships).values([
+      { requesterId: userId, recipientId: friendId, status: "accepted" },
+      { requesterId: userId, recipientId: outsiderId, status: "pending" },
+    ]);
+    const helpers = {};
+    vm.runInNewContext(
+      ts.transpile(
+        await readFile(
+          new URL("../server/profile-pictures.ts", import.meta.url),
+          "utf8",
+        ),
+        { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      ),
+      {
+        exports: helpers,
+        Buffer,
+        Response,
+        require: (name) =>
+          ({
+            "node:crypto": { randomUUID },
+            "drizzle-orm": orm,
+            "../db": { db: database },
+            "../db/schema": schema,
+            "./notify-user": { notifyUser: async () => {} },
+          })[name],
+      },
+    );
+    assert.deepEqual(
+      [...(await helpers.profileAudience(userId))].sort(),
+      [userId, memberId, friendId].sort(),
+      "Only self, current members and accepted friends can read pictures",
+    );
+    await database
+      .delete(schema.serverMembers)
+      .where(orm.eq(schema.serverMembers.userId, memberId));
+    await database
+      .delete(schema.friendships)
+      .where(orm.eq(schema.friendships.recipientId, friendId));
+    assert.deepEqual(
+      [...(await helpers.profileAudience(userId))],
+      [userId],
+      "Revoked relationships immediately remove picture access",
+    );
+    const data = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=",
+      "base64",
+    );
+    await client.query(
+      "INSERT INTO user_avatars(user_id,data) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
+      [userId, data],
+    );
+    await client.query(
+      "INSERT INTO user_avatars(user_id,data) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
+      [userId, data],
+    );
+    assert.equal(
+      (
+        await client.query("SELECT 1 FROM user_avatars WHERE user_id=$1", [
+          userId,
+        ])
+      ).rowCount,
+      1,
+    );
+    await client.query("UPDATE users SET image=NULL WHERE id=$1", [userId]);
+    assert.equal(
+      (
+        await client.query("SELECT 1 FROM user_avatars WHERE user_id=$1", [
+          userId,
+        ])
+      ).rowCount,
+      0,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
 test("message reactions enforce conversation access, isolate actors, aggregate live counts and clean up deleted messages", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();

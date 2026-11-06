@@ -13,6 +13,285 @@ const route = await readFile(
   new URL("../app/api/servers/[serverId]/voice-move/route.ts", import.meta.url),
   "utf8",
 );
+
+test("LiveKit moderation updates only the selected account in this server and restores independent permissions", async () => {
+  const updates = [],
+    exports = {};
+  const channels = new Proxy({}, { get: (_, key) => key });
+  const code = await readFile(
+    new URL("../server/voice-moderation.ts", import.meta.url),
+    "utf8",
+  );
+  vm.runInNewContext(
+    ts.transpile(code, {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    {
+      exports,
+      process: {
+        env: {
+          LIVEKIT_INTERNAL_URL: "ws://media.invalid",
+          LIVEKIT_API_KEY: "test-only",
+          LIVEKIT_API_SECRET: "test-only",
+        },
+      },
+      require: (name) =>
+        ({
+          "drizzle-orm": { eq: (...args) => args, and: (...args) => args },
+          "../db/schema": { channels },
+          "../app/voice-policy": {
+            voiceBlocked: (policy) =>
+              Boolean(policy.voiceMuted || policy.voiceDeafened),
+          },
+          "../db": {
+            db: {
+              select: () => ({
+                from: () => ({
+                  where: async (predicate) => {
+                    assert.deepEqual(JSON.parse(JSON.stringify(predicate)), [
+                      ["serverId", serverId],
+                      ["type", "voice_group"],
+                    ]);
+                    return [{ id: sourceId }];
+                  },
+                }),
+              }),
+            },
+          },
+          "livekit-server-sdk": {
+            TrackSource: { CAMERA: 1, SCREEN_SHARE: 3 },
+            RoomServiceClient: class {
+              async listParticipants(room) {
+                assert.equal(room, `channel-${sourceId}`);
+                return [
+                  userId,
+                  `${userId}:session`,
+                  `${userId}extra:session`,
+                  `${actor}:session`,
+                ].map((identity) => ({
+                  identity,
+                  permission: { canPublishData: true },
+                }));
+              }
+              async updateParticipant(room, identity, options) {
+                updates.push({ room, identity, ...options.permission });
+              }
+            },
+          },
+        })[name],
+    },
+  );
+  for (const policy of [
+    { voiceMuted: true },
+    { voiceDeafened: true },
+    { voiceMuted: false, voiceDeafened: false },
+  ]) {
+    updates.length = 0;
+    await exports.applyGroupModeration(serverId, userId, policy);
+    assert.deepEqual(
+      updates.map((update) => update.identity),
+      [userId, `${userId}:session`],
+    );
+    assert.ok(
+      updates.every(
+        (update) =>
+          update.canPublishData &&
+          update.canSubscribe === !policy.voiceDeafened,
+      ),
+    );
+    assert.deepEqual(
+      [...updates[0].canPublishSources],
+      policy.voiceMuted || policy.voiceDeafened ? [1, 3] : [],
+    );
+  }
+});
+
+async function moderationFixture(options = {}) {
+  const events = [],
+    exports = {};
+  const memberTable = new Proxy({}, { get: (_, key) => key });
+  const rows = [
+    {
+      userId: actor,
+      serverId,
+      role: options.owner === false ? "member" : "owner",
+      voiceMuted: false,
+      voiceDeafened: false,
+    },
+    ...(options.member === false
+      ? []
+      : [
+          {
+            userId,
+            serverId,
+            role: options.targetOwner ? "owner" : "member",
+            voiceMuted: false,
+            voiceDeafened: false,
+          },
+        ]),
+  ];
+  const matches = (predicate, row) =>
+    predicate.op === "and"
+      ? predicate.args.every((p) => matches(p, row))
+      : row[predicate.args[0]] === predicate.args[1];
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: (predicate) => {
+          const result = rows.filter((row) => matches(predicate, row));
+          return {
+            then: (resolve) => Promise.resolve(result).then(resolve),
+            for: async () => result,
+          };
+        },
+      }),
+    }),
+    update: () => ({
+      set: (patch) => ({
+        where: (predicate) => ({
+          returning: async () => {
+            events.push("write");
+            const row = rows.find((row) => matches(predicate, row));
+            Object.assign(row, patch);
+            return [
+              { voiceMuted: row.voiceMuted, voiceDeafened: row.voiceDeafened },
+            ];
+          },
+        }),
+      }),
+    }),
+    transaction: async (run) => {
+      const result = await run(db);
+      events.push("commit");
+      return result;
+    },
+  };
+  const dependencies = {
+    "drizzle-orm": Object.fromEntries(
+      ["and", "eq"].map((op) => [op, (...args) => ({ op, args })]),
+    ),
+    "../../../../../auth": {
+      auth: async () => (options.unauthorized ? null : { user: { id: actor } }),
+    },
+    "../../../../../db": { db },
+    "../../../../../db/schema": { serverMembers: memberTable },
+    "../../../../../server/rate-limit": {
+      checkRateLimit: () => ({ allowed: !options.limited }),
+    },
+    "../../../../../server/notify-user": {
+      notifyUser: async (id, payload) => events.push({ id, payload }),
+    },
+    "../../../../../server/voice-moderation": {
+      readVoicePolicies: async () =>
+        Object.fromEntries(
+          rows.map((row) => [
+            row.userId,
+            { voiceMuted: row.voiceMuted, voiceDeafened: row.voiceDeafened },
+          ]),
+        ),
+      applyGroupModeration: async () => {
+        events.push("media");
+        if (options.mediaFailure) throw new Error("offline");
+      },
+    },
+  };
+  const code = await readFile(
+    new URL(
+      "../app/api/servers/[serverId]/voice-moderation/route.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  vm.runInNewContext(
+    ts.transpile(code, {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    {
+      exports,
+      Response,
+      require: (name) => {
+        assert.ok(name in dependencies, name);
+        return dependencies[name];
+      },
+    },
+  );
+  const context = { params: Promise.resolve({ serverId }) };
+  return {
+    rows,
+    events,
+    get: () => exports.GET(null, context),
+    run: (body = { userId, voiceMuted: true }) =>
+      exports.PATCH(
+        new Request("http://local/moderation", {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        }),
+        context,
+      ),
+  };
+}
+
+test("voice moderation rejects unauthorized/non-owner changes, absent targets and invalid flags without side effects", async () => {
+  for (const [options, status] of [
+    [{ unauthorized: true }, 401],
+    [{ owner: false }, 403],
+    [{ member: false }, 403],
+    [{ targetOwner: true }, 403],
+    [{ limited: true }, 429],
+  ]) {
+    const f = await moderationFixture(options);
+    assert.equal((await f.run()).status, status);
+    assert.ok(!f.events.includes("write") && !f.events.includes("media"));
+  }
+  for (const body of [
+    { userId },
+    { userId: actor, voiceMuted: true },
+    { userId, voiceMuted: "true" },
+    { userId, voiceDeafened: 1 },
+  ]) {
+    const f = await moderationFixture();
+    assert.equal((await f.run(body)).status, 400);
+    assert.deepEqual(f.events, []);
+  }
+});
+
+test("voice moderation persists independent flags before SFU updates and sends only targeted policy events", async () => {
+  const f = await moderationFixture();
+  assert.equal((await f.get()).status, 200);
+  assert.deepEqual(await (await f.run()).json(), {
+    voiceMuted: true,
+    voiceDeafened: false,
+    mediaSynced: true,
+  });
+  assert.deepEqual(f.events.slice(0, 3), ["write", "commit", "media"]);
+  assert.deepEqual(
+    f.events.filter((event) => event.payload).map((event) => event.id),
+    [actor, userId],
+  );
+  assert.ok(
+    f.events
+      .filter((event) => event.payload)
+      .every(
+        (event) =>
+          event.payload.type === "voice-moderation-changed" &&
+          event.payload.serverId === serverId,
+      ),
+  );
+  assert.deepEqual(
+    await (await f.run({ userId, voiceDeafened: true })).json(),
+    { voiceMuted: true, voiceDeafened: true, mediaSynced: true },
+  );
+  assert.deepEqual(await (await f.run({ userId, voiceMuted: false })).json(), {
+    voiceMuted: false,
+    voiceDeafened: true,
+    mediaSynced: true,
+  });
+  const failed = await moderationFixture({ mediaFailure: true });
+  assert.equal((await (await failed.run()).json()).mediaSynced, false);
+  assert.equal(failed.rows[1].voiceMuted, true);
+});
 function fixture(options = {}) {
   const tables = Object.fromEntries(
     ["channels", "serverMembers"].map((table) => [

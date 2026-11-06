@@ -3,11 +3,225 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { cropSquare, centeredCrop } from "../app/profile-crop.ts";
+
+test("profile crops preserve square proportions, clamp controls and reach image edges", () => {
+  assert.deepEqual(cropSquare(500, 300, centeredCrop), {
+    size: 300,
+    x: 100,
+    y: 0,
+  });
+  assert.deepEqual(cropSquare(500, 300, { zoom: 2, x: 100, y: 100 }), {
+    size: 150,
+    x: 350,
+    y: 150,
+  });
+  assert.deepEqual(cropSquare(300, 500, { zoom: 0, x: -20, y: 200 }), {
+    size: 300,
+    x: 0,
+    y: 200,
+  });
+  assert.deepEqual(cropSquare(300, 300, { zoom: NaN, x: NaN, y: NaN }), {
+    size: 300,
+    x: 0,
+    y: 0,
+  });
+});
 
 const me = "11111111-1111-4111-8111-111111111111",
   other = "22222222-2222-4222-8222-222222222222",
   group = "33333333-3333-4333-8333-333333333333",
   channel = "44444444-4444-4444-8444-444444444444";
+
+const avatarPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=",
+  "base64",
+);
+async function avatarModule(path, deps) {
+  const exports = {};
+  vm.runInNewContext(
+    ts.transpile(await readFile(new URL(path, import.meta.url), "utf8"), {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    {
+      exports,
+      Buffer,
+      Response,
+      Request,
+      Uint8Array,
+      require: (name) => {
+        assert.ok(name in deps, name);
+        return deps[name];
+      },
+    },
+  );
+  return exports;
+}
+test("profile pictures bound raw PNG bytes and dimensions before storage", async () => {
+  const helpers = await avatarModule("../server/profile-pictures.ts", {
+    "node:crypto": { randomUUID: () => "version" },
+    "drizzle-orm": {},
+    "../db": {},
+    "../db/schema": {},
+    "./notify-user": {},
+  });
+  const request = (body, type = "image/png") =>
+    new Request("https://lc.test", {
+      method: "PUT",
+      headers: { "Content-Type": type },
+      body,
+    });
+  assert.equal(
+    (await helpers.readAvatar(request(avatarPng))).equals(avatarPng),
+    true,
+  );
+  assert.equal(
+    (await helpers.readAvatar(request("<svg/>", "image/svg+xml"))).status,
+    415,
+  );
+  assert.equal((await helpers.readAvatar(request("not an image"))).status, 400);
+  const hugeDimensions = Buffer.from(avatarPng);
+  hugeDimensions.writeUInt32BE(513, 16);
+  assert.equal((await helpers.readAvatar(request(hugeDimensions))).status, 400);
+  assert.equal(
+    (
+      await helpers.readAvatar(
+        request(Buffer.alloc(helpers.avatarMaxBytes + 1)),
+      )
+    ).status,
+    413,
+  );
+  assert.match(
+    helpers.avatarUrl(me),
+    new RegExp(`/api/users/${me}/avatar\\?v=`),
+  );
+});
+test("profile picture changes use the authenticated account and notify after commit", async () => {
+  let authenticated = false,
+    allowed = true;
+  const events = [];
+  const table = { id: "id", image: "image" },
+    avatarTable = { userId: "userId" };
+  const database = {
+    select: () => ({
+      from: () => ({ where: () => ({ for: async () => [{ id: me }] }) }),
+    }),
+    insert: () => ({
+      values: (value) => ({
+        onConflictDoUpdate: async () => events.push(["bytes", value.userId]),
+      }),
+    }),
+    update: () => ({
+      set: (value) => ({
+        where: async () => events.push(["image", value.image]),
+      }),
+    }),
+    delete: () => ({ where: async () => events.push(["remove"]) }),
+    transaction: async (work) => {
+      const result = await work(database);
+      events.push(["commit"]);
+      return result;
+    },
+  };
+  const route = await avatarModule("../app/api/users/me/avatar/route.ts", {
+    "drizzle-orm": {
+      eq: (_column, userId) => {
+        assert.equal(userId, me);
+      },
+    },
+    "../../../../../auth": {
+      auth: async () => (authenticated ? { user: { id: me } } : null),
+    },
+    "../../../../../db": { db: database },
+    "../../../../../db/schema": { users: table, userAvatars: avatarTable },
+    "../../../../../server/rate-limit": {
+      checkRateLimit: () => ({ allowed, retryAfterSeconds: 10 }),
+    },
+    "../../../../../server/profile-pictures": {
+      avatarUrl: (id) => `/api/users/${id}/avatar?v=test`,
+      readAvatar: async () => avatarPng,
+      notifyProfilePicture: async (id, image) =>
+        events.push(["notify", id, image]),
+    },
+  });
+  const request = () =>
+    new Request("https://lc.test/api/users/me/avatar?userId=" + other, {
+      method: "PUT",
+      body: avatarPng,
+    });
+  assert.equal((await route.PUT(request())).status, 401);
+  assert.equal(events.length, 0);
+  authenticated = true;
+  assert.equal((await route.PUT(request())).status, 200);
+  assert.deepEqual(
+    events.map((event) => event[0]),
+    ["bytes", "image", "commit", "notify"],
+  );
+  assert.equal(events[0][1], me);
+  assert.equal(events.at(-1)[1], me);
+  events.length = 0;
+  assert.equal((await route.DELETE(request())).status, 200);
+  assert.deepEqual(
+    events.map((event) => event[0]),
+    ["remove", "image", "commit", "notify"],
+  );
+  assert.equal(events[1][1], null);
+  allowed = false;
+  assert.equal((await route.PUT(request())).status, 429);
+});
+test("profile picture reads require authentication and an authorized audience", async () => {
+  let authenticated = true,
+    allowed = false,
+    present = true,
+    reads = 0;
+  const route = await avatarModule(
+    "../app/api/users/[userId]/avatar/route.ts",
+    {
+      "drizzle-orm": { eq() {} },
+      "../../../../../auth": {
+        auth: async () => (authenticated ? { user: { id: me } } : null),
+      },
+      "../../../../../db": {
+        db: {
+          select: () => ({
+            from: () => ({
+              where: async () => {
+                reads++;
+                return present ? [{ data: avatarPng }] : [];
+              },
+            }),
+          }),
+        },
+      },
+      "../../../../../db/schema": {
+        userAvatars: { data: "data", userId: "userId" },
+      },
+      "../../../../../server/profile-pictures": {
+        profileAudience: async () => new Set(allowed ? [me] : []),
+      },
+    },
+  );
+  const get = (userId = other) =>
+    route.GET(new Request("https://lc.test"), {
+      params: Promise.resolve({ userId }),
+    });
+  assert.equal((await get()).status, 403);
+  assert.equal(reads, 0);
+  allowed = true;
+  const picture = await get();
+  assert.equal(picture.status, 200);
+  assert.equal(picture.headers.get("content-type"), "image/png");
+  assert.equal(picture.headers.get("cache-control"), "private, no-store");
+  assert.equal(
+    Buffer.from(await picture.arrayBuffer()).equals(avatarPng),
+    true,
+  );
+  present = false;
+  assert.equal((await get(me)).status, 404);
+  authenticated = false;
+  assert.equal((await get()).status, 401);
+});
 async function fixture({
   authenticated = true,
   owned = false,

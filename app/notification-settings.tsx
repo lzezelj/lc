@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SettingsDestinations } from "./settings-destinations";
 import type {
   NotificationKind,
@@ -109,11 +109,13 @@ export function NotificationMuteMenu({
   preferences,
   onSave,
   onClose,
+  children,
 }: {
   target: NotificationTarget;
   preferences: NotificationPreference[];
   onSave: SavePreference;
   onClose: () => void;
+  children?: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -140,7 +142,11 @@ export function NotificationMuteMenu({
       className="notificationMuteMenu"
       role="dialog"
       aria-label={`Mute notifications for ${target.name}`}
-      style={{ left: target.x, top: target.y }}
+      style={{
+        left: target.x,
+        top: target.y,
+        maxHeight: `calc(100dvh - ${target.y + 8}px)`,
+      }}
     >
       <header>
         <strong>Mute notifications</strong>
@@ -154,6 +160,7 @@ export function NotificationMuteMenu({
         preferences={preferences}
         onSave={onSave}
       />
+      {children}
     </div>
   );
 }

@@ -10,6 +10,9 @@ import {
 } from "../../../../../db/schema";
 import { disconnectUserEverywhere } from "../../../../../server/disconnect-user";
 import { normalizeUserHandle } from "../../../../../user-handle";
+import { createServerInvitations } from "../../../../../server/server-invitations";
+import { notifyUser } from "../../../../../server/notify-user";
+import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
 
 export async function GET(
   _request: Request,
@@ -64,6 +67,8 @@ export async function GET(
       handle: users.handle,
       image: users.image,
       role: serverMembers.role,
+      voiceMuted: serverMembers.voiceMuted,
+      voiceDeafened: serverMembers.voiceDeafened,
     })
     .from(serverMembers)
     .innerJoin(users, eq(users.id, serverMembers.userId))
@@ -146,14 +151,28 @@ export async function POST(
   const session = await auth();
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (
+    !checkRateLimit(
+      `server-invitations:${session.user.id}`,
+      rateLimits.serverMutation,
+    ).allowed
+  )
+    return NextResponse.json(
+      { error: "Too many invitations. Try again shortly." },
+      { status: 429 },
+    );
   const { serverId } = await params;
-  const body = (await request.json()) as {
+  const body = (await request.json().catch(() => null)) as {
     userId?: string;
     userIds?: string[];
     handle?: string;
     mode?: "friends" | "people";
-  };
-  if (!session || (!body.userId && !body.userIds?.length && !body.handle))
+  } | null;
+  if (
+    !body ||
+    (!body.userId && !body.userIds?.length && !body.handle) ||
+    (body.handle !== undefined && typeof body.handle !== "string")
+  )
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   if (
     body.mode !== undefined &&
@@ -258,20 +277,27 @@ export async function POST(
     );
     if (userIds.some((userId) => !friendIds.has(userId)))
       return NextResponse.json(
-        { error: "Only accepted friends can be added" },
+        { error: "Only accepted friends can be invited" },
         { status: 403 },
       );
   }
-  const added = await db
-    .insert(serverMembers)
-    .values(userIds.map((userId) => ({ serverId, userId })))
-    .onConflictDoNothing()
-    .returning();
+  const result = await createServerInvitations(
+    serverId,
+    session.user.id,
+    userIds,
+  );
+  if ("error" in result)
+    return NextResponse.json(
+      { error: result.error },
+      { status: result.status },
+    );
   await Promise.allSettled(
-    added.map((member) => disconnectUserEverywhere(member.userId, [])),
+    [session.user.id, ...result.invited].map((userId) =>
+      notifyUser(userId, { type: "server-invitations-changed" }),
+    ),
   );
   return NextResponse.json(
-    { added: added.map((member) => member.userId) },
-    { status: added.length ? 201 : 200 },
+    { invited: result.invited },
+    { status: result.invited.length ? 201 : 200 },
   );
 }

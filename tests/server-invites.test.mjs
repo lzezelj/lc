@@ -6,6 +6,115 @@ import ts from "typescript";
 
 const actor = "11111111-1111-4111-8111-111111111111";
 const person = "22222222-2222-4222-8222-222222222222";
+
+test("invitation connection refresh accepts null CustomEvent detail without treating it as an acceptance", async () => {
+  const source = await readFile(
+    new URL("../app/use-server-invitations.ts", import.meta.url),
+    "utf8",
+  );
+  const exports = {},
+    effects = [],
+    listeners = new Map(),
+    joins = [];
+  let requests = 0;
+  vm.runInNewContext(
+    ts.transpile(source, {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    {
+      exports,
+      AbortController,
+      fetch: async () => {
+        requests++;
+        return Response.json([]);
+      },
+      window: {
+        addEventListener: (name, handler) => listeners.set(name, handler),
+        removeEventListener() {},
+      },
+      document: {
+        addEventListener() {},
+        removeEventListener() {},
+        visibilityState: "visible",
+      },
+      require: () => ({
+        useRef: (current) => ({ current }),
+        useState: (initial) => [initial, () => {}],
+        useCallback: (callback) => callback,
+        useEffect: (effect) => effects.push(effect),
+      }),
+    },
+  );
+  exports.useServerInvitations(actor, (...args) => joins.push(args));
+  const cleanups = effects.map((effect) => effect());
+  const changed = listeners.get("lc-server-invitations");
+  for (const detail of [null, undefined, {}])
+    assert.doesNotThrow(() => changed({ detail }));
+  assert.equal(
+    requests,
+    4,
+    "Every refresh, including null detail, reloads the inbox",
+  );
+  assert.deepEqual(joins, []);
+  changed({
+    detail: { invitationId: "invite", serverId: "server", userId: actor },
+  });
+  assert.deepEqual(joins, [["server", actor]]);
+  for (const cleanup of cleanups) cleanup?.();
+});
+
+test("server invitation actions reject invalid, unauthenticated and rate-limited requests before writes", async () => {
+  const source = await readFile(
+    new URL("../app/api/server-invitations/route.ts", import.meta.url),
+    "utf8",
+  );
+  for (const [authenticated, allowed, body, status] of [
+    [false, true, {}, 401],
+    [true, true, {}, 400],
+    [true, true, { id: person, action: "join" }, 400],
+    [true, false, { id: person, action: "accept" }, 429],
+  ]) {
+    const exports = {};
+    const dependencies = {
+      "drizzle-orm": {},
+      "../../../auth": {
+        auth: async () => (authenticated ? { user: { id: actor } } : null),
+      },
+      "../../../db": {
+        db: new Proxy(
+          {},
+          {
+            get: () => {
+              throw new Error("Database must remain untouched");
+            },
+          },
+        ),
+      },
+      "../../../db/schema": {},
+      "../../../server/notify-user": {},
+      "../../../server/rate-limit": {
+        rateLimits: { serverMutation: {} },
+        checkRateLimit: () => ({ allowed }),
+      },
+    };
+    vm.runInNewContext(
+      ts.transpile(source, { module: ts.ModuleKind.CommonJS }),
+      { exports, Response, require: (name) => dependencies[name] },
+    );
+    assert.equal(
+      (
+        await exports.PATCH(
+          new Request("http://local/invites", {
+            method: "PATCH",
+            body: JSON.stringify(body),
+          }),
+        )
+      ).status,
+      status,
+    );
+  }
+});
 async function fixture({
   authenticated = true,
   owner = true,
@@ -60,6 +169,23 @@ async function fixture({
     },
   };
   const deps = {
+    "../../../../../server/server-invitations": {
+      createServerInvitations: async (serverId, inviterId, recipientIds) => {
+        writes.push(
+          ...recipientIds.map((recipientId) => ({
+            serverId,
+            inviterId,
+            recipientId,
+          })),
+        );
+        return { invited: recipientIds };
+      },
+    },
+    "../../../../../server/notify-user": { notifyUser: async () => {} },
+    "../../../../../server/rate-limit": {
+      checkRateLimit: () => ({ allowed: true }),
+      rateLimits: { serverMutation: {} },
+    },
     "drizzle-orm": Object.fromEntries(
       [
         "and",
@@ -148,7 +274,7 @@ test("inviting people requires authentication and server ownership", async () =>
 test("people mode permits active non-friends while default friends mode requires friendship", async () => {
   const people = await fixture();
   assert.equal((await people.run()).status, 201);
-  assert.equal(people.writes[0].userId, person);
+  assert.equal(people.writes[0].recipientId, person);
   const friends = await fixture();
   assert.equal((await friends.run({ userIds: [person] })).status, 403);
   assert.deepEqual(friends.writes, []);

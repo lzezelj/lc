@@ -317,6 +317,89 @@ content; temporary failures leave it visible and retry on a later reconnect.
 Navigation aborts recovery and rejects obsolete responses. No production proxy
 timeout or infrastructure configuration was changed.
 
+### Local participant playback and profile images
+
+`useParticipantAudio` holds personal mute/deafen/volume choices per account and
+remote user for the mounted workspace session. Voice participant context menus
+expose these controls to every listener; owner-only Kick/Move remain separately
+guarded in the UI and backend. Friends' notification menus include the same
+playback controls, distinct from message/call notification mutes. Native calls
+multiply the main output gain for microphone, screen and soundboard audio by
+the participant gain. LiveKit applies it independently to each remote track and
+strips the session suffix from media identities when looking up account choices.
+Personal mute blocks only incoming audio; the muted person still hears the
+listener. Personal deafen blocks audio in both directions between those accounts,
+including soundboard and screen audio, without affecting other listeners. Native
+WebRTC serializes audio sender encoding `active` changes without stopping shared
+capture or renegotiating. LiveKit publisher subscription permissions deny audio
+tracks to the chosen recipient while retaining video permissions; these rules are
+refreshed on participant/track changes and reconnect. Permission updates run
+only after LiveKit reaches `connected`; setup/reconnection retains the latest
+choices without issuing premature subscription permission signals. Incoming gain applies both
+choices immediately. Volume, mute and deafen remain independent. Reload/account
+changes reset these temporary choices. `LocallyMuted` shows a microphone icon for
+personal mute and a headphones icon for personal deafen only in the voice-channel
+participant list, separately from participants' published self-mute/deafen status.
+Messages, conversation headers, friends and user lists do not display these icons.
+
+Migration `0023_voice_moderation` adds persistent, independent `voice_muted` and
+`voice_deafened` flags to each server membership. The authenticated
+`/api/servers/[serverId]/voice-moderation` endpoint allows members to read the
+roster and only the current server owner to change another member's flags. The
+transaction locks memberships, commits before updating media, then sends targeted
+`voice-moderation-changed` events without invalidating visible message history.
+Policies follow the member across this server's voice channels; new memberships
+default off. Ownership transfer clears restrictions on the new owner. Own mic
+preferences are retained underneath the enforced policy. Joins and signaling
+reconnections reload policy state, including after missed events.
+Channel indicators merge this saved policy over reported self state: server
+mute/deafen use red icons and cannot disappear following self-undeafen presence
+updates. Matching normal/personal icons are suppressed. Owner actions switch to
+Server unmute/undeafen when active; server-deafened users cannot trigger the
+self-undeafen action. Personal controls are centered in one row, and crowded voice
+names truncate with a full-name title while the icons retain their width.
+
+Next.js updates matching account identities in this server's LiveKit rooms and
+limits fresh tokens to camera/screen video sources when server-muted/deafened,
+blocking microphone, soundboard and screen audio. Server deafen additionally
+sets `canSubscribe: false`: SFU enforcement blocks incoming video as well as audio.
+Native peer-to-peer moderation depends on the official clients applying the
+policy; a modified peer cannot be forced to stop transmitting by a central SFU.
+Personal LiveKit deafen depends on the publisher honoring its subscription
+permissions. Existing self-hosted token-replay limitations still apply. Failed SFU
+updates return `mediaSynced: false` and show a warning; a stored choice is not
+reported as proof that an unavailable SFU applied it. Real multi-account SFU
+moderation still requires verification against the deployed media service.
+
+The shared `Avatar` renders existing profile image URLs as circles with initials
+on missing/failed images. Voice-channel avatars are 20px; message/friend/member
+avatars are 32px (26px in the compact conversation list). Message history, search and live message responses include
+`authorImage`, while current member/friend/session images take precedence in the
+workspace. A known user's explicit null picture overrides stale message metadata.
+External profile images use no-referrer and bypass the image optimizer.
+
+My account groups the profile picture before display-name controls.
+`ProfilePictureSettings` accepts PNG/JPEG/WebP up to 2 MiB and opens a local crop
+editor with drag positioning, zoom/position sliders and a live circular preview.
+Selection and cancellation do not upload. Explicit Save picture re-encodes the
+chosen square to a 256px PNG; original aspect ratio is preserved within the crop.
+PUT/DELETE `/api/users/me/avatar` derive the target from the session,
+rate-limit updates and bound raw uploads to 512 KiB before reading them in full.
+The server checks PNG signature/IHDR dimensions (maximum 512px per side), but does
+not perform independent full image decoding or re-encoding. Invalid image data
+cannot execute as SVG/HTML and falls back to initials if the browser cannot decode
+it. Migration `0022_profile_pictures` stores one bounded bytea row per user with
+replace/delete transactions, FK cleanup and a trigger clearing bytes when the
+account's image is removed, including soft account deletion. Only a versioned URL
+is stored in `users.image` and JWT/session metadata; bytes are not copied into
+messages or tokens. Auth callbacks refresh the picture from PostgreSQL.
+
+GET `/api/users/{userId}/avatar` requires self, accepted friendship or current
+shared-server membership before returning private/no-store, PNG-only/nosniff
+bytes. A targeted `profile-updated` user event updates current friend/member
+metadata and invalidates server snapshots without clearing message history or
+restarting calls. Other tabs of the same account also refresh session metadata.
+
 ### Conversation drafts
 
 `useConversationDraft` keeps unsent text and selected `File` objects in the mounted
@@ -992,7 +1075,7 @@ Channel chats and friend DMs share `MessageComposer`. Its textarea retains the
 single-line height, grows and shrinks with explicit or wrapped lines up to three
 rows, then scrolls vertically. Enter sends; Shift+Enter inserts a newline; IME
 composition does not send. A left attachment button and drop target stage up to
-four PNG/JPEG/GIF/WebP images or PDFs, at 10 MiB per file. Uploads show progress,
+20 PNG/JPEG/GIF/WebP images or PDFs, at 10 MiB per file and 40 MiB total. Uploads show progress,
 prevent duplicate sends, and retain staged files/draft on failure or rate limiting.
 Staged files are scoped to the account and destination, so navigation cannot
 attach them to another conversation.
@@ -1005,11 +1088,19 @@ uploader's user row and checks a shared 100 MiB account quota across channels
 and DMs, then atomically inserts the message, JSON metadata and private bytea
 payloads in PostgreSQL. Concurrent uploads serialize quota checks. No separate
 upload step leaves orphaned files. Only metadata travels through message history,
-bounded memory caches and signaling. `MessageAttachments` renders lazy image
-previews and a file-details row with a separate download icon. Clicking an image
+bounded memory caches and signaling. `MessageAttachments` measures available row
+width and renders at most two uncropped lazy image tiles, reserving one tile for the
+remaining-image count when necessary. That tile opens a square, three-column
+gallery viewport showing three rows with vertical scrolling for further pictures.
+Photos omit filename/download controls. The overflow placeholder suppresses
+context menus and cannot be downloaded. Right-click on an actual image opens an explicit Download
+picture menu using the authenticated download endpoint. Its portal mounts inside
+the active dialog when needed so native modal inertness does not block it;
+Escape closes just the menu. PDFs retain their details/download row.
+Clicking an image
 opens an in-app `SettingsModal` preview, preserving the mounted workspace/call,
 with Escape/backdrop/close-button dismissal, focus restoration, loading/error
-feedback and the same authenticated download link. Preview content disappears
+feedback and the download context menu. Preview/gallery content disappears
 when its message is deleted. PDFs download rather than embedding document content.
 Selected image files also show local thumbnails in the shared composer before
 uploading. Their temporary object URLs are revoked when files change or the
@@ -1141,7 +1232,31 @@ characters before showing up to 20 matching active non-demo accounts not already
 in the server. Both actions require server ownership in the backend. The default
 membership POST mode retains the accepted-friend requirement; explicit people
 mode permits active non-friends. Demo assignments remain in demo management.
-These actions add existing accounts directly and do not create public invite links.
+These actions create account-bound pending invitations, not memberships or public
+invite links. Migration `0024_server_invitations` stores one pending row per
+server/recipient, with indexed inbox/outbox lookups and cascading server/account
+cleanup. Existing memberships remain unchanged. Invite settings mark pending
+recipients; Friends → Pending invites shows server requests alongside friend
+requests, with recipient-only Accept/Decline and sender-only Cancel actions.
+Incoming server requests contribute to the pending-tab and LC request badges.
+
+`GET/PATCH /api/server-invitations` derive the actor from the session. Acceptance
+locks accounts in ID order, the server, and the invitation; revalidates active
+accounts/current ownership; inserts membership idempotently and consumes the
+request atomically. Pending invites grant no channel, message or media access.
+Decline/cancel only remove the request. Ownership changes invalidate older-owner
+invitations; a current owner can reissue them. Demo assignment keeps its existing
+server-at-creation flow. Creation and actions are rate limited.
+
+After commit, targeted `server-invitations-changed` events refresh pending lists;
+acceptance also refreshes member metadata and the recipient's server list. The
+recipient refreshes signaling authorization without navigating or leaving calls.
+Sending, declining and cancelling do not reset access or reload message histories.
+The account-scoped hook retains loaded rows during refresh, rejects obsolete
+responses/actions on account change, deduplicates acceptance events, and reloads
+on focus/reconnection. Reconnecting also revalidates the server list to recover
+acceptance on another device while offline. No existing members are converted
+back into invitations.
 In Friends, the sidebar
 control is labeled Show or hide messages and occupies the server-cog position.
 Empty friend tabs and message histories use explanatory placeholder cards.

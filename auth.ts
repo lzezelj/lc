@@ -139,6 +139,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           expiresAt: users.expiresAt,
           handle: users.handle,
           name: users.name,
+          image: users.image,
         })
         .from(users)
         .where(eq(users.id, token.userId));
@@ -155,6 +156,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         currentUser.handle ??
         (await ensureUserHandle(currentUser.id, currentUser.name));
       token.name = currentUser.name;
+      token.picture = currentUser.image;
       return token;
     },
     async session({ session, token }) {

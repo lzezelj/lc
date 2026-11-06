@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Avatar } from "./avatar";
 
 export type UserStatus = "online" | "away" | "dnd" | "invisible";
 export const statusLabels: Record<UserStatus, string> = {
@@ -27,12 +28,14 @@ export function readUserStatus(): UserStatus {
 
 export function UserStatusMenu({
   name,
+  image,
   status,
   speaking,
   onChange,
   onProfile,
 }: {
   name: string;
+  image?: string | null;
   status: UserStatus;
   speaking: boolean;
   onChange: (status: UserStatus) => void;
@@ -87,9 +90,7 @@ export function UserStatusMenu({
           setOpen((current) => !current);
         }}
       >
-        <span className="avatar" aria-hidden="true">
-          {name[0]?.toUpperCase() ?? "Y"}
-        </span>
+        <Avatar name={name} image={image} />
         <span className="profileStatusName">
           <strong title={name}>{name}</strong>
           <small className="statusText" title={statusLabels[status]}>

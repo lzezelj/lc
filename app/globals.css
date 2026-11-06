@@ -748,6 +748,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 
 .voiceParticipant {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 7px;
   padding: 3px 5px;
@@ -804,6 +805,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 
 .voiceIndicators {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 3px;
   font-size: 9px;
@@ -811,6 +813,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 }
 .voiceIndicators > span, .voiceIndicators > button { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 3px 6px; border: 1px solid #59627a; border-radius: 5px; background: #252b3b; color: var(--ink); line-height: 1; flex-shrink: 0; }
 .voiceIndicators > button:hover { background: #2b4369; border-color: #71829d; }
+.voiceIndicators > .serverModerated { color: #ff8297; border-color: #a34458; background: #3a2230; }
 .voiceIndicators svg { display: block; flex-shrink: 0; }
 
 
@@ -1428,6 +1431,9 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .invitePersonIdentity > b { font-size: 14px; color: var(--ink); }
 .invitePersonIdentity > .inviteMembership { justify-self: start; padding: 2px 7px; border: 1px solid #43566b; border-radius: 5px; background: #26384b; color: #b6cce0; font-size: 10px; }
 .inviteActions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 18px; }
+.serverInvitationIdentity { flex: 1; min-width: 0; }
+.serverInvitationIdentity b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pendingServerInvitations .friendRow { flex-wrap: wrap; }
 .inviteActions > span { color: var(--muted); font-size: 12px; }
 .inviteActions > button.primary { padding: 10px 18px; border: 1px solid #71829d; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .inviteActions > button.primary:disabled { cursor: not-allowed; border-color: #3f485c; background: #283043; color: #949eb2; }
@@ -1847,7 +1853,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .pendingImage { display: block; flex: 0 0 64px; width: 64px; height: 64px; object-fit: contain; border-radius: 6px 0 0 6px; background: #111724; }
 .pendingAttachments span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 8px; font-size: 12px; }
 .chat .pendingAttachments button { padding: 4px 8px; background: transparent; }
-.messageAttachments { display: grid; gap: 8px; max-width: min(360px, 100%); margin-top: 6px; }
+.messageAttachments { display: grid; gap: 8px; width: 100%; max-width: 100%; margin-top: 6px; }
 .messageOwn .messageAttachments { margin-left: auto; }
 .messageAttachment { min-width: 0; overflow: hidden; border: 1px solid #30394d; border-radius: 10px; background: #151b28; text-align: left; }
 .attachmentFileRow { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px; }
@@ -1858,8 +1864,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .attachmentDownload { display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px; border: 1px solid #354158; border-radius: 8px; background: #222c40; color: var(--accent); text-decoration: none; }
 .attachmentDownload:hover { background: #2b3b59; border-color: #5975a5; }
 .attachmentDownload:focus-visible, .attachmentThumbnail:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-.attachmentThumbnail { display: block; width: 100%; padding: 8px; border: 0; border-bottom: 1px solid var(--line); background: #101520; cursor: zoom-in; }
-.attachmentThumbnail img { display: block; width: 100%; height: 220px; object-fit: contain; border-radius: 4px; }
+.attachmentThumbnail { position: relative; display: block; width: 100%; padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #101520; cursor: zoom-in; }
+.attachmentThumbnail img { display: block; width: 100%; height: 180px; object-fit: contain; border-radius: 0; }
 .attachmentPreviewModal { width: min(1040px, calc(100vw - 32px)); padding: 20px; }
 .attachmentPreviewModal > header { margin-bottom: 16px; }
 .attachmentPreviewModal h2 { font-size: 18px; }
@@ -1868,6 +1874,71 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .attachmentPreviewStage img { display: block; width: 100%; height: min(64dvh, 680px); object-fit: contain; }
 .attachmentPreviewStage img[hidden] { display: none; }
 .attachmentPreviewStage p { max-width: 44ch; margin: 0; padding: 24px; color: var(--muted); font-size: 14px; text-align: center; }
+.messageAttachment { width: min(360px, 100%); }
+.messageOwn .messageAttachment { justify-self: end; }
+.messageOwn .attachmentImageRow { justify-content: flex-end; margin-left: auto; }
+.attachmentImageRow { display: flex; gap: 8px; min-width: 0; width: 100%; max-width: 620px; }
+.attachmentImageRow > .attachmentThumbnail { flex: 1 1 0; max-width: 220px; min-width: 0; }
+.attachmentOverflow > span { pointer-events: none; }
+.imageDownloadMenu { z-index: 250; }
+.imageDownloadMenu a { display: block; padding: 9px 12px; border-radius: 5px; color: var(--ink); text-decoration: none; }
+.imageDownloadMenu a:hover, .imageDownloadMenu a:focus-visible { background: #303950; }
+.friendConversationTitle { align-items: center; }
+.friendConversationTitle > .userAvatar { width: 26px; height: 26px; flex-basis: 26px; }
+.settingsModal .settingsNavigation button.settingsNavPlainDanger { border-color: transparent; background: transparent; }
+.settingsModal .settingsNavigation button.settingsNavPlainDanger:hover, .settingsModal .settingsNavigation button.settingsNavPlainDanger.active { background: #85283b22; }
+.locallyMuted { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: var(--muted); vertical-align: middle; margin-left: 4px; }
+.locallyMuted svg { display: block; }
+.localAudioIndicators { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; vertical-align: middle; margin-left: 4px; }
+.localAudioIndicators .locallyMuted { margin-left: 0; }
+.localAudioIndicators svg { width: 15px; height: 15px; }
+.voiceParticipant > .localAudioIndicators { margin-left: 0; }
+.profilePictureSettings { display: grid; gap: 8px; }
+.profilePictureSettings { padding: 20px 0; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+.profilePictureSettings h4 { margin: 0 0 10px; }
+.profilePictureRow { display: flex; align-items: center; gap: 20px; }
+.profilePictureRow > .userAvatar { width: 72px; height: 72px; flex-basis: 72px; font-size: 28px; }
+.profilePictureOptions { display: grid; gap: 8px; min-width: 0; }
+.profilePictureSettings .modalActions { justify-content: flex-start; flex-wrap: wrap; }
+.profileCropModal { width: min(560px, calc(100vw - 24px)); }
+.profileCropModal p { color: var(--muted); margin-top: 0; }
+.profileCropPreviews { display: grid; grid-template-columns: minmax(0, 256px) minmax(80px, 1fr); gap: 24px; align-items: center; }
+.profileCropStage { width: 100%; aspect-ratio: 1; height: auto; border: 1px solid #596d90; border-radius: 8px; touch-action: none; cursor: grab; background: #101520; }
+.profileCropStage:active { cursor: grabbing; }
+.profileCropResult { display: grid; gap: 12px; justify-items: center; }
+.profileCropResult canvas { width: min(100%, 120px); height: auto; border-radius: 50%; aspect-ratio: 1; background: #101520; }
+.profileCropResult small { text-align: center; color: var(--muted); }
+.profileCropControl { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.profileCropControl input { width: 100%; min-width: 0; }
+.voiceParticipantMenu { max-height: calc(100dvh - 16px); }
+.voiceParticipantMenu > .participantAudioControls { max-height: min(280px, 40dvh); overflow-y: auto; }
+.profilePictureSettings small { color: var(--muted); }
+.profilePictureSettings [role="alert"] { color: #ffb2c0; }
+.attachmentOverflow > span { position: absolute; inset: 0; display: grid; place-items: center; background: #090e1ab3; color: var(--ink); font-size: 28px; font-weight: 700; }
+.attachmentGalleryModal { width: fit-content; }
+.attachmentGalleryViewport { width: min(680px, calc(100vw - 92px), calc(100dvh - 160px)); aspect-ratio: 1; overflow-y: auto; overscroll-behavior: contain; }
+.attachmentGalleryGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.attachmentGalleryGrid .attachmentThumbnail { aspect-ratio: 1; width: 100%; }
+.attachmentGalleryGrid .attachmentThumbnail img { height: 100%; }
+.userAvatar { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%; overflow: hidden; background: #345780; color: #fff; font-size: 14px; font-weight: 600; vertical-align: middle; }
+.userAvatar img { width: 100%; height: 100%; object-fit: cover; }
+.userAvatarSmall { width: 20px; height: 20px; flex-basis: 20px; font-size: 10px; }
+.messageHeader .profileLink { display: inline-flex; align-items: center; gap: 8px; }
+.messageHeader { align-items: center; }
+.messageAuthorName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voiceParticipantIdentity .userAvatar { margin-right: 5px; }
+.voiceParticipant.speaking .userAvatar { box-shadow: 0 0 0 2px #64e6a5; }
+.friendProfileCard .userAvatar { width: 56px; height: 56px; flex-basis: 56px; font-size: 22px; }
+@media (max-width: 680px) { .profileStatusTrigger .userAvatar { width: 28px; height: 28px; flex-basis: 28px; } }
+.friendRow .friendListAvatar { background: transparent; border-radius: 50%; }
+.friendConversationTitle > .userAvatar { margin-right: 4px; }
+.participantAudioControls { display: grid; gap: 9px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+.participantAudioControls small, .participantAudioControls label { color: var(--muted); font-size: 12px; }
+.participantAudioControls label { display: grid; gap: 6px; }
+.participantAudioControls input { width: 100%; min-width: 0; }
+.participantAudioActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.messageContextMenu .participantAudioControls > button, .participantAudioControls .participantAudioActions > button { width: 100%; padding: 8px 6px; border: 1px solid #354158; border-radius: 7px; background: #222c40; color: var(--ink); text-align: center; }
+.messageContextMenu .participantAudioControls > button:hover, .participantAudioControls .participantAudioActions > button:hover { background: #303950; border-color: #71829d; }
 
 .replyingTo {
   display: flex;

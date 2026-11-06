@@ -335,6 +335,8 @@ test("native join announcement waits for a connected media path and publishes on
       peer,
       connection,
       pendingJoinAnnouncement: pending,
+      nativeAudioGate: { current: null },
+      directTransmitBlockedRef: { current: false },
       session: { user: { id: "self" } },
       publishDirectSound: publish,
       soundboard: { playJoinSound: (...args) => calls.push(args) },

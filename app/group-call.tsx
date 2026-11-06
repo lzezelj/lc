@@ -16,8 +16,18 @@ import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { StreamInfo, fullscreenVideoTile } from "./stream-info";
 import { StreamVolume } from "./stream-volume";
 import { SoundboardButton, useSoundboard } from "./soundboard";
-import { applyRemoteAudioVolume } from "./remote-audio-volume";
+import {
+  applyRemoteAudioVolume,
+  participantGain,
+  type ParticipantAudio,
+} from "./remote-audio-volume";
 import { sharedAudioCapture, sharedAudioPublish } from "./shared-audio";
+import {
+  voiceBlocked,
+  type VoicePolicy,
+  type VoicePolicies,
+} from "./voice-policy";
+import { applyVoiceSubscriptions } from "./voice-permissions";
 import {
   CameraResolutionSelection,
   cameraResolutions,
@@ -43,6 +53,7 @@ import {
 } from "./voice-activity";
 
 type TokenResponse = {
+  voicePolicies?: VoicePolicies;
   server_url?: string;
   participant_token?: string;
   error?: string;
@@ -72,6 +83,9 @@ type GroupCallDiagnostics = {
 };
 
 type GroupCallProps = {
+  serverPolicy?: VoicePolicy;
+  onVoicePolicies?: (serverId: string, policies: VoicePolicies) => void;
+  participantAudio?: Record<string, ParticipantAudio>;
   sessionId?: string;
   serverId?: string;
   serverName?: string;
@@ -219,6 +233,9 @@ function RemoteTrackView({
 }
 
 export function GroupCall({
+  serverPolicy,
+  onVoicePolicies,
+  participantAudio = {},
   sessionId,
   serverId,
   serverName,
@@ -231,7 +248,7 @@ export function GroupCall({
   microphoneId,
   cameraId,
   initialMuted = false,
-  deafened = false,
+  deafened: clientDeafened = false,
   outputVolume = 1,
   outputId = "",
   audioDeviceOptions,
@@ -250,6 +267,10 @@ export function GroupCall({
   onReconnect,
   onError,
 }: GroupCallProps) {
+  const [roomPolicies, setRoomPolicies] = useState<VoicePolicies>({});
+  const ownServerPolicy = serverPolicy ?? roomPolicies[currentUserId ?? ""];
+  const deafened = clientDeafened || Boolean(ownServerPolicy?.voiceDeafened);
+  const forcedMuted = voiceBlocked(ownServerPolicy);
   const soundboard = useSoundboard(channelId, {
     serverId,
     outputVolume: outputVolume * 100,
@@ -271,7 +292,7 @@ export function GroupCall({
   const [joinAttempted, setJoinAttempted] = useState(false);
   const [joining, setJoining] = useState(false);
   const [userMuted, setMuted] = useState(initialMuted);
-  const muted = userMuted || deafened;
+  const muted = userMuted || deafened || forcedMuted;
   const [cameraOff, setCameraOff] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
   const [screenShareOptionsOpen, setScreenShareOptionsOpen] = useState(false);
@@ -293,6 +314,56 @@ export function GroupCall({
   const [localScreenQuality, setLocalScreenQuality] = useState("");
   const [localScreenStats, setLocalScreenStats] = useState("");
   const roomRef = useRef<Room | null>(null);
+  const subscriptionPolicy = useRef({
+    choices: participantAudio,
+    policies: roomPolicies,
+    own: ownServerPolicy,
+  });
+  function refreshSubscriptions(room: Room | null = roomRef.current) {
+    if (room)
+      applyVoiceSubscriptions(
+        room,
+        subscriptionPolicy.current.choices,
+        subscriptionPolicy.current.policies,
+        subscriptionPolicy.current.own,
+      );
+  }
+  useEffect(() => {
+    subscriptionPolicy.current = {
+      choices: participantAudio,
+      policies: roomPolicies,
+      own: ownServerPolicy,
+    };
+    if (roomRef.current)
+      applyVoiceSubscriptions(
+        roomRef.current,
+        participantAudio,
+        roomPolicies,
+        ownServerPolicy,
+      );
+  }, [participantAudio, roomPolicies, ownServerPolicy]);
+  useEffect(() => {
+    const changed = (event: Event) => {
+      const data = (
+        event as CustomEvent<{
+          serverId: string;
+          userId: string;
+          voiceMuted: boolean;
+          voiceDeafened: boolean;
+        }>
+      ).detail;
+      if (data?.serverId === serverId)
+        setRoomPolicies((current) => ({
+          ...current,
+          [data.userId]: {
+            voiceMuted: data.voiceMuted,
+            voiceDeafened: data.voiceDeafened,
+          },
+        }));
+    };
+    window.addEventListener("lc-voice-moderation", changed);
+    return () => window.removeEventListener("lc-voice-moderation", changed);
+  }, [serverId]);
   const deafenedRef = useRef(deafened);
   const audibleShares = useRef(new Set<string>());
   const focusedRequest = useRef<number | null>(null);
@@ -384,7 +455,7 @@ export function GroupCall({
     return () => {
       cancelled = true;
     };
-  }, [deafened, joined]);
+  }, [deafened, joined, forcedMuted]);
 
   useEffect(() => {
     const room = roomRef.current;
@@ -696,11 +767,26 @@ export function GroupCall({
       publishDefaults: { degradationPreference: "maintain-resolution" },
     });
     roomRef.current = room;
+    if (credentials.voicePolicies) {
+      if (serverId) onVoicePolicies?.(serverId, credentials.voicePolicies);
+      setRoomPolicies(credentials.voicePolicies);
+      subscriptionPolicy.current = {
+        choices: participantAudio,
+        policies: credentials.voicePolicies,
+        own: credentials.voicePolicies[currentUserId ?? ""],
+      };
+      mutedRef.current =
+        userMuted ||
+        clientDeafened ||
+        voiceBlocked(credentials.voicePolicies[currentUserId ?? ""]);
+    }
+    refreshSubscriptions(room);
     const updatePresence = () => {
       if (roomRef.current === room) publishPresence(room, true);
     };
     room
       .on(RoomEvent.LocalTrackPublished, () => {
+        refreshSubscriptions(room);
         if (roomRef.current === room) startSpeakingMonitor(room);
       })
       .on(RoomEvent.TrackMuted, () => setRemoteMedia((current) => [...current]))
@@ -753,6 +839,7 @@ export function GroupCall({
         );
       })
       .on(RoomEvent.LocalTrackUnpublished, (publication) => {
+        refreshSubscriptions(room);
         if (roomRef.current !== room) return;
         if (publication.source !== Track.Source.ScreenShare) return;
         if (!deafenedRef.current) playVoiceSound("share-stop");
@@ -768,10 +855,12 @@ export function GroupCall({
         });
       })
       .on(RoomEvent.ParticipantConnected, (participant) => {
+        refreshSubscriptions(room);
         updatePresence();
         soundboard.playJoinSound(participant.identity.split(":")[0]);
       })
       .on(RoomEvent.ParticipantDisconnected, (participant) => {
+        refreshSubscriptions(room);
         playVoiceSound("leave");
         setRemoteMedia((current) =>
           current.filter(
@@ -786,6 +875,7 @@ export function GroupCall({
       })
       .on(RoomEvent.Reconnected, () => {
         if (roomRef.current !== room) return;
+        refreshSubscriptions(room);
         onReconnect?.();
         reconnectPending.current = false;
         setStatus("Connected through the group media server");
@@ -818,6 +908,7 @@ export function GroupCall({
     try {
       setStatus("Connecting to the SFU...");
       await room.connect(credentials.server_url, credentials.participant_token);
+      refreshSubscriptions(room);
       if (roomRef.current !== room) {
         releaseRoom(room);
         return;
@@ -888,7 +979,7 @@ export function GroupCall({
   }
 
   async function toggleAudio() {
-    if (deafened) return;
+    if (deafened || forcedMuted) return;
     const room = roomRef.current;
     if (!room) return;
     const previousMuted = mutedRef.current;
@@ -1248,6 +1339,7 @@ export function GroupCall({
                     ))))
                 ? 0
                 : outputVolume *
+                  participantGain(participantAudio, media.participantId) *
                   (media.isScreen
                     ? (streamVolumes[media.participantId] ?? 100) / 100
                     : media.isSoundboard
@@ -1320,7 +1412,7 @@ export function GroupCall({
         </button>
         <DeviceMenu
           kind="microphone"
-          actionUnavailable={deafened}
+          actionUnavailable={deafened || forcedMuted}
           extraOptions={audioDeviceOptions}
           unavailable={!joined || joining}
           disabled={muted}

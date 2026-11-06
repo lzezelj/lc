@@ -26,6 +26,98 @@ database migration, package upgrade or infrastructure change was performed.
 
 ## Architecture preserved
 
+Server invitation follow-up: owner invitations now persist as pending requests
+instead of inserting membership immediately. Pending invites includes received
+server requests (Accept/Decline) and sent requests (Cancel). The backend binds
+actions to the session, locks account/server/request state, revalidates current
+ownership and active accounts, and grants membership only on acceptance. Targeted
+events refresh the inbox and membership metadata without disconnecting calls;
+accepted access refreshes signaling authorization. Existing memberships and demo
+assignment remain unchanged. Migration `0024_server_invitations` is applied only
+to the local database; deployment's existing migration step must apply it remotely.
+Validation: formatting, 248 default tests, 12 rolled-back PostgreSQL tests,
+production build and muted desktop/mobile invitation checks passed. The real SQL
+test verifies the channel API rejects a pending recipient, acceptance grants
+membership exactly once, and outsiders/old-owner/inactive-account requests fail.
+Muted navigation preserved direct audio and the group room. The combined database
+command initially hit Windows worker-spawn EPERM and passed on the authorized
+rerun. No production changes, commits or pushes were performed.
+
+Voice-indicator follow-up: saved server moderation now overrides reported
+self-mute/deafen status, uses red replacement icons and exposes Server unmute/
+undeafen actions. Self-undeafen cannot transiently reopen forced audio or report
+false deafen state. Personal controls and icons align side by side; long voice
+names ellipsize with hover titles. Subscription permission updates wait for
+LiveKit's connected state and apply current choices after connect/reconnect,
+addressing the reported premature subscriptionPermission signal error.
+Formatting, 247 default tests, production build and focused muted desktop/mobile
+participant-audio checks passed. The broader composer run reached the pre-existing
+typing-blur assertion; the focused check covers this change independently.
+No new migration or production/infrastructure change is required. Real SFU
+connection/recovery behavior still merits verification with multiple accounts.
+
+Crop/audio-control follow-up: My account groups picture controls before the name
+form and adds explicit crop confirmation, drag/zoom/position controls and a live
+circular preview. Cancelling never uploads. Overflow picture placeholders no
+longer open a download menu; actual images retain it. Personal mute is inbound
+only; personal deafen blocks audio both ways for that pair, with distinct icons.
+Native audio encoding gates preserve capture/video; LiveKit publisher permissions
+preserve other listeners and personal video. Owner-only server mute/deafen use
+backend membership locks, separate persisted flags and targeted metadata events.
+Migration `0023_voice_moderation` is applied locally. Joins/reconnects reload flags;
+new owners have restrictions cleared. LiveKit server deafen blocks all incoming
+media (including video); server mute restricts audio publishing. Native moderation
+and personal publisher permissions retain documented modified-client limitations.
+No production changes or commits were made; preceding edits and Todo are preserved.
+
+Validation: formatting, 246 default tests, 11 rolled-back PostgreSQL tests and
+production build passed. Muted desktop/mobile composer checks passed crop
+confirmation/cancel, overflow menus, separate personal/owner controls and real
+native sender disable/restore. Muted navigation retained stable direct audio and
+the group room/audio. An initial browser run hit the previously recorded typing
+blur assertion; the standalone rerun passed both layouts. Final combined test
+commands initially hit Windows worker-spawn EPERM and passed on authorized rerun.
+Real multi-account LiveKit moderation remains unverified by these mocks and local
+peer browser checks.
+
+Photo/profile refinement: friend-list avatars are centered at 26px; destructive
+account/session navigation has transparent borders. Chat shows at most two whole
+photos plus an overflow tile and uses contain sizing in the gallery. An explicit
+Download picture context menu works inside previews/gallery modals. Local mute
+icons appear beside names without changing other users' mute state.
+My account supports changing/removing a picture; local decoding/resizing uploads
+a small PNG to a session-owned bounded endpoint. Migration `0022_profile_pictures`
+adds one private bytea row per account and removal/soft-deletion cleanup. Reads
+require self/friend/shared-server access. Targeted image updates and fresh JWT
+picture metadata preserve history and call state. The local migration is applied;
+production deployment must include it. Default/CI, database and browser
+regressions cover the new behavior. Server validation checks signature/dimensions
+without independent full decoding; that limit is recorded in ARCHITECTURE.md.
+Verification: formatting, all 239 default tests, nine PostgreSQL tests, production
+build and muted desktop/mobile composer checks passed. Call-navigation checks
+retained stable direct audio and the group room. An initial mobile run hit a
+caret-insertion assertion; the standalone rerun passed both layouts. Existing
+unrelated Todo changes and the preceding feature work were preserved.
+
+Image/playback/avatar follow-up: responsive single-row photo tiles reserve an
+overflow tile for a three-by-three vertically scrolling gallery. Image chrome
+is removed in favor of native right-click downloads; PDFs retain details and
+download icons. File count increases to 20 while keeping 10 MiB/file, 40 MiB total
+and 100 MiB/account bounds. Shared local participant controls are available in
+voice context menus for non-owners and friend notification menus; moderator
+actions remain restricted. Per-account session state applies to native audio and
+each LiveKit voice/screen/soundboard track, using the account portion of media
+identities. Shared circular avatars use existing profile images with initials
+fallback (20px in voice lists, 32px elsewhere). Message history/search/live payloads
+include author images; no database migration or deployment configuration changed.
+Default/CI and muted desktop/mobile regressions cover the new behavior.
+Formatting, 236 default tests, eight PostgreSQL tests, production build and muted
+desktop/mobile composer checks passed. Muted navigation retained direct audio
+and the group room. The first browser evaluation timed out; one concurrent
+navigation run reported missing group audio, then the standalone rerun passed.
+These tests do not establish physical listening quality or real two-account SFU
+playback. Existing Todo changes were preserved.
+
 Deployed idle-refresh follow-up: reconnection invalidated conversation caches and
 the loaders replaced visible history with an empty list before fetching, producing
 the reported skeleton flash. Added 30-second signaling protocol ping/pong checks

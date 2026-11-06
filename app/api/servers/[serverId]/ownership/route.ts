@@ -4,6 +4,8 @@ import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { serverMembers, servers, users } from "../../../../../db/schema";
 import { notifyServer } from "../../../../../server/notify-server";
+import { notifyUser } from "../../../../../server/notify-user";
+import { applyGroupModeration } from "../../../../../server/voice-moderation";
 import {
   checkRateLimit,
   rateLimitMessage,
@@ -141,7 +143,7 @@ export async function POST(
       );
     await tx
       .update(serverMembers)
-      .set({ role: "owner" })
+      .set({ role: "owner", voiceMuted: false, voiceDeafened: false })
       .where(
         and(
           eq(serverMembers.serverId, serverId),
@@ -156,5 +158,22 @@ export async function POST(
       { status: result.status },
     );
   await notifyServer(serverId);
+  const policy = { voiceMuted: false, voiceDeafened: false };
+  // A newly promoted owner must not inherit restrictions they cannot remove.
+  await applyGroupModeration(serverId, targetId, policy).catch(() => {});
+  const audience = await db
+    .select({ userId: serverMembers.userId })
+    .from(serverMembers)
+    .where(eq(serverMembers.serverId, serverId));
+  await Promise.allSettled(
+    audience.map(({ userId }) =>
+      notifyUser(userId, {
+        type: "voice-moderation-changed",
+        serverId,
+        userId: targetId,
+        ...policy,
+      }),
+    ),
+  );
   return NextResponse.json({ serverId, ownerId: result.ownerId });
 }

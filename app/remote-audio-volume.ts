@@ -9,3 +9,16 @@ export function applyRemoteAudioVolume(
   track.mediaStreamTrack.enabled = volume > 0;
   track.setVolume(volume);
 }
+export type ParticipantAudio = {
+  volume: number;
+  muted: boolean;
+  deafened?: boolean;
+};
+export function participantGain(
+  settings: Record<string, ParticipantAudio>,
+  userId?: string,
+) {
+  // LiveKit identities include a session suffix; preferences belong to accounts.
+  const value = userId ? settings[userId.split(":")[0]] : undefined;
+  return value?.muted || value?.deafened ? 0 : (value?.volume ?? 100) / 100;
+}

@@ -14,6 +14,7 @@ import {
   attachmentAccept,
   attachmentMaxBytes,
   attachmentMaxCount,
+  attachmentMaxTotalBytes,
 } from "./attachment-types";
 
 function PendingImage({ file }: { file: File }) {
@@ -138,11 +139,18 @@ export function MessageComposer({
   function addFiles(incoming: File[]) {
     if (disabled || busy || editId) return;
     if (files.length + incoming.length > attachmentMaxCount) {
-      setError("Attach up to four files per message.");
+      setError(`Attach up to ${attachmentMaxCount} files per message.`);
       return;
     }
     if (incoming.some((file) => !file.size || file.size > attachmentMaxBytes)) {
       setError("Each file must be between 1 byte and 10 MB.");
+      return;
+    }
+    if (
+      [...files, ...incoming].reduce((bytes, file) => bytes + file.size, 0) >
+      attachmentMaxTotalBytes
+    ) {
+      setError("Attach up to 40 MB in total per message.");
       return;
     }
     if (

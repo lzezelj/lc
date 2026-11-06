@@ -99,6 +99,7 @@ export async function GET(request: Request) {
         deletedAt: table.deletedAt,
         authorId: author,
         author: users.name,
+        authorImage: users.image,
         kind: userId ? directMessages.kind : sql<string>`'message'`,
         callDurationSeconds: userId
           ? directMessages.callDurationSeconds

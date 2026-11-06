@@ -171,6 +171,7 @@ test("LC badge/title count only direct activity; server mentions stay on their s
   const unreadDirectMessages = { alice: 4 };
   const base = {
     incomingFriendRequestCount: 2,
+    incomingServerInvitationCount: 0,
     unreadMessageCount: 4,
     mentionNotificationCount: 7,
     notificationInbox: { ready: false, allowed: () => true },

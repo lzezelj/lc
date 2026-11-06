@@ -15,6 +15,14 @@ import { MessageReactions, MessageReactionMenu } from "./message-reactions.js";
 import { useMessageReactions } from "./use-message-reactions.js";
 import { useTyping } from "./use-typing.js";
 import { useConversationDraft } from "./use-conversation-draft.js";
+import { Avatar } from "./avatar.js";
+import { LocallyMuted } from "./locally-muted.js";
+import { ProfilePictureSettings } from "./profile-picture-settings.js";
+import { createAudioTransmissionGate } from "./audio-transmission.js";
+import {
+  ParticipantAudioControls,
+  useParticipantAudio,
+} from "./participant-audio.js";
 import { UnreadIndicator } from "./unread-indicator.js";
 import { MentionText } from "./mention-text.js";
 import {
@@ -28,6 +36,8 @@ import { MessageAttachments } from "./message-attachments.js";
 import { ParticipantMediaIndicators } from "./participant-media-indicators.js";
 import { PanelToggle } from "./panel-toggle.js";
 import { ServerInvites } from "./server-invites.js";
+import { useServerInvitations } from "./use-server-invitations.js";
+import { PendingServerInvitations } from "./pending-server-invitations.js";
 import { SettingsNavigation } from "./settings-navigation.js";
 import { PersonalMessages } from "./personal-messages.js";
 import { AccountDeletion } from "./account-deletion.js";
@@ -72,6 +82,170 @@ const h = React.createElement;
 const wait = () => new Promise((resolve) => setTimeout(resolve, 60));
 const check = (value, message) => {
   if (!value) throw new Error(message);
+};
+
+window.verifyParticipantAudio = async () => {
+  await verifyParticipantControls();
+  await verifyParticipantIndicators();
+  return {
+    personalControls: true,
+    serverControls: true,
+    policyPrecedence: true,
+    redIndicators: true,
+    nameOverflow: true,
+  };
+};
+
+window.verifyServerInvitations = async () => {
+  await verifyInvitesAndReveal();
+  const host = document.createElement("div"),
+    original = window.fetch;
+  host.className = "friendsRoom";
+  document.body.append(host);
+  const root = createRoot(host),
+    joins = [],
+    actions = [],
+    runtimeErrors = [];
+  const recordError = (event) => runtimeErrors.push(event.message);
+  window.addEventListener("error", recordError);
+  let current, hold, release;
+  const incoming = {
+    id: "incoming",
+    serverId: "one",
+    serverName: "Incoming server",
+    inviterId: "sender",
+    inviterName: "Sender",
+    recipientId: "viewer",
+    recipientName: "Viewer",
+    incoming: true,
+  };
+  const sent = {
+    ...incoming,
+    id: "sent",
+    serverId: "two",
+    serverName: "Sent server",
+    incoming: false,
+  };
+  let rows = [incoming, sent];
+  window.fetch = async (url, options) => {
+    check(
+      url === "/api/server-invitations",
+      "Pending server invites use their authenticated endpoint",
+    );
+    if (options?.method === "PATCH") {
+      const body = JSON.parse(options.body);
+      actions.push(body);
+      rows = rows.filter((row) => row.id !== body.id);
+      return Response.json({ accepted: body.action === "accept" });
+    }
+    if (hold)
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+    return Response.json(rows);
+  };
+  function Fixture({ account = "viewer" }) {
+    const invitations = useServerInvitations(account, (serverId, userId) =>
+      joins.push({ serverId, userId }),
+    );
+    React.useLayoutEffect(() => {
+      current = invitations;
+    });
+    return h(PendingServerInvitations, { invitations });
+  }
+  const button = (text) =>
+    [...host.querySelectorAll("button")].find(
+      (item) => item.textContent === text,
+    );
+  try {
+    flushSync(() => root.render(h(Fixture, {})));
+    await wait();
+    check(
+      host.textContent.includes("Incoming server") &&
+        host.textContent.includes("Sent server") &&
+        button("Accept") &&
+        button("Decline") &&
+        button("Cancel invite"),
+      "Pending list separates recipient actions from sender cancellation",
+    );
+    button("Accept").click();
+    await wait();
+    check(
+      joins.length === 1 &&
+        joins[0].serverId === "one" &&
+        joins[0].userId === "viewer" &&
+        !host.textContent.includes("Incoming server"),
+      "Acceptance refreshes membership once and removes the pending invitation",
+    );
+    window.dispatchEvent(
+      new CustomEvent("lc-server-invitations", {
+        detail: { invitationId: "incoming", serverId: "one", userId: "viewer" },
+      }),
+    );
+    await wait();
+    check(
+      joins.length === 1,
+      "An echoed acceptance cannot refresh access twice",
+    );
+    button("Cancel invite").click();
+    await wait();
+    check(
+      actions.at(-1).action === "cancel" && joins.length === 1,
+      "Sender cancellation does not grant access",
+    );
+    rows = [incoming];
+    await current.refresh();
+    await wait();
+    button("Decline").click();
+    await wait();
+    check(
+      actions.at(-1).action === "decline" &&
+        joins.length === 1 &&
+        !host.querySelector(".friendRow"),
+      "Declining clears the invitation without joining",
+    );
+    rows = [incoming];
+    await current.refresh();
+    await wait();
+    hold = true;
+    window.dispatchEvent(new CustomEvent("lc-server-invitations"));
+    await wait();
+    check(
+      runtimeErrors.length === 0,
+      "Connection refresh with null event detail cannot throw a runtime error",
+    );
+    check(
+      host.textContent.includes("Incoming server"),
+      "Background refresh retains the loaded invitation list",
+    );
+    hold = false;
+    release();
+    await wait();
+    hold = true;
+    flushSync(() => root.render(h(Fixture, { account: "someone-else" })));
+    await wait();
+    check(
+      !host.textContent.includes("Incoming server"),
+      "Pending invitations never leak across accounts",
+    );
+    hold = false;
+    rows = [];
+    release();
+    await wait();
+    return {
+      send: true,
+      accept: true,
+      decline: true,
+      cancel: true,
+      backgroundRefresh: true,
+      accountIsolation: true,
+    };
+  } finally {
+    root.unmount();
+    host.remove();
+    window.removeEventListener("error", recordError);
+    window.fetch = original;
+  }
 };
 
 window.verifyMessageComposer = async () => {
@@ -264,6 +438,10 @@ window.verifyMessageComposer = async () => {
     );
     await verifyEmojiReactions();
     await verifyConversationDrafts();
+    await verifyParticipantControls();
+    await verifyParticipantIndicators();
+    await verifyNativeAudioTransmission();
+    await verifyProfilePictures();
     await verifyTypingIndicators();
     return {
       growShrink: true,
@@ -272,6 +450,8 @@ window.verifyMessageComposer = async () => {
       liveReactionUpdates: true,
       typingIndicators: true,
       conversationDrafts: true,
+      participantPlayback: true,
+      profilePictures: true,
       wrappedText: true,
       threeRowScroll: true,
       enter: true,
@@ -400,6 +580,432 @@ async function verifyTypingIndicators() {
     root.unmount();
     host.remove();
     window.setTimeout = originalTimeout;
+  }
+}
+
+async function verifyProfilePictures() {
+  const host = document.createElement("div"),
+    originalFetch = window.fetch;
+  document.body.append(host);
+  const root = createRoot(host),
+    requests = [];
+  window.fetch = async (url, options) => {
+    check(
+      url === "/api/users/me/avatar",
+      "Profile picture uses its authenticated self endpoint",
+    );
+    requests.push(options);
+    return Response.json({
+      image: options.method === "PUT" ? "/api/users/test/avatar?v=new" : null,
+    });
+  };
+  function Fixture() {
+    const [image, setImage] = useState("/old-picture");
+    return h(
+      SettingsModal,
+      {
+        title: "User settings",
+        onClose() {},
+        navigation: h(SettingsNavigation, {
+          account: true,
+          selected: "account",
+          onSelect() {},
+        }),
+      },
+      h(ProfilePictureSettings, {
+        image,
+        onSaved: async (next) => setImage(next),
+      }),
+    );
+  }
+  async function choose(file) {
+    const input = document.querySelector(
+      '[aria-label="Choose profile picture"]',
+    );
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const until = performance.now() + 3000;
+    do {
+      await wait();
+    } while (
+      document.querySelector(".profileCropModal button.primary")?.disabled &&
+      performance.now() < until
+    );
+  }
+  try {
+    flushSync(() => root.render(h(Fixture)));
+    const navigation = document.querySelector(".settingsNavigation");
+    for (const button of navigation.querySelectorAll("button"))
+      if (["Delete account", "Log out"].includes(button.textContent))
+        check(
+          getComputedStyle(button).borderTopColor === "rgba(0, 0, 0, 0)",
+          "Destructive settings navigation has no visible border",
+        );
+    const canvas = document.createElement("canvas");
+    canvas.width = 500;
+    canvas.height = 300;
+    canvas.getContext("2d").fillRect(0, 0, 500, 300);
+    const blob = await new Promise((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    await choose(new File([blob], "profile.png", { type: "image/png" }));
+    check(
+      requests.length === 0,
+      "Choosing a picture waits for crop confirmation",
+    );
+    const preview = document.querySelector(
+      '[aria-label="New profile picture preview"]',
+    );
+    check(
+      preview && getComputedStyle(preview).borderRadius === "50%",
+      "Crop editor shows the circular result before saving",
+    );
+    const zoom = document.querySelector('[aria-label="Zoom"]');
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(zoom, "2");
+    zoom.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    check(zoom.value === "2", "User controls the crop zoom");
+    document.querySelector(".profileCropModal button.primary").click();
+    const until = performance.now() + 3000;
+    while (
+      document.querySelector(".profileCropModal") &&
+      performance.now() < until
+    )
+      await wait();
+    check(
+      requests.length === 1 &&
+        requests[0].method === "PUT" &&
+        requests[0].body.type === "image/png",
+      "Picture picker uploads a prepared PNG",
+    );
+    const image = await createImageBitmap(requests[0].body);
+    check(
+      image.width === 256 && image.height === 256,
+      "Profile picture preparation saves the selected square crop",
+    );
+    image.close();
+    check(
+      document.querySelector('[role="status"]')?.textContent ===
+        "Profile picture changed.",
+      "Picture change shows success after saving",
+    );
+    await choose(new File([blob], "cancel.png", { type: "image/png" }));
+    [...document.querySelectorAll(".profileCropModal button")]
+      .find((button) => button.textContent === "Cancel")
+      .click();
+    await wait();
+    check(
+      requests.length === 1 && !document.querySelector(".profileCropModal"),
+      "Cancelling a crop preserves the current picture without uploading",
+    );
+    [...document.querySelectorAll("button")]
+      .find((button) => button.textContent === "Remove picture")
+      .click();
+    await wait();
+    check(
+      requests.at(-1).method === "DELETE" &&
+        [...document.querySelectorAll("button")].find(
+          (button) => button.textContent === "Remove picture",
+        ).disabled,
+      "Picture can be removed from My account",
+    );
+    const count = requests.length;
+    await choose(
+      new File(["<svg/>"], "not-allowed.svg", { type: "image/svg+xml" }),
+    );
+    check(
+      requests.length === count && document.querySelector('[role="alert"]'),
+      "Unsupported profile pictures are rejected before upload",
+    );
+  } finally {
+    root.unmount();
+    host.remove();
+    window.fetch = originalFetch;
+  }
+}
+
+async function verifyParticipantControls() {
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;top:20px;left:20px;width:260px";
+  document.body.append(host);
+  const root = createRoot(host);
+  let settings;
+  const image =
+    "data:image/svg+xml," +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="blue"/></svg>',
+    );
+  function Fixture({ account = "owner", person = "alice" }) {
+    const playback = useParticipantAudio(account);
+    React.useLayoutEffect(() => {
+      settings = playback;
+    });
+    return h(
+      "div",
+      null,
+      h(Avatar, { name: "Alice", image }),
+      h(Avatar, { name: "Alice", small: true }),
+      h(LocallyMuted, {
+        muted: playback.values[person]?.muted,
+        deafened: playback.values[person]?.deafened,
+      }),
+      h(ParticipantAudioControls, {
+        value: playback.values[person],
+        onChange: (patch) => playback.change(person, patch),
+      }),
+    );
+  }
+  const visit = (person = "alice", account = "owner") =>
+    flushSync(() => root.render(h(Fixture, { account, person })));
+  try {
+    visit();
+    await Promise.race([
+      host.querySelector("img").decode(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Avatar decode timed out")), 3000),
+      ),
+    ]);
+    const avatars = host.querySelectorAll(".userAvatar");
+    check(
+      getComputedStyle(avatars[0]).borderRadius === "50%" &&
+        avatars[1].clientWidth < avatars[0].clientWidth,
+      "Profile pictures are circular with smaller voice-channel avatars",
+    );
+    host.querySelector("img").dispatchEvent(new Event("error"));
+    await wait();
+    check(
+      !host.querySelector("img") && avatars[0].textContent === "A",
+      "Failed profile images fall back to initials",
+    );
+    const slider = host.querySelector("input");
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(slider, "35");
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    check(
+      settings.values.alice.volume === 35,
+      "Person volume changes independently",
+    );
+    const personalButtons = [
+      ...host.querySelectorAll(".participantAudioActions > button"),
+    ];
+    check(
+      personalButtons.length === 2 &&
+        Math.abs(
+          personalButtons[0].getBoundingClientRect().top -
+            personalButtons[1].getBoundingClientRect().top,
+        ) < 1 &&
+        personalButtons.every(
+          (button) => getComputedStyle(button).textAlign === "center",
+        ),
+      "Personal mute/deafen controls are centered side by side",
+    );
+    host.querySelector("button").click();
+    await wait();
+    check(
+      settings.values.alice.muted && settings.values.alice.volume === 35,
+      "Muting preserves the selected person volume",
+    );
+    check(
+      host.querySelector('[aria-label="Muted for you"]'),
+      "Local mute displays its status icon",
+    );
+    visit("bob");
+    check(
+      host.querySelector("input").value === "100" &&
+        host.querySelector('[aria-checked="false"]'),
+      "Other people keep their own volume and mute state",
+    );
+    visit();
+    check(
+      host.querySelector("input").value === "35" &&
+        host.querySelector('[aria-checked="true"]'),
+      "Person settings survive navigation",
+    );
+    host.querySelector("button").click();
+    await wait();
+    check(
+      !settings.values.alice.muted && settings.values.alice.volume === 35,
+      "Unmute restores the chosen volume",
+    );
+    check(
+      !host.querySelector('[aria-label="Muted for you"]'),
+      "Unmuting removes the status icon",
+    );
+    host.querySelectorAll("button")[1].click();
+    await wait();
+    check(
+      settings.values.alice.deafened &&
+        !settings.values.alice.muted &&
+        host.querySelector('[aria-label="Deafened between you"]'),
+      "Personal deafen is separate from mute and displays the headphones icon",
+    );
+    host.querySelectorAll("button")[1].click();
+    await wait();
+    visit("alice", "someone-else");
+    check(
+      host.querySelector("input").value === "100",
+      "Playback settings cannot leak across accounts",
+    );
+    flushSync(() =>
+      root.render(
+        h(VoiceParticipantMenu, {
+          x: 20,
+          y: 20,
+          channels: [],
+          canModerate: false,
+          audio: { volume: 35, muted: true },
+          onAudioChange() {},
+          onClose() {},
+          onKick() {},
+          onMove() {},
+        }),
+      ),
+    );
+    check(
+      host.querySelector('[aria-label="Person volume"]') &&
+        ![...host.querySelectorAll("button")].some(
+          (button) =>
+            button.textContent === "Kick" ||
+            button.textContent.includes("Move") ||
+            button.textContent.includes("Server mute") ||
+            button.textContent.includes("Server deafen"),
+        ),
+      "Non-owners can adjust local playback without moderation actions",
+    );
+    const changes = [];
+    flushSync(() =>
+      root.render(
+        h(VoiceParticipantMenu, {
+          x: 20,
+          y: 20,
+          channels: [],
+          canModerate: true,
+          onClose() {},
+          onKick() {},
+          onMove() {},
+          onServerChange: async (patch) => {
+            changes.push(patch);
+          },
+        }),
+      ),
+    );
+    [...host.querySelectorAll("button")]
+      .find((button) => button.textContent.includes("Server mute"))
+      .click();
+    await wait();
+    [...host.querySelectorAll("button")]
+      .find((button) => button.textContent.includes("Server deafen"))
+      .click();
+    await wait();
+    check(
+      changes.length === 2 && changes[0].voiceMuted && changes[1].voiceDeafened,
+      "Owner-only server controls send distinct mute and deafen changes",
+    );
+    flushSync(() =>
+      root.render(
+        h(VoiceParticipantMenu, {
+          x: 20,
+          y: 20,
+          channels: [],
+          canModerate: true,
+          serverPolicy: { voiceMuted: true, voiceDeafened: true },
+          onClose() {},
+          onKick() {},
+          onMove() {},
+          onServerChange: async (patch) => {
+            changes.push(patch);
+          },
+        }),
+      ),
+    );
+    [...host.querySelectorAll("button")]
+      .find((button) => button.textContent === "Server unmute")
+      .click();
+    await wait();
+    [...host.querySelectorAll("button")]
+      .find((button) => button.textContent === "Server undeafen")
+      .click();
+    await wait();
+    check(
+      changes[2].voiceMuted === false && changes[3].voiceDeafened === false,
+      "Active server restrictions expose explicit unmute and undeafen actions",
+    );
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+}
+
+async function verifyNativeAudioTransmission() {
+  // Generated media has no speaker connection; this browser check is silent.
+  const context = new AudioContext(),
+    source = context.createOscillator(),
+    destination = context.createMediaStreamDestination();
+  const sender = new RTCPeerConnection(),
+    receiver = new RTCPeerConnection();
+  const candidates = [];
+  sender.onicecandidate = (event) => {
+    if (event.candidate) candidates.push([receiver, event.candidate]);
+  };
+  receiver.onicecandidate = (event) => {
+    if (event.candidate) candidates.push([sender, event.candidate]);
+  };
+  source.connect(destination);
+  source.start();
+  const track = destination.stream.getAudioTracks()[0];
+  sender.addTrack(track, destination.stream);
+  const errors = [],
+    gate = createAudioTransmissionGate(sender, () => errors.push("failed"));
+  try {
+    await sender.setLocalDescription(await sender.createOffer());
+    await receiver.setRemoteDescription(sender.localDescription);
+    await receiver.setLocalDescription(await receiver.createAnswer());
+    await sender.setRemoteDescription(receiver.localDescription);
+    const until = performance.now() + 8000;
+    while (
+      sender.connectionState !== "connected" &&
+      performance.now() < until
+    ) {
+      for (const [peer, candidate] of candidates.splice(0))
+        await peer.addIceCandidate(candidate);
+      await wait();
+    }
+    check(
+      sender.connectionState === "connected",
+      "Audio transmission test negotiates a real browser peer connection",
+    );
+    await gate.update(true);
+    check(
+      sender
+        .getSenders()[0]
+        .getParameters()
+        .encodings.every((encoding) => !encoding.active) &&
+        track.enabled &&
+        !errors.length,
+      "Personal deafen blocks native outgoing audio without stopping shared capture",
+    );
+    await gate.update(false);
+    check(
+      sender
+        .getSenders()[0]
+        .getParameters()
+        .encodings.every((encoding) => encoding.active) && !errors.length,
+      "Undeafen restores the native sender without renegotiating",
+    );
+  } finally {
+    sender.close();
+    receiver.close();
+    source.stop();
+    track.stop();
+    await context.close();
   }
 }
 
@@ -873,13 +1479,13 @@ window.verifyAttachmentPreview = async () => {
   const context = canvas.getContext("2d");
   context.fillStyle = "#78a4ff";
   context.fillRect(0, 0, 1200, 800);
-  const render = (deleted = false) =>
+  const render = (deleted = false, attachments = [file, pdf]) =>
     flushSync(() =>
       root.render(
         h(
           "article",
           { className: "messageOwn" },
-          h(MessageAttachments, { files: [file, pdf], deleted }),
+          h(MessageAttachments, { files: attachments, deleted }),
         ),
       ),
     );
@@ -899,8 +1505,8 @@ window.verifyAttachmentPreview = async () => {
   try {
     render();
     check(
-      container.querySelectorAll(".attachmentDownload").length === 2,
-      "Each file needs a separate download icon",
+      container.querySelectorAll(".attachmentDownload").length === 1,
+      "PDF retains its download icon while images have no file chrome",
     );
     check(
       container.querySelectorAll(".attachmentThumbnail").length === 1,
@@ -913,17 +1519,17 @@ window.verifyAttachmentPreview = async () => {
     const download = container.querySelector(".attachmentDownload");
     check(
       download.getAttribute("href") ===
-        "/api/attachments/image-test?download=1" &&
-        download.getAttribute("download") === file.name,
+        "/api/attachments/pdf-test?download=1" &&
+        download.getAttribute("download") === pdf.name,
       "Download does not use authenticated endpoint/original filename",
     );
     check(
-      download.getAttribute("aria-label") === `Download ${file.name}` &&
+      download.getAttribute("aria-label") === `Download ${pdf.name}` &&
         download.querySelector("svg"),
       "Download icon needs an accessible label",
     );
     check(
-      container.textContent.includes("500 KB") &&
+      !container.textContent.includes(file.name) &&
         container.textContent.includes("1.2 MB"),
       "Attachment size formatting is wrong",
     );
@@ -995,6 +1601,113 @@ window.verifyAttachmentPreview = async () => {
       !modal() && !container.querySelector(".messageAttachments"),
       "Deleted message retained its preview",
     );
+    const pictures = Array.from({ length: 12 }, (_, index) => ({
+      ...file,
+      id: `picture-${index}`,
+      name: `Photo ${index}.png`,
+    }));
+    render(false, pictures);
+    await wait();
+    const overflow = container.querySelector(".attachmentOverflow");
+    check(
+      overflow &&
+        container.querySelectorAll(".attachmentImageRow").length === 1,
+      "Pictures share one row with an overflow tile",
+    );
+    const tiles = [
+      ...container.querySelectorAll(".attachmentImageRow > button"),
+    ];
+    check(
+      tiles.filter((tile) => !tile.classList.contains("attachmentOverflow"))
+        .length <= 2,
+      "Inline row contains at most two pictures plus its overflow tile",
+    );
+    check(
+      getComputedStyle(tiles[0].querySelector("img")).objectFit === "contain",
+      "Inline images retain their full uncropped content",
+    );
+    check(
+      tiles.every(
+        (tile) =>
+          Math.abs(
+            tile.getBoundingClientRect().top -
+              tiles[0].getBoundingClientRect().top,
+          ) < 1,
+      ),
+      "Inline pictures do not wrap into extra rows",
+    );
+    const overflowContext = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    });
+    overflow.dispatchEvent(overflowContext);
+    await wait();
+    check(
+      overflowContext.defaultPrevented &&
+        !document.querySelector(".imageDownloadMenu"),
+      "Overflow placeholder has no download context menu",
+    );
+    overflow.click();
+    await wait();
+    const gallery = document.querySelector(".attachmentGalleryModal");
+    const viewport = gallery.querySelector(".attachmentGalleryViewport");
+    check(
+      gallery.open &&
+        gallery.querySelectorAll(".attachmentThumbnail").length === 12,
+      "Overflow opens every picture in the gallery",
+    );
+    check(
+      getComputedStyle(
+        gallery.querySelector(".attachmentGalleryGrid"),
+      ).gridTemplateColumns.split(" ").length === 3 &&
+        viewport.scrollHeight > viewport.clientHeight,
+      "Gallery uses three columns and vertical overflow after three rows",
+    );
+    const galleryImage = gallery.querySelector("img");
+    const contextEvent = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    });
+    galleryImage.dispatchEvent(contextEvent);
+    check(
+      contextEvent.defaultPrevented,
+      "Picture uses the app's explicit download context menu",
+    );
+    await wait();
+    const downloadAction = gallery.querySelector(
+      '.imageDownloadMenu [role="menuitem"]',
+    );
+    check(
+      downloadAction?.textContent === "Download picture" &&
+        downloadAction.getAttribute("href").endsWith("?download=1"),
+      "Gallery menu offers authenticated picture download inside the modal",
+    );
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    check(
+      gallery.open && !gallery.querySelector(".imageDownloadMenu"),
+      "Escape dismisses the download menu while retaining the gallery",
+    );
+    check(
+      getComputedStyle(galleryImage).objectFit === "contain",
+      "Gallery preserves whole pictures",
+    );
+    galleryImage.closest("button").click();
+    await wait();
+    check(
+      modal()?.open && gallery.open,
+      "Gallery pictures open the full preview without losing the gallery",
+    );
+    modal().querySelector('[aria-label="Close image preview"]').click();
+    await wait();
+    gallery.querySelector('[aria-label="Close pictures"]').click();
+    await wait();
     return {
       fileDetails: true,
       separateDownload: true,
@@ -1005,6 +1718,7 @@ window.verifyAttachmentPreview = async () => {
       cancel: true,
       backdrop: true,
       deletion: true,
+      imageGallery: true,
     };
   } finally {
     root.unmount();
@@ -4006,7 +4720,7 @@ async function verifyInvitesAndReveal() {
     if (String(url).endsWith("/servers/invite-test/members")) {
       const body = JSON.parse(options.body);
       invitations.push(body);
-      return Response.json({ added: body.userIds });
+      return Response.json({ invited: body.userIds });
     }
     return originalFetch(url, options);
   };
@@ -4032,7 +4746,7 @@ async function verifyInvitesAndReveal() {
         mode: "friends",
         friends: people,
         memberIds: ["z"],
-        onAdded: (value) => added.push(value),
+        onSent: () => added.push(true),
       }),
     );
     await wait();
@@ -4074,7 +4788,11 @@ async function verifyInvitesAndReveal() {
     container.querySelector("button.primary").click();
     await wait();
     check(
-      invitations[0].mode === "friends" && added[0][0].id === "a",
+      invitations[0].mode === "friends" &&
+        added[0] === true &&
+        container.textContent.includes(
+          "Recipients can accept in Pending invites",
+        ),
       "Friend invitations must use the friend-only API mode",
     );
     root.render(
@@ -4084,7 +4802,7 @@ async function verifyInvitesAndReveal() {
         mode: "people",
         friends: people,
         memberIds: [],
-        onAdded: (value) => added.push(value),
+        onSent: () => added.push(true),
       }),
     );
     await wait();
@@ -4271,6 +4989,72 @@ async function verifyParticipantIndicators() {
     !container.querySelector('[aria-label="Deafened"]') &&
       !container.querySelector('[aria-label="Muted"]'),
     "Own undeafen must clear indicators even before the signaling echo catches up",
+  );
+  for (const selfState of [undefined, { muted: false, deafened: false }]) {
+    flushSync(() =>
+      root.render(
+        h(ParticipantMediaIndicators, {
+          participant,
+          selfState,
+          serverPolicy: { voiceMuted: false, voiceDeafened: true },
+          onCamera() {},
+          onWatch() {},
+        }),
+      ),
+    );
+    check(
+      container.querySelector('[aria-label="Server deafened"]') &&
+        container.querySelector('[aria-label="Server muted"]') &&
+        !container.querySelector('[aria-label="Deafened"]') &&
+        !container.querySelector('[aria-label="Muted"]'),
+      "Server policy overrides self-undeafen reports for owners and the affected user",
+    );
+    check(
+      [...container.querySelectorAll(".serverModerated")].every(
+        (icon) => getComputedStyle(icon).color === "rgb(255, 130, 151)",
+      ),
+      "Server status icons use red",
+    );
+  }
+  const name =
+    "A very long participant name that must not overlap the audio controls";
+  flushSync(() =>
+    root.render(
+      h(
+        "span",
+        { className: "voiceParticipant", style: { width: "260px" } },
+        h(
+          "button",
+          { className: "voiceParticipantIdentity" },
+          h(Avatar, { name, small: true }),
+          h("b", { title: name }, name),
+        ),
+        h(LocallyMuted, { muted: true, deafened: true }),
+        h(ParticipantMediaIndicators, {
+          participant: { ...participant, name, muted: true, deafened: true },
+          onCamera() {},
+          onWatch() {},
+        }),
+      ),
+    ),
+  );
+  const row = container.querySelector(".voiceParticipant"),
+    label = row.querySelector("b"),
+    icons = row.querySelector(".localAudioIndicators");
+  check(
+    label.title === name &&
+      label.scrollWidth > label.clientWidth &&
+      getComputedStyle(label).textOverflow === "ellipsis" &&
+      row.scrollWidth <= row.clientWidth + 1,
+    "Crowded participant names truncate with a full-name hover title and no overlapping icons",
+  );
+  const centers = [...icons.children].map((icon) => {
+    const box = icon.getBoundingClientRect();
+    return box.top + box.height / 2;
+  });
+  check(
+    centers.length === 2 && Math.abs(centers[0] - centers[1]) < 1,
+    "Personal mute/deafen icons share one centered row",
   );
   root.unmount();
   container.remove();

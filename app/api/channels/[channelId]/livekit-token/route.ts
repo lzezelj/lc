@@ -1,5 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import { AccessToken } from "livekit-server-sdk";
+import { AccessToken, TrackSource } from "livekit-server-sdk";
+import { readVoicePolicies } from "../../../../../server/voice-moderation";
+import { voiceBlocked } from "../../../../voice-policy";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
@@ -110,12 +112,24 @@ export async function POST(
     name: session.user.name ?? "LC user",
     ttl: "30s",
   });
-  token.addGrant({ roomJoin: true, room: `channel-${channel.id}` });
+  const voicePolicies = await readVoicePolicies(channel.serverId);
+  token.addGrant({
+    roomJoin: true,
+    room: `channel-${channel.id}`,
+    canSubscribe: !voicePolicies[session.user.id]?.voiceDeafened,
+    ...(voiceBlocked(voicePolicies[session.user.id])
+      ? {
+          canPublish: true,
+          canPublishSources: [TrackSource.CAMERA, TrackSource.SCREEN_SHARE],
+        }
+      : {}),
+  });
 
   return NextResponse.json(
     {
       server_url: serverUrl,
       participant_token: await token.toJwt(),
+      voicePolicies,
     },
     { status: 201 },
   );

@@ -4,6 +4,130 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { sharedAudioCapture, sharedAudioPublish } from "../app/shared-audio.ts";
+import { participantGain } from "../app/remote-audio-volume.ts";
+import { voiceBlocked } from "../app/voice-policy.ts";
+import { applyVoiceSubscriptions } from "../app/voice-permissions.ts";
+import { createAudioTransmissionGate } from "../app/audio-transmission.ts";
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("personal mute leaves publishing alone; personal and server deafen deny only audio to the relevant recipients", () => {
+  const calls = [];
+  const room = {
+    state: "connected",
+    localParticipant: {
+      trackPublications: new Map([
+        ["audio", { kind: "audio", trackSid: "mic" }],
+        ["video", { kind: "video", trackSid: "camera" }],
+      ]),
+      setTrackSubscriptionPermissions: (...args) => calls.push(args),
+    },
+    remoteParticipants: new Map(
+      ["alice:one", "alice:two", "bob:one"].map((identity) => [
+        identity,
+        { identity },
+      ]),
+    ),
+  };
+  applyVoiceSubscriptions(room, { alice: { volume: 50, muted: true } }, {});
+  assert.deepEqual(calls.pop(), [true]);
+  for (const state of [
+    "disconnected",
+    "connecting",
+    "reconnecting",
+    "signalReconnecting",
+  ]) {
+    room.state = state;
+    applyVoiceSubscriptions(room, { alice: { deafened: true } }, {});
+    assert.equal(
+      calls.length,
+      0,
+      "No permission signals before the room is connected",
+    );
+  }
+  room.state = "connected";
+  for (const [choices, policies] of [
+    [{ alice: { deafened: true } }, {}],
+    [{}, { alice: { voiceDeafened: true } }],
+  ]) {
+    applyVoiceSubscriptions(room, choices, policies);
+    const [all, rules] = calls.pop();
+    assert.equal(all, false);
+    assert.deepEqual(
+      rules.slice(0, 2).map((rule) => rule.allowedTrackSids),
+      [["camera"], ["camera"]],
+    );
+    assert.deepEqual(rules[2], {
+      participantIdentity: "bob:one",
+      allowAll: true,
+    });
+  }
+  for (const ownPolicy of [{ voiceMuted: true }, { voiceDeafened: true }]) {
+    applyVoiceSubscriptions(room, {}, {}, ownPolicy);
+    assert.ok(
+      calls
+        .pop()[1]
+        .every(
+          (rule) => !rule.allowAll && rule.allowedTrackSids[0] === "camera",
+        ),
+    );
+  }
+  applyVoiceSubscriptions(room, {}, {});
+  assert.deepEqual(calls.pop(), [true]);
+  assert.equal(
+    participantGain(
+      { alice: { volume: 80, muted: false, deafened: true } },
+      "alice:one",
+    ),
+    0,
+  );
+});
+
+test("native audio transmission serializes rapid deafen changes without touching video or capture", async () => {
+  let release;
+  let parameters = { encodings: [{ active: true }] };
+  const updates = [],
+    track = { enabled: true };
+  const peer = {
+    signalingState: "stable",
+    getTransceivers: () => [
+      {
+        receiver: { track: { kind: "audio" } },
+        sender: {
+          track,
+          getParameters: () => structuredClone(parameters),
+          setParameters: async (next) => {
+            updates.push(next.encodings[0].active);
+            if (updates.length === 1)
+              await new Promise((resolve) => {
+                release = resolve;
+              });
+            parameters = next;
+          },
+        },
+      },
+      {
+        receiver: { track: { kind: "video" } },
+        sender: {
+          getParameters: () => {
+            throw new Error("Video must remain untouched");
+          },
+        },
+      },
+    ],
+  };
+  let errors = 0;
+  const gate = createAudioTransmissionGate(peer, () => errors++);
+  const pending = gate.update(true);
+  await gate.update(false);
+  release();
+  await pending;
+  assert.deepEqual(updates, [false, true]);
+  assert.equal(track.enabled, true);
+  assert.equal(errors, 0);
+  peer.signalingState = "closed";
+  await gate.update(true);
+  assert.deepEqual(updates, [false, true]);
+});
 
 const source = await readFile(
   new URL("../app/group-call.tsx", import.meta.url),
@@ -94,6 +218,7 @@ function renderCall(state = {}, options = {}) {
       handlers.get("LocalTrackUnpublished")?.(publications.get("screen"));
     },
     localParticipant: {
+      setTrackSubscriptionPermissions() {},
       trackPublications: publications,
       async publishTrack(track, settings) {
         events.push(["publish sound", track, settings]);
@@ -228,6 +353,9 @@ function renderCall(state = {}, options = {}) {
     StreamVolume: "StreamVolume",
     SoundboardButton: "SoundboardButton",
     sharedAudioCapture,
+    participantGain,
+    voiceBlocked,
+    applyVoiceSubscriptions,
     sharedAudioPublish,
     useSoundboard: (_channel, settings) => {
       options.soundSettings = settings;
@@ -259,6 +387,8 @@ function renderCall(state = {}, options = {}) {
     deafened: options.deafened ?? false,
     initialMuted: options.initialMuted ?? false,
     outputVolume: 0.4,
+    participantAudio: options.participantAudio,
+    serverPolicy: options.serverPolicy,
     microphones: [],
     cameras: [],
     viewOpen: options.viewOpen ?? true,
@@ -539,8 +669,6 @@ test("hide buttons stop focus clicks and the restore menu lists only hidden wind
   );
 });
 
-const settle = () => new Promise((resolve) => setImmediate(resolve));
-
 test("group deafen controls microphone and incoming tracks for each mute preference", async () => {
   const media = { id: "audio", participantId: "one", track: { kind: "audio" } };
   const deafened = renderCall(
@@ -767,6 +895,64 @@ test("direct speaking combines microphone and soundboard without one source clea
   assert.equal(indicators.at(-1), false);
 });
 
+test("per-person playback affects only that person's voice, screen and soundboard tracks", () => {
+  const media = [
+    {
+      id: "a-voice",
+      participantId: "a:session-one",
+      track: { kind: "audio" },
+      isScreen: false,
+    },
+    {
+      id: "a-screen",
+      participantId: "a",
+      track: { kind: "audio" },
+      isScreen: true,
+    },
+    {
+      id: "a-sound",
+      participantId: "a",
+      track: { kind: "audio" },
+      isScreen: false,
+      isSoundboard: true,
+    },
+    {
+      id: "b-voice",
+      participantId: "b",
+      track: { kind: "audio" },
+      isScreen: false,
+    },
+  ];
+  for (const [setting, expected] of [
+    [{ volume: 50, muted: false }, 0.2],
+    [{ volume: 50, muted: true }, 0],
+  ]) {
+    const result = renderCall(
+      { joined: true, muted: false, remoteMedia: media },
+      { participantAudio: { a: setting } },
+    );
+    const views = elements(result.tree).filter(
+      (element) => element.type === "RemoteTrackView",
+    );
+    assert.equal(
+      views.find((view) => view.props.media.id === "a-voice").props.volume,
+      expected,
+    );
+    assert.equal(
+      views.find((view) => view.props.media.id === "a-screen").props.volume,
+      expected,
+    );
+    assert.equal(
+      views.find((view) => view.props.media.id === "a-sound").props.volume,
+      expected,
+    );
+    assert.equal(
+      views.find((view) => view.props.media.id === "b-voice").props.volume,
+      0.4,
+    );
+  }
+});
+
 test("soundboard gain, mute and deafen are independent of microphone and media-panel visibility", () => {
   const media = [
     { id: "voice", track: { kind: "audio" }, isScreen: false },
@@ -918,6 +1104,7 @@ test("the direct deafen control restores the user's previous mute choice", async
         `${ts.transpile(toggle.getText(pageAst))}; toggleDeafen`,
         {
           microphoneMuted,
+          ownVoicePolicy: {},
           deafened,
           deafenedRef: { current: deafened },
           activeGroupChannelId: { current: "" },
@@ -1058,6 +1245,8 @@ test("workspace channel highlights follow the displayed view and connecting labe
       DeviceMenu: "DeviceMenu",
       audioPlaybackBlocked: false,
       deafened: false,
+      ownVoicePolicy: {},
+      voiceBlocked,
       audioDeviceOptions: null,
       cameraResolutionOptions: null,
       voiceReady: false,

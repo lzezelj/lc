@@ -1,10 +1,12 @@
 "use client";
 
 import { MediaIcon } from "./device-menu";
+import type { VoicePolicy } from "./voice-policy";
 
 export function ParticipantMediaIndicators({
   participant,
   selfState,
+  serverPolicy,
   showCamera = true,
   onCamera,
   onWatch,
@@ -17,21 +19,36 @@ export function ParticipantMediaIndicators({
     screen: boolean;
   };
   selfState?: { muted: boolean; deafened: boolean };
+  serverPolicy?: VoicePolicy;
   showCamera?: boolean;
   onCamera: () => void;
   onWatch: () => void;
 }) {
-  const deafened = selfState?.deafened ?? participant.deafened ?? false;
-  const muted = (selfState?.muted ?? participant.muted) || deafened;
+  const serverDeafened = Boolean(serverPolicy?.voiceDeafened);
+  const serverMuted = Boolean(serverPolicy?.voiceMuted) || serverDeafened;
+  const deafened =
+    serverDeafened || (selfState?.deafened ?? participant.deafened ?? false);
+  const muted =
+    serverMuted || (selfState?.muted ?? participant.muted) || deafened;
+  const deafenLabel = serverDeafened ? "Server deafened" : "Deafened";
+  const muteLabel = serverMuted ? "Server muted" : "Muted";
   return (
     <em className="voiceIndicators">
       {deafened && (
-        <span title="Deafened" aria-label="Deafened">
+        <span
+          className={serverDeafened ? "serverModerated" : undefined}
+          title={deafenLabel}
+          aria-label={deafenLabel}
+        >
           <MediaIcon kind="headphones" crossedOut />
         </span>
       )}
       {muted && (
-        <span title="Muted" aria-label="Muted">
+        <span
+          className={serverMuted ? "serverModerated" : undefined}
+          title={muteLabel}
+          aria-label={muteLabel}
+        >
           <MediaIcon kind="microphone" crossedOut />
         </span>
       )}

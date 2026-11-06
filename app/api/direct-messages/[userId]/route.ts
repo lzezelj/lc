@@ -49,6 +49,7 @@ export async function GET(
       createdAt: directMessages.createdAt,
       authorId: directMessages.senderId,
       author: users.name,
+      authorImage: users.image,
       kind: directMessages.kind,
       callDurationSeconds: directMessages.callDurationSeconds,
       deletedAt: directMessages.deletedAt,
@@ -189,6 +190,7 @@ export async function POST(
     attachments: body.files.map((file) => file.metadata),
     authorId: session.user.id,
     author: session.user.name ?? "User",
+    authorImage: session.user.image ?? null,
     kind: isCallEvent ? "call" : "message",
     callDurationSeconds: durationSeconds,
   };

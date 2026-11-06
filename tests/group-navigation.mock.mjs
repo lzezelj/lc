@@ -12,6 +12,7 @@ export const DisconnectReason = {
 };
 export class Room {
   constructor() {
+    this.state = "disconnected";
     this.events = new Map();
     this.engine = { client: { rtt: 0 } };
     this.remoteParticipants = new Map([
@@ -22,6 +23,7 @@ export class Room {
     ]);
     this.localParticipant = {
       trackPublications: new Map(),
+      setTrackSubscriptionPermissions() {},
       getTrackPublication() {},
       async setMicrophoneEnabled() {},
     };
@@ -32,6 +34,7 @@ export class Room {
   }
   async switchActiveDevice() {}
   async connect() {
+    this.state = "connected";
     window.groupNavigation.connects++;
     const track = {
       kind: "audio",
@@ -62,6 +65,7 @@ export class Room {
     );
   }
   async disconnect() {
+    this.state = "disconnected";
     window.groupNavigation.disconnects++;
     this.events.get("Disconnected")?.();
   }

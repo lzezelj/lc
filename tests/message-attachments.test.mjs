@@ -76,11 +76,19 @@ test("multipart detects supported bytes independently of claimed MIME and saniti
     assert.equal(uploads.attachmentMime(bytes), type);
 });
 test("upload parser rejects unsupported, empty, oversized and excessive files", async () => {
+  const accepted = await uploads.readMessageRequest(
+    multipart(Array.from({ length: 12 }, () => pdf())),
+  );
+  assert.equal(
+    accepted.files.length,
+    12,
+    "multi-row galleries accept more than nine small files",
+  );
   for (const files of [
     [new File(["<svg/>"], "fake.png", { type: "image/png" })],
     [new File([], "empty.pdf")],
     [new File([Buffer.alloc(limits.attachmentMaxBytes + 1)], "large.pdf")],
-    Array.from({ length: 5 }, () => pdf()),
+    Array.from({ length: limits.attachmentMaxCount + 1 }, () => pdf()),
   ]) {
     const result = await uploads.readMessageRequest(multipart(files));
     assert.equal(result.status, 400);

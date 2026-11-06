@@ -49,7 +49,17 @@ function fixture({
     ],
     serverMembers: [
       { serverId, userId: actor, role: owner ? "owner" : "member" },
-      ...(member ? [{ serverId, userId: target, role: "member" }] : []),
+      ...(member
+        ? [
+            {
+              serverId,
+              userId: target,
+              role: "member",
+              voiceMuted: true,
+              voiceDeafened: true,
+            },
+          ]
+        : []),
     ],
   };
   const mutations = [],
@@ -125,6 +135,10 @@ function fixture({
     "../../../../../server/notify-server": {
       notifyServer: async (id) => notifications.push(id),
     },
+    "../../../../../server/notify-user": { notifyUser: async () => {} },
+    "../../../../../server/voice-moderation": {
+      applyGroupModeration: async () => {},
+    },
     "../../../../../server/rate-limit": {
       checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 5 }),
       rateLimits: { serverMutation: {} },
@@ -177,6 +191,14 @@ test("ownership transfer changes the server record and exactly one owner members
     "member",
   );
   assert.deepEqual(state.notifications, [serverId]);
+  assert.equal(
+    state.rows.serverMembers.find((row) => row.userId === target).voiceMuted,
+    false,
+  );
+  assert.equal(
+    state.rows.serverMembers.find((row) => row.userId === target).voiceDeafened,
+    false,
+  );
   assert.deepEqual(
     state.locks.slice(0, 2).map(([, predicate]) => predicate.args[1]),
     [actor, target],

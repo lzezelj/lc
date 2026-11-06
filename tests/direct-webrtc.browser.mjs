@@ -16,12 +16,16 @@ const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
 const helpTourOnly = process.argv.includes("--help-tour");
 const messageComposerOnly = process.argv.includes("--message-composer");
+const participantAudioOnly = process.argv.includes("--participant-audio");
+const serverInvitationsOnly = process.argv.includes("--server-invitations");
 const chatToolsOnly = process.argv.includes("--chat-tools");
 const notificationsOnly = process.argv.includes("--notifications");
 const workspaceControls =
   process.argv.includes("--workspace-controls") ||
   helpTourOnly ||
   messageComposerOnly ||
+  participantAudioOnly ||
+  serverInvitationsOnly ||
   chatToolsOnly ||
   notificationsOnly;
 const mediaOptionsOnly =
@@ -35,6 +39,8 @@ const supportedFlags = new Set([
   "--media-options-only",
   "--help-tour",
   "--message-composer",
+  "--participant-audio",
+  "--server-invitations",
   "--chat-tools",
   "--notifications",
 ]);
@@ -205,7 +211,9 @@ if (navigation || workspaceControls) {
       import React, {useState, useRef, useEffect} from 'react';
       import {Room, RoomEvent, Track, TrackEvent} from './group-navigation.mock.mjs';
       import {DeviceMenu} from './device-menu.js';
-      import {applyRemoteAudioVolume} from './remote-audio-volume.js';
+      import {applyRemoteAudioVolume, participantGain} from './remote-audio-volume.js';
+      import {voiceBlocked} from './voice-policy.js';
+      import {applyVoiceSubscriptions} from './voice-permissions.js';
       import {HideTileButton, HiddenTilesMenu, SelfViewButton} from './call-tile-controls.js';
       const fetch = async () => ({ok: true, json: async () => ({server_url: 'test', participant_token: 'test'})});
       const prepareVoiceActivity = () => window.groupNavigation.context;
@@ -247,6 +255,7 @@ if (navigation || workspaceControls) {
       "settings-members",
       "settings-reveal",
       "server-invites",
+      "pending-server-invitations",
       "channel-manager",
       "message-delete-action",
       "chat-history",
@@ -273,6 +282,10 @@ if (navigation || workspaceControls) {
       "settings-destinations",
       "message-attachments",
       "message-header",
+      "avatar",
+      "locally-muted",
+      "profile-picture-settings",
+      "participant-audio",
       "user-profile",
       "sidebar-resizer",
       "device-menu",
@@ -328,6 +341,9 @@ if (navigation || workspaceControls) {
   }
   for (const name of [
     "remote-audio-volume",
+    "voice-policy",
+    "voice-permissions",
+    "audio-transmission",
     ...(workspaceControls
       ? [
           "soundboard-audio",
@@ -343,6 +359,8 @@ if (navigation || workspaceControls) {
           "use-message-reactions",
           "use-typing",
           "use-conversation-draft",
+          "use-server-invitations",
+          "profile-crop",
           "mentions",
           "notification-types",
           "use-notification-inbox",
@@ -458,7 +476,11 @@ try {
       const requestId = ++id;
       const timer = setTimeout(() => {
         pending.delete(requestId);
-        reject(new Error(`Browser command timed out: ${method}`));
+        reject(
+          new Error(
+            `Browser command timed out: ${method} ${params.expression?.slice(0, 110) ?? ""}`,
+          ),
+        );
       }, 20000);
       pending.set(requestId, {
         resolve: (value) => {
@@ -693,7 +715,13 @@ try {
   if (result.exceptionDetails)
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
-  if (messageComposerOnly || chatToolsOnly || notificationsOnly) {
+  if (
+    messageComposerOnly ||
+    participantAudioOnly ||
+    serverInvitationsOnly ||
+    chatToolsOnly ||
+    notificationsOnly
+  ) {
     for (const mobile of [false, true]) {
       if (mobile) {
         await call(
@@ -710,11 +738,15 @@ try {
       const checked = await call(
         "Runtime.evaluate",
         {
-          expression: notificationsOnly
-            ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
-            : chatToolsOnly
-              ? "window.verifyChatTools()"
-              : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          expression: serverInvitationsOnly
+            ? "window.verifyServerInvitations()"
+            : participantAudioOnly
+              ? "window.verifyParticipantAudio()"
+              : notificationsOnly
+                ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+                : chatToolsOnly
+                  ? "window.verifyChatTools()"
+                  : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,
@@ -724,7 +756,7 @@ try {
       if (checked.exceptionDetails)
         throw new Error(JSON.stringify(checked.exceptionDetails));
       console.log(
-        `Message composer ${mobile ? "mobile" : "desktop"} passed:`,
+        `${serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
         JSON.stringify(checked.result.value),
       );
     }

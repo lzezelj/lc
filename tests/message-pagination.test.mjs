@@ -383,6 +383,7 @@ function historyFixture(channel = false) {
       };
       context.workspaceActivityRef.current.refresh = () => {};
       context.openedSocket = { send() {} };
+      context.activeVoiceServerRef = { current: "" };
       vm.runInNewContext(
         ts.transpile(`(${historyCode.presenceOpen})(openedSocket);`),
         context,

@@ -31,6 +31,9 @@ function control(name, additions = {}) {
   const scope = {
     microphoneMuted: false,
     deafened: false,
+    voiceBlocked: (policy) =>
+      Boolean(policy?.voiceMuted || policy?.voiceDeafened),
+    ownVoicePolicy: {},
     cameraOff: true,
     muted: false,
     screenSharing: false,
@@ -84,6 +87,33 @@ test("deafen and undeafen each play one confirmation without an extra microphone
     fixture.run();
     assert.deepEqual(fixture.sounds, [deafened ? "undeafen" : "deafen"]);
   }
+});
+
+test("self undeafen cannot clear server deafen or reopen a server-muted microphone", () => {
+  const capture = { enabled: false },
+    audio = { muted: true },
+    changes = [];
+  const blocked = control("toggleDeafen", {
+    ownVoicePolicy: { voiceDeafened: true },
+    deafened: true,
+    stream: { current: { getAudioTracks: () => [capture] } },
+    remoteAudio: { current: audio },
+    setDeafened: (value) => changes.push(value),
+  });
+  blocked.run();
+  assert.equal(capture.enabled, false);
+  assert.equal(audio.muted, true);
+  assert.deepEqual(changes, []);
+  assert.deepEqual(blocked.sounds, []);
+  const muted = control("toggleDeafen", {
+    ownVoicePolicy: { voiceMuted: true },
+    deafened: true,
+    stream: { current: { getAudioTracks: () => [capture] } },
+    remoteAudio: { current: audio },
+  });
+  muted.run();
+  assert.equal(audio.muted, false);
+  assert.equal(capture.enabled, false);
 });
 
 test("camera enable and disable sound for successful actions, but not failed permission", async () => {

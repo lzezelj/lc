@@ -7,6 +7,7 @@ export type SearchMessage = {
   id: string;
   authorId: string;
   author: string;
+  authorImage?: string | null;
   text: string;
   createdAt: string;
   editedAt?: string | null;
