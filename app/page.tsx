@@ -68,6 +68,10 @@ import { useMessageReactions } from "./use-message-reactions";
 import { useTyping } from "./use-typing";
 import { MessageAttachments } from "./message-attachments";
 import { useConversationDraft } from "./use-conversation-draft";
+import {
+  readHistoryWindow,
+  reconcileRecoveredHistory,
+} from "./history-recovery";
 import type { MessageAttachment } from "./attachment-types";
 import { ServerInvites } from "./server-invites";
 import { PersonalMessages } from "./personal-messages";
@@ -1188,6 +1192,39 @@ export default function Home() {
         session?.user.id,
         selectedFriend?.id,
       ));
+  const visibleDirectHistory = useRef<{
+    accountId: string | undefined;
+    userId: string;
+    messages: ChatMessage[];
+    nextCursor: MessageCursor | null;
+  } | null>(null);
+  useEffect(() => {
+    if (
+      visibleDirectHistory.current &&
+      visibleDirectHistory.current.accountId !== session?.user.id
+    ) {
+      visibleDirectHistory.current = null;
+      return;
+    }
+    visibleDirectHistory.current =
+      directConversationVisible &&
+      selectedFriend?.id &&
+      directHistoryLoaded === selectedFriend.id
+        ? {
+            accountId: session?.user.id,
+            userId: selectedFriend.id,
+            messages: directMessages,
+            nextCursor: directMessageCursor,
+          }
+        : null;
+  }, [
+    directConversationVisible,
+    selectedFriend?.id,
+    directHistoryLoaded,
+    directMessages,
+    directMessageCursor,
+    session?.user.id,
+  ]);
   useEffect(() => {
     const userId = selectedFriend?.id;
     const generation = ++directHistoryGeneration.current;
@@ -1196,12 +1233,19 @@ export default function Home() {
         ? conversationCache.current.get(session?.user.id, `direct:${userId}`)
         : undefined;
     directHistoryCacheable.current = cached ? userId! : "";
+    const retained =
+      directConversationVisible &&
+      visibleDirectHistory.current?.accountId === session?.user.id &&
+      visibleDirectHistory.current?.userId === userId
+        ? visibleDirectHistory.current
+        : null;
     void Promise.resolve().then(() => {
       if (generation !== directHistoryGeneration.current) return;
+      setLoadingOlderDirect(false);
+      if (retained && !cached) return;
       setDirectHistoryLoaded(cached ? userId! : "");
       setDirectMessages(cached?.messages ?? []);
       setDirectMessageCursor(cached?.nextCursor ?? null);
-      setLoadingOlderDirect(false);
     });
     if (!userId || !directConversationVisible) return;
     if (cached)
@@ -1209,20 +1253,48 @@ export default function Home() {
         directHistoryGeneration.current = generation + 1;
       };
     const controller = new AbortController();
-    void fetch(`/api/direct-messages/${userId}`, { signal: controller.signal })
-      .then(async (response) => {
+    void readHistoryWindow(
+      async (cursor) => {
+        const response = await fetch(
+          `/api/direct-messages/${userId}${cursor ? `?${new URLSearchParams(cursor)}` : ""}`,
+          { signal: controller.signal },
+        );
         const page = await readJsonResponse<HistoryPage>(response);
-        if (!response.ok) throw new Error(apiErrorMessage(page));
-        if (generation !== directHistoryGeneration.current) return;
+        if (!response.ok) {
+          if (
+            [401, 403, 404].includes(response.status) &&
+            generation === directHistoryGeneration.current
+          ) {
+            conversationCache.current.delete(
+              session?.user.id,
+              `direct:${userId}`,
+            );
+            setDirectMessages([]);
+            setDirectMessageCursor(null);
+          }
+          throw new Error(apiErrorMessage(page));
+        }
         if (!Array.isArray(page.messages))
           throw new Error("Messages could not be loaded.");
+        return page;
+      },
+      retained ? retained.nextCursor : undefined,
+    )
+      .then((page) => {
+        if (generation !== directHistoryGeneration.current) return;
         directHistoryCacheable.current = userId;
         conversationCache.current.set(session?.user.id, `direct:${userId}`, {
           messages: page.messages.map(toChatMessage),
           nextCursor: page.nextCursor,
         });
         setDirectMessages((current) =>
-          mergeChatMessages(page.messages.map(toChatMessage), current),
+          retained
+            ? reconcileRecoveredHistory(
+                page.messages.map(toChatMessage),
+                current,
+                retained.messages,
+              )
+            : mergeChatMessages(page.messages.map(toChatMessage), current),
         );
         setDirectMessageCursor(page.nextCursor);
         setDirectHistoryLoaded(userId);
@@ -1799,6 +1871,38 @@ export default function Home() {
   const historyChannelType = channels.find(
     (channel) => channel.id === selectedChannelId,
   )?.type;
+  const visibleChannelHistory = useRef<{
+    accountId: string | undefined;
+    channelId: string;
+    messages: ChatMessage[];
+    nextCursor: MessageCursor | null;
+  } | null>(null);
+  useEffect(() => {
+    if (
+      visibleChannelHistory.current &&
+      visibleChannelHistory.current.accountId !== session?.user.id
+    ) {
+      visibleChannelHistory.current = null;
+      return;
+    }
+    visibleChannelHistory.current =
+      historyChannelType === "text" &&
+      channelHistoryLoaded === selectedChannelId
+        ? {
+            accountId: session?.user.id,
+            channelId: selectedChannelId,
+            messages,
+            nextCursor: nextMessageCursor,
+          }
+        : null;
+  }, [
+    historyChannelType,
+    channelHistoryLoaded,
+    selectedChannelId,
+    messages,
+    nextMessageCursor,
+    session?.user.id,
+  ]);
   useEffect(() => {
     const generation = ++channelHistoryGeneration.current;
     const cached =
@@ -1809,26 +1913,56 @@ export default function Home() {
           )
         : undefined;
     channelHistoryCacheable.current = cached ? selectedChannelId : "";
+    const retained =
+      historyChannelType === "text" &&
+      visibleChannelHistory.current?.accountId === session?.user.id &&
+      visibleChannelHistory.current?.channelId === selectedChannelId
+        ? visibleChannelHistory.current
+        : null;
     void Promise.resolve().then(() => {
       if (generation !== channelHistoryGeneration.current) return;
+      setLoadingMoreMessages(false);
+      if (retained && !cached) return;
       setChannelHistoryLoaded(cached ? selectedChannelId : "");
       setReadableHistoryChannel(cached ? selectedChannelId : "");
       setMessages(cached?.messages ?? []);
       setNextMessageCursor(cached?.nextCursor ?? null);
-      setLoadingMoreMessages(false);
     });
     if (!selectedChannelId || historyChannelType !== "text") return;
     if (cached)
       return () => {
         channelHistoryGeneration.current = generation + 1;
       };
-    void fetch(`/api/channels/${selectedChannelId}/messages`)
-      .then(async (response) => {
+    const controller = new AbortController();
+    void readHistoryWindow(
+      async (cursor) => {
+        const response = await fetch(
+          `/api/channels/${selectedChannelId}/messages${cursor ? `?${new URLSearchParams(cursor)}` : ""}`,
+          { signal: controller.signal },
+        );
         const page = await readJsonResponse<HistoryPage>(response);
-        if (!response.ok) throw new Error(apiErrorMessage(page));
-        if (generation !== channelHistoryGeneration.current) return;
+        if (!response.ok) {
+          if (
+            [401, 403, 404].includes(response.status) &&
+            generation === channelHistoryGeneration.current
+          ) {
+            conversationCache.current.delete(
+              session?.user.id,
+              `channel:${selectedChannelId}`,
+            );
+            setMessages([]);
+            setNextMessageCursor(null);
+          }
+          throw new Error(apiErrorMessage(page));
+        }
         if (!Array.isArray(page.messages))
           throw new Error("Messages could not be loaded.");
+        return page;
+      },
+      retained ? retained.nextCursor : undefined,
+    )
+      .then((page) => {
+        if (generation !== channelHistoryGeneration.current) return;
         channelHistoryCacheable.current = selectedChannelId;
         conversationCache.current.set(
           session?.user.id,
@@ -1839,7 +1973,13 @@ export default function Home() {
           },
         );
         setMessages((current) =>
-          mergeChatMessages(page.messages.map(toChatMessage), current),
+          retained
+            ? reconcileRecoveredHistory(
+                page.messages.map(toChatMessage),
+                current,
+                retained.messages,
+              )
+            : mergeChatMessages(page.messages.map(toChatMessage), current),
         );
         setNextMessageCursor(page.nextCursor);
         setChannelHistoryLoaded(selectedChannelId);
@@ -1856,6 +1996,7 @@ export default function Home() {
         }
       });
     return () => {
+      controller.abort();
       channelHistoryGeneration.current = generation + 1;
     };
   }, [

@@ -18,6 +18,23 @@ const permittedChannelIds = [
   "group-room",
 ];
 
+test(
+  "idle signaling sockets answer heartbeats and unresponsive sockets are removed",
+  { timeout: 5000 },
+  async () => {
+    const url = await startServer({ heartbeatIntervalMs: 60 });
+    const healthy = await connect(url, "Heartbeat");
+    await once(healthy, "ping");
+    await once(healthy, "ping");
+    assert.equal(healthy.readyState, WebSocket.OPEN);
+    const silent = new WebSocket(healthy.url, { autoPong: false });
+    resources.unshift(silent);
+    await once(silent, "open");
+    await once(silent, "close");
+    assert.equal(healthy.readyState, WebSocket.OPEN);
+  },
+);
+
 test("typing state deduplicates tabs, expires, switches contexts and clears disconnected users", () => {
   let now = 0;
   const updates = [];

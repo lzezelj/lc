@@ -1,5 +1,11 @@
 # Test coverage
 
+Reconnect regressions in the default suites check protocol pings/pongs, idle
+connection survival and unresponsive-client cleanup. History recovery tests run
+the actual channel/DM loader effects, retaining visible rows/loading-ready state,
+removing denied content, fetching the previously loaded cursor range and merging
+concurrent live changes without resurrecting removed messages. These run in CI.
+
 Conversation drafts are covered in the default `workspace-location` suite (and
 the existing CI core job): channel/DM isolation, retained files, successful-send
 cleanup after navigation, newer-draft protection and account reset. The muted

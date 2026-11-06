@@ -5,6 +5,10 @@ import vm from "node:vm";
 import ts from "typescript";
 import { ConversationCache, SessionCache } from "../app/conversation-cache.ts";
 import {
+  readHistoryWindow,
+  reconcileRecoveredHistory,
+} from "../app/history-recovery.ts";
+import {
   applyMessageEdit,
   applyMessageRemoval,
 } from "../app/message-updates.ts";
@@ -291,6 +295,10 @@ function historyFixture(channel = false) {
     directHistoryCacheable: { current: "" },
     channelHistoryCacheable: { current: "" },
     channelHistoryGeneration: { current: 0 },
+    visibleChannelHistory: { current: null },
+    visibleDirectHistory: { current: null },
+    readHistoryWindow,
+    reconcileRecoveredHistory,
     selectedChannelId: "channel-a",
     historyChannelType: "text",
     messages: [],
@@ -327,7 +335,8 @@ function historyFixture(channel = false) {
         requests.push({
           url,
           signal: options.signal,
-          resolve: (page, ok = true) => resolve({ ok, json: async () => page }),
+          resolve: (page, ok = true, status = ok ? 200 : 503) =>
+            resolve({ ok, status, json: async () => page }),
         }),
       ),
     readJsonResponse: (response) => response.json(),
@@ -634,6 +643,120 @@ test("reconnecting signaling discards cached histories so missed events are reco
   });
   f.reconnect();
   assert.equal(f.cache.get(actor, `direct:${friend}`), undefined);
+});
+
+test("reconnect recovery retains visible histories until authorized replacement is ready", async () => {
+  for (const channel of [false, true]) {
+    const f = historyFixture(channel);
+    const previous = [{ id: uuid(1), text: "Before disconnect" }];
+    if (channel) {
+      f.context.messages = previous;
+      f.context.channelHistoryLoaded = "channel-a";
+      f.context.visibleChannelHistory.current = {
+        accountId: actor,
+        channelId: "channel-a",
+        messages: previous,
+        nextCursor: null,
+      };
+    } else {
+      f.context.directMessages = previous;
+      f.context.directHistoryLoaded = friend;
+      f.context.visibleDirectHistory.current = {
+        accountId: actor,
+        userId: friend,
+        messages: previous,
+        nextCursor: null,
+      };
+    }
+    const close = f.start();
+    await settle();
+    assert.equal(
+      channel ? f.context.messages : f.context.directMessages,
+      previous,
+      "no empty loading frame while recovery waits",
+    );
+    assert.equal(
+      channel ? f.context.channelHistoryLoaded : f.context.directHistoryLoaded,
+      channel ? "channel-a" : friend,
+    );
+    f.requests[0].resolve({
+      messages: [
+        {
+          id: uuid(1),
+          text: "Edited while disconnected",
+          createdAt: "2026-11-01T12:00:00Z",
+        },
+      ],
+      nextCursor: null,
+    });
+    await settle();
+    assert.equal(
+      (channel ? f.context.messages : f.context.directMessages)[0].text,
+      "Edited while disconnected",
+    );
+    close();
+    f.cache.clear();
+    f.start();
+    await settle();
+    f.requests.at(-1).resolve({ error: "Forbidden" }, false, 403);
+    await settle();
+    assert.equal(
+      (channel ? f.context.messages : f.context.directMessages).length,
+      0,
+      "lost access removes retained content",
+    );
+  }
+});
+
+test("recovery reloads the loaded cursor range and retains concurrent live changes", async () => {
+  const boundary = {
+    beforeCreatedAt: "2026-11-01T12:00:00.000Z",
+    beforeId: uuid(2),
+  };
+  const newer = {
+    beforeCreatedAt: "2026-11-02T12:00:00.000Z",
+    beforeId: uuid(3),
+  };
+  const calls = [];
+  const result = await readHistoryWindow(async (cursor) => {
+    calls.push(cursor);
+    return cursor
+      ? {
+          messages: [{ id: uuid(2), text: "Older updated" }],
+          nextCursor: boundary,
+        }
+      : { messages: [{ id: uuid(3), text: "Latest" }], nextCursor: newer };
+  }, boundary);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(
+    result.messages.map((row) => row.id),
+    [uuid(2), uuid(3)],
+  );
+  assert.equal(result.nextCursor, boundary);
+  const before = [
+    { id: "a", text: "old" },
+    { id: "b", text: "removed live" },
+    { id: "c", text: "old" },
+  ];
+  const current = [
+    before[0],
+    { id: "c", text: "live edit" },
+    { id: "d", text: "live new" },
+  ];
+  const rows = reconcileRecoveredHistory(
+    [
+      { id: "a", text: "recovered edit" },
+      { id: "b", text: "stale" },
+      { id: "c", text: "stale" },
+    ],
+    current,
+    before,
+  );
+  assert.deepEqual(rows, [
+    { id: "a", text: "recovered edit" },
+    { id: "c", text: "live edit" },
+    { id: "d", text: "live new" },
+  ]);
 });
 
 test("failed history responses are not cached as empty conversations", async () => {

@@ -304,6 +304,19 @@ responses. Text-channel clicks clear the previous channel's visible history;
 previously loaded message pages restore from the page-session cache, while an
 uncached channel shows loading until its authorized history arrives.
 
+Signaling sends protocol ping frames every 30 seconds; browsers answer pong frames
+without JavaScript timers. A connection missing the next heartbeat is terminated
+through normal disconnect cleanup. This prevents idle connections from remaining
+silent through proxies and detects broken peers. Reconnects still invalidate
+history caches to recover missed changes, but an account/conversation-scoped
+snapshot keeps the currently loaded messages and loading-ready state visible.
+Recovery fetches 50-message pages through the previous oldest cursor (or the end
+if all history was loaded), then reconciles persisted edits/deletions with live
+updates received during recovery. Denied or missing conversations clear retained
+content; temporary failures leave it visible and retry on a later reconnect.
+Navigation aborts recovery and rejects obsolete responses. No production proxy
+timeout or infrastructure configuration was changed.
+
 ### Conversation drafts
 
 `useConversationDraft` keeps unsent text and selected `File` objects in the mounted

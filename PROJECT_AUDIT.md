@@ -26,6 +26,21 @@ database migration, package upgrade or infrastructure change was performed.
 
 ## Architecture preserved
 
+Deployed idle-refresh follow-up: reconnection invalidated conversation caches and
+the loaders replaced visible history with an empty list before fetching, producing
+the reported skeleton flash. Added 30-second signaling protocol ping/pong checks
+and unresponsive-peer cleanup; the absence of keepalives is a plausible idle proxy
+disconnect trigger, not a confirmed production diagnosis. Visible account-scoped
+history remains mounted while recovery revalidates its loaded cursor range.
+Fresh database state reconciles with concurrent live edits/removals/new messages;
+permission failures clear retained content, temporary errors preserve it, and
+navigation aborts obsolete work. Default/CI regressions cover idle heartbeat and
+both history loaders. No deployment or proxy configuration was modified.
+Formatting, all 235 default tests and production build passed. Muted call
+navigation initially returned a browser playback AbortError, then passed on rerun
+with stable direct audio and preserved group room/audio. Production idle behavior
+still requires verification after the owner redeploys app and signaling together.
+
 Conversation-draft follow-up: channel and DM text/files live in account-scoped
 workspace state and survive navigation between servers/channels/people. Reload,
 workspace unmount or account change discards them. A successful send clears only

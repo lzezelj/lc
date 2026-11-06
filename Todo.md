@@ -10,3 +10,4 @@ Monitoring and structured logs
 
 Check if anything new has been added that should go in help and introduction
 Pinning messages
+Images should be sent next to each other if possible, name of the image doesnt really matter, neither does the download button, download can be done by right clicking the picture and then downloading.

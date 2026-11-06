@@ -11,6 +11,7 @@ export function createSignalingServer({
   port = 3001,
   maxPeers = 2,
   pendingVoiceTimeoutMs = 30_000,
+  heartbeatIntervalMs = 30_000,
   authSecret = process.env.AUTH_SECRET,
   internalSecret = process.env.SIGNALING_INTERNAL_SECRET ?? authSecret,
   removeGroupMedia = async (userId, keepSessionId) => {
@@ -473,6 +474,20 @@ export function createSignalingServer({
     response.end("Upgrade Required");
   });
   const ws = new WebSocketServer({ noServer: true });
+  // Browser WebSockets answer protocol pings automatically, even in idle tabs.
+  const heartbeat = setInterval(() => {
+    for (const socket of ws.clients) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      if (socket.heartbeatAlive === false) {
+        socket.terminate();
+        continue;
+      }
+      socket.heartbeatAlive = false;
+      socket.ping();
+    }
+  }, heartbeatIntervalMs);
+  heartbeat.unref();
+  server.once("close", () => clearInterval(heartbeat));
   const rooms = new Map();
   const deletedChannels = new Set();
   const typing = new TypingTracker((context, users) => {
@@ -765,6 +780,10 @@ export function createSignalingServer({
   };
 
   ws.on("connection", (socket, request) => {
+    socket.heartbeatAlive = true;
+    socket.on("pong", () => {
+      socket.heartbeatAlive = true;
+    });
     socket.identity = request.signalingIdentity;
     socket.allowedChannelIds = new Set(socket.identity.channelIds);
     if (!userStatuses.has(socket.identity.sub)) {
