@@ -47,10 +47,16 @@ test("server join sound changes require membership and a sound from the same ser
     limited = false,
     accountRole = "member",
   } = {}) {
-    const members = { serverId: "member.server", userId: "member.user" };
+    const members = {
+      serverId: "member.server",
+      userId: "member.user",
+      joinSoundId: "member.join",
+      leaveSoundId: "member.leave",
+    };
     const sounds = { id: "sound.id", serverId: "sound.server" };
     const servers = { id: "server.id", joinSoundId: "server.join" };
     const writes = [],
+      writeScopes = [],
       predicates = [],
       notifications = [];
     const db = {
@@ -71,14 +77,17 @@ test("server join sound changes require membership and a sound from the same ser
           },
         }),
       }),
-      update: () => ({
+      update: (table) => ({
         set: (value) => ({
-          where: () => ({
-            returning: async () => {
-              writes.push(value);
-              return [value];
-            },
-          }),
+          where: (scope) => {
+            writeScopes.push([table, scope]);
+            return {
+              returning: async () => {
+                writes.push(value);
+                return [value];
+              },
+            };
+          },
         }),
       }),
       transaction: async (callback) => callback(db),
@@ -105,20 +114,22 @@ test("server join sound changes require membership and a sound from the same ser
           checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 10 }),
           rateLimits: { serverMutation: {} },
         },
-        "../../../../../server/notify-server": {
-          notifyServer: async (id) => notifications.push(id),
+        "../../../../../server/notify-user": {
+          notifyUser: async (userId, event) =>
+            notifications.push({ userId, event }),
         },
       },
     );
-    const save = (joinSoundId) =>
+    const saveFields = (fields) =>
       route.PATCH(
         new Request("https://lc.test/join-sound", {
           method: "PATCH",
-          body: JSON.stringify({ joinSoundId }),
+          body: JSON.stringify(fields),
         }),
         { params: Promise.resolve({ serverId }) },
       );
-    return { save, writes, predicates, notifications };
+    const save = (joinSoundId) => saveFields({ joinSoundId });
+    return { save, saveFields, writes, writeScopes, predicates, notifications };
   }
   for (const [options, value, status] of [
     [{ authenticated: false }, clipId, 401],
@@ -141,7 +152,29 @@ test("server join sound changes require membership and a sound from the same ser
   assert.equal(current.writes[0].joinSoundId, clipId);
   assert.equal((await current.save(null)).status, 200);
   assert.equal(current.writes[1].joinSoundId, null, "Default persists as null");
-  assert.deepEqual(current.notifications, [serverId, serverId]);
+  assert.equal(current.notifications.length, 2);
+  assert.ok(
+    current.notifications.every(
+      (notice) =>
+        notice.userId === "actor" &&
+        notice.event.type === "voice-sounds-changed" &&
+        notice.event.serverId === serverId,
+    ),
+  );
+  assert.equal(
+    (await current.saveFields({ joinSoundId: clipId, userId: "another-user" }))
+      .status,
+    200,
+  );
+  assert.equal(current.writes[2].joinSoundId, clipId);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(current.writeScopes[2][1])),
+    [
+      ["member.server", serverId],
+      ["member.user", "actor"],
+    ],
+    "writes must use the signed-in member, never a supplied user ID",
+  );
   for (const accountRole of ["member", "demo"]) {
     const member = await fixture({ role: "member", accountRole });
     assert.equal((await member.save(clipId)).status, 200);
@@ -155,92 +188,173 @@ test("server join sound changes require membership and a sound from the same ser
   }
 });
 
-test("join sound playback is local, honors output/deafen and cancels stale loads", async () => {
-  const audio = [],
-    tones = [],
-    revoked = [];
-  let load = async () => new ArrayBuffer(2);
-  const { ServerJoinSoundPlayer } = await moduleAt(
+test("custom joins publish only from the arriving client; listeners never download or play the clip locally", async () => {
+  const tones = [],
+    published = [];
+  let clip = clipId,
+    resolveRequest;
+  let metadata = async () => Response.json({ joinSoundId: clip });
+  const { ServerJoinSound } = await moduleAt(
     "../app/server-join-sound.ts",
     {
-      "./audio-output": {
-        applyCallOutput: async (element, volume, deafened, outputId) => {
-          Object.assign(element, { volume, muted: deafened, outputId });
-        },
-      },
       "./call-sounds": { playVoiceSound: (type) => tones.push(type) },
-      "./soundboard-library": {
-        loadSoundAudio: (server, clip) => {
-          assert.equal(server, serverId);
-          assert.equal(clip, clipId);
-          return load();
-        },
-      },
     },
     {
-      Blob,
-      URL: {
-        createObjectURL: () => "blob:join",
-        revokeObjectURL: (url) => revoked.push(url),
+      fetch: async (url) => {
+        assert.equal(
+          url,
+          `/api/servers/${serverId}/join-sound?userId=arriving-user`,
+        );
+        return metadata();
       },
       Audio: class {
-        plays = 0;
-        pauses = 0;
         constructor() {
-          audio.push(this);
+          throw new Error("Custom joins must not create local file playback");
         }
-        async play() {
-          this.plays++;
-        }
-        pause() {
-          this.pauses++;
-        }
-        removeAttribute() {}
-        load() {}
       },
     },
   );
-  const player = new ServerJoinSoundPlayer();
-  const options = {
-    serverId,
-    joinSoundId: clipId,
-    outputVolume: 40,
-    outputId: "headphones",
-  };
-  player.update(options);
-  await player.play();
-  assert.equal(audio[0].plays, 1);
-  assert.equal(audio[0].volume, 40);
-  assert.equal(audio[0].outputId, "headphones");
-  player.update({ ...options, outputVolume: 20 });
-  assert.equal(audio[0].volume, 20);
-  player.update({ ...options, deafened: true });
-  assert.ok(audio[0].pauses > 0);
-  assert.equal(revoked.length, 1);
-  await player.play();
-  assert.equal(audio.length, 1, "deafen suppresses joins");
-  player.update(options);
-  let resolve;
-  load = () =>
-    new Promise((done) => {
-      resolve = done;
+  const player = new ServerJoinSound();
+  player.update({ serverId, outputVolume: 50 });
+  await player.play("arriving-user", async (id) => published.push(id));
+  assert.deepEqual(published, [clipId]);
+  await player.play("arriving-user");
+  assert.deepEqual(
+    tones,
+    [],
+    "listeners wait for the incoming soundboard track",
+  );
+  player.update({ serverId, deafened: true });
+  await player.play("arriving-user", async (id) => published.push(id));
+  assert.equal(
+    published.length,
+    2,
+    "deafen silences monitoring without suppressing the outgoing soundboard clip",
+  );
+  metadata = () =>
+    new Promise((resolve) => {
+      resolveRequest = resolve;
     });
-  const pending = player.play();
+  const pending = player.play("arriving-user", async (id) =>
+    published.push(id),
+  );
   player.stop();
-  resolve(new ArrayBuffer(2));
+  resolveRequest(Response.json({ joinSoundId: clipId }));
   await pending;
-  assert.equal(audio.length, 1, "leaving cancels late audio");
-  load = async () => {
-    throw new Error("deleted or unavailable");
+  assert.equal(
+    published.length,
+    2,
+    "leaving cancels a pending automatic announcement",
+  );
+  clip = null;
+  metadata = async () => Response.json({ joinSoundId: clip });
+  player.update({ serverId, outputVolume: 50 });
+  await player.play("arriving-user");
+  assert.deepEqual(tones, ["join"]);
+});
+
+test("voice sound preference refresh updates only server sound metadata and preserves message state", async () => {
+  const source = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let declaration;
+  function visit(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === "applyVoiceSoundSettings"
+    )
+      declaration = node.getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  const other = { id: "other", joinSoundId: null };
+  let servers = [{ id: serverId, joinSoundId: null }, other];
+  const messages = [{ id: "existing", text: "Loaded history" }];
+  const scope = {
+    setServers: (update) => {
+      servers = update(servers);
+    },
+    fetch() {
+      throw new Error(
+        "A preference save must not refetch messages or channels",
+      );
+    },
+    setMessages() {
+      throw new Error("Message history must remain untouched");
+    },
+    messages,
   };
-  await player.play();
-  assert.deepEqual(tones, ["join"], "unavailable sound falls back to Default");
-  player.update({ ...options, joinSoundId: null });
-  await player.play();
-  assert.equal(tones.length, 2);
-  player.update({ ...options, outputVolume: 0 });
-  await player.play();
-  assert.equal(tones.length, 2);
+  const apply = vm.runInNewContext(
+    `${ts.transpile(declaration)}; applyVoiceSoundSettings`,
+    scope,
+  );
+  apply(serverId, clipId);
+  assert.equal(servers[0].joinSoundId, clipId);
+  assert.equal(servers[1], other);
+  assert.equal(scope.messages, messages);
+});
+
+test("native join announcement waits for a connected media path and publishes only once", async () => {
+  const source = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let handler;
+  function visit(node) {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.left.getText(ast) === "peer.onconnectionstatechange"
+    )
+      handler = node.right.getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  const peer = { connectionState: "connecting" },
+    calls = [];
+  const pending = { current: true },
+    connection = { current: peer };
+  const publish = () => {};
+  const run = vm.runInNewContext(
+    `${ts.transpile(`const callback = ${handler};`)}; callback`,
+    {
+      peer,
+      connection,
+      pendingJoinAnnouncement: pending,
+      session: { user: { id: "self" } },
+      publishDirectSound: publish,
+      soundboard: { playJoinSound: (...args) => calls.push(args) },
+      setStatus() {},
+    },
+  );
+  run();
+  assert.equal(calls.length, 0);
+  peer.connectionState = "connected";
+  run();
+  run();
+  assert.deepEqual(calls, [["self", publish]]);
+  pending.current = true;
+  connection.current = null;
+  run();
+  assert.equal(
+    calls.length,
+    1,
+    "obsolete connection callbacks cannot publish after leaving",
+  );
 });
 
 async function customRoute({

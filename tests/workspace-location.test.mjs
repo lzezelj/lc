@@ -21,6 +21,71 @@ const page = await readFile(
   new URL("../app/page.tsx", import.meta.url),
   "utf8",
 );
+test("conversation drafts survive navigation and clear only the submitted snapshot", async () => {
+  let state,
+    changed = false;
+  const exports = {};
+  vm.runInNewContext(
+    ts.transpile(
+      await readFile(
+        new URL("../app/use-conversation-draft.ts", import.meta.url),
+        "utf8",
+      ),
+      { module: ts.ModuleKind.CommonJS },
+    ),
+    {
+      exports,
+      require: () => ({
+        useState: (initial) => {
+          state ??= initial;
+          return [
+            state,
+            (action) => {
+              state = typeof action === "function" ? action(state) : action;
+              changed = true;
+            },
+          ];
+        },
+      }),
+    },
+  );
+  const render = (key, account = "owner") => {
+    let result;
+    do {
+      changed = false;
+      result = exports.useConversationDraft(account, key);
+    } while (changed);
+    return result;
+  };
+  let a = render("channel:a");
+  a.setText("first");
+  const files = [{ name: "pending.pdf" }];
+  a.setFiles(files);
+  a = render("channel:a");
+  const sending = a.clearSent;
+  let b = render("direct:b");
+  assert.equal(b.text, "");
+  b.setText("private");
+  assert.equal(render("channel:a").text, "first");
+  assert.equal(render("channel:a").files, files);
+  sending();
+  assert.equal(render("channel:a").text, "");
+  assert.equal(render("channel:a").files.length, 0);
+  assert.equal(render("direct:b").text, "private");
+  b = render("direct:b");
+  const obsolete = b.clearSent;
+  b.setText("newer text");
+  obsolete();
+  assert.equal(render("direct:b").text, "newer text");
+  // Failed sends never call clearSent, so the original draft remains available.
+  assert.equal(render("direct:b").text, "newer text");
+  assert.equal(render("direct:b", "someone-else").text, "");
+  assert.equal(render("direct:b").text, "");
+  assert.match(
+    page,
+    /clearSent\(\);\s+if \(generation !== channelHistoryGeneration.current\) return/,
+  );
+});
 const ast = ts.createSourceFile(
   "page.tsx",
   page,

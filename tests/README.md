@@ -1,12 +1,42 @@
 # Test coverage
 
-Server join-sound regressions cover member authorization, outsider denial, same-server sound
-selection, Default reset, member refresh notifications and local playback
-cancellation/output/deafen. The existing soundboard tests run in `npm test` and
+Conversation drafts are covered in the default `workspace-location` suite (and
+the existing CI core job): channel/DM isolation, retained files, successful-send
+cleanup after navigation, newer-draft protection and account reset. The muted
+desktop/mobile composer mode uses the actual hook and composer to verify server,
+channel and DM switching, retained pending files and clearing on workspace remount.
+
+Typing regressions in the default signaling suite cover expiry with a controlled
+clock, tab deduplication, context switches, authenticated names, channel access,
+DM friendship and disconnect cleanup. Muted composer checks cover typing frames
+without draft text, client throttling, view changes, blur and local expiry in
+desktop/mobile layouts. Reaction-detail ownership and removal controls are also checked there.
+
+Emoji/reaction coverage uses the existing default signaling suite, PostgreSQL
+suite and muted composer/media-options browser modes. It checks authenticated
+channel-only invalidations, current conversation access, actor isolation,
+idempotent adds/removals, single-reaction replacement, authorized participant
+details, aggregate counts and deletion cleanup. Browser checks
+exercise composer SVG centering/placement, caret insertion, picker viewport bounds,
+right-click React selection, server/DM participant dialogs and own-row removal,
+chat-only scrolling after row growth, live count refresh and rejection of late
+stale responses. Composer checks also cover hover/submenu travel, centered arrows,
+right-side placement, keyboard/touch opening, cold-load reaction skeletons,
+immediate cached reopening, background refresh and account isolation.
+The reaction route test uses savepoints for its transactions so
+API mutations cannot commit the surrounding rolled-back fixture. These database and
+default tests run in their existing GitHub Actions jobs; browser modes remain optional.
+
+Personal join-sound regressions cover member authorization, actor-scoped
+writes, outsider denial, same-server selection, Default reset, own-account
+preference notifications without message refresh, sender-only publication,
+pending cancellation and native connection-ready announcement timing.
+The existing soundboard tests run in `npm test` and
 the GitHub Actions core job. The PostgreSQL suite verifies default null, deleting
-the selected sound resets the setting, and server deletion still cascades; it
+the selected sound resets the choice, people/servers remain isolated, actual
+routes resolve the event's member and reject outsiders, and server deletion still cascades; it
 runs in the existing database job. Muted media-options browser checks exercise
-the server-settings selector and save/reset requests.
+the server-settings selector/save/reset and actual automatic soundboard publication.
 
 Processing-mode regressions cover migration of retired preferences, persisted
 Raw/Browser/RNNoise choices and independent echo preferences. The real-WASM check

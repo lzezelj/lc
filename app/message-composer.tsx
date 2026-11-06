@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { mentionQuery, type MentionMember } from "./mentions";
+import { EmojiPicker } from "./emoji-picker";
 import {
   attachmentAccept,
   attachmentMaxBytes,
@@ -42,6 +43,7 @@ export function MessageComposer({
   editId,
   onCancelEdit,
   mentionMembers,
+  onTyping,
 }: {
   value: string;
   onChange: (text: string) => void;
@@ -55,6 +57,7 @@ export function MessageComposer({
   editId?: string;
   onCancelEdit?: () => void;
   mentionMembers?: MentionMember[];
+  onTyping?: (active: boolean) => void;
 }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -93,6 +96,7 @@ export function MessageComposer({
     const insertion = `@${member.handle || member.name} `,
       position = token.start + insertion.length;
     onChange(value.slice(0, token.start) + insertion + value.slice(token.end));
+    onTyping?.(true);
     setCaret(position);
     setDismissed("");
     setMentionIndex(0);
@@ -270,8 +274,10 @@ export function MessageComposer({
             setMentionIndex(0);
             setDismissed("");
             onChange(event.target.value);
+            onTyping?.(!!event.target.value.trim());
           }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onBlur={() => onTyping?.(false)}
           role={mentionMembers ? "combobox" : undefined}
           aria-autocomplete={mentionMembers ? "list" : undefined}
           aria-expanded={mentionMembers ? mentionOpen : undefined}
@@ -317,8 +323,27 @@ export function MessageComposer({
               !event.nativeEvent.isComposing
             ) {
               event.preventDefault();
+              onTyping?.(false);
               event.currentTarget.form?.requestSubmit();
             }
+          }}
+        />
+        <EmojiPicker
+          disabled={disabled || busy}
+          onSelect={(emoji) => {
+            const element = textarea.current;
+            const start = element?.selectionStart ?? value.length,
+              end = element?.selectionEnd ?? start;
+            onChange(value.slice(0, start) + emoji + value.slice(end));
+            onTyping?.(true);
+            requestAnimationFrame(() => {
+              element?.focus();
+              element?.setSelectionRange(
+                start + emoji.length,
+                start + emoji.length,
+              );
+              setCaret(start + emoji.length);
+            });
           }}
         />
       </div>

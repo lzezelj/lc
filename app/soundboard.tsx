@@ -12,13 +12,12 @@ import {
 
 import { loadSoundAudio, type Sound } from "./soundboard-library";
 import { SoundPreviewIcon, SoundUploadDialog } from "./sound-manager";
-import { ServerJoinSoundPlayer } from "./server-join-sound";
+import { ServerJoinSound } from "./server-join-sound";
 
 export function useSoundboard(
   callId: string,
   options: {
     serverId?: string;
-    joinSoundId?: string | null;
     outputVolume?: number;
     outputId?: string;
     deafened?: boolean;
@@ -26,10 +25,11 @@ export function useSoundboard(
   } = {},
 ) {
   const player = useRef<SoundPlayer | null>(null);
-  const joinPlayer = useRef<ServerJoinSoundPlayer | null>(null);
-  const { serverId, joinSoundId, outputVolume, outputId, deafened } = options;
+  const joinPlayer = useRef<ServerJoinSound | null>(null);
+  const { serverId, outputVolume, outputId, deafened } = options;
+  const joinServer = useRef(serverId);
   useEffect(() => {
-    const current = new ServerJoinSoundPlayer();
+    const current = new ServerJoinSound();
     joinPlayer.current = current;
     return () => {
       current.stop();
@@ -37,14 +37,13 @@ export function useSoundboard(
     };
   }, [callId]);
   useEffect(() => {
+    joinServer.current = serverId;
     joinPlayer.current?.update({
       serverId,
-      joinSoundId,
       outputVolume,
-      outputId,
       deafened,
     });
-  }, [callId, serverId, joinSoundId, outputVolume, outputId, deafened]);
+  }, [callId, serverId, outputVolume, outputId, deafened]);
   const preview = useRef<SoundPlayer | null>(null);
   const localAudio = useRef<HTMLAudioElement | null>(null);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
@@ -131,9 +130,51 @@ export function useSoundboard(
       if (audio.srcObject === stream) audio.srcObject = null;
     };
   }
+  async function playSound(
+    serverId: string,
+    clipId: string,
+    publish: PublishSound,
+    audition = false,
+  ) {
+    const current = audition ? preview.current : player.current;
+    if (!current || (!audition && !reservePlay())) return;
+    await current.play(
+      prepareVoiceActivity(),
+      () => loadSoundAudio(serverId, clipId),
+      async (track) => {
+        if (audition) return listen(track, true);
+        const permit = await fetch(
+          `/api/servers/${serverId}/soundboard/play?clip=${encodeURIComponent(clipId)}`,
+          { method: "POST" },
+        );
+        if (!permit.ok) {
+          const result = await permit.json();
+          throw new Error(result.error ?? "The sound could not be played");
+        }
+        const unpublish = await publish(track);
+        try {
+          const stopListening = await listen(track, false);
+          return () => {
+            stopListening();
+            unpublish();
+          };
+        } catch (error) {
+          unpublish();
+          throw error;
+        }
+      },
+    );
+  }
   return {
-    playJoinSound: () => {
-      void joinPlayer.current?.play();
+    playSound,
+    playJoinSound: (userId?: string, publish?: PublishSound) => {
+      const currentServer = joinServer.current;
+      return joinPlayer.current?.play(
+        userId,
+        publish && currentServer
+          ? (clipId) => playSound(currentServer, clipId, publish)
+          : undefined,
+      );
     },
     stopJoinSound: () => joinPlayer.current?.stop(),
     player,
@@ -233,39 +274,11 @@ export function SoundboardButton({
     return () => abort.abort();
   }, [board.open, serverId]);
   async function play(sound: Sound, audition = false) {
-    const context = prepareVoiceActivity();
-    const player = audition ? board.preview.current : board.player.current;
-    if (!player || sound.serverId !== serverId) return;
-    if (!audition && !board.reservePlay()) return;
+    if (sound.serverId !== serverId) return;
     setPlaying(true);
     setError("");
     try {
-      await player.play(
-        context,
-        () => loadSoundAudio(serverId, sound.id),
-        async (track) => {
-          if (audition) return board.listen(track, true);
-          const permit = await fetch(
-            `/api/servers/${serverId}/soundboard/play?clip=${encodeURIComponent(sound.id)}`,
-            { method: "POST" },
-          );
-          if (!permit.ok) {
-            const result = await permit.json();
-            throw new Error(result.error ?? "The sound could not be played");
-          }
-          const unpublish = await publish(track);
-          try {
-            const stopListening = await board.listen(track, false);
-            return () => {
-              stopListening();
-              unpublish();
-            };
-          } catch (error) {
-            unpublish();
-            throw error;
-          }
-        },
-      );
+      await board.playSound(serverId, sound.id, publish, audition);
     } catch (error) {
       setError(
         error instanceof Error

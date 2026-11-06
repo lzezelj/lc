@@ -127,6 +127,34 @@
       "when": 1793830800000,
       "tag": "0017_server_join_sound",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793923200000,
+      "tag": "0018_member_voice_sounds",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793923200001,
+      "tag": "0019_remove_leave_sound",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1793923200002,
+      "tag": "0020_message_reactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793923200003,
+      "tag": "0021_single_message_reaction",
+      "breakpoints": true
     }
   ]
 }

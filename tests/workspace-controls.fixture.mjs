@@ -11,6 +11,10 @@ import { ChannelManager } from "./channel-manager.js";
 import { MessageDeleteAction } from "./message-delete-action.js";
 import { ChatHistory } from "./chat-history.js";
 import { MessageComposer } from "./message-composer.js";
+import { MessageReactions, MessageReactionMenu } from "./message-reactions.js";
+import { useMessageReactions } from "./use-message-reactions.js";
+import { useTyping } from "./use-typing.js";
+import { useConversationDraft } from "./use-conversation-draft.js";
 import { UnreadIndicator } from "./unread-indicator.js";
 import { MentionText } from "./mention-text.js";
 import {
@@ -214,8 +218,60 @@ window.verifyMessageComposer = async () => {
       !container.querySelector(".pendingImage"),
       "Removing an image left its preview behind",
     );
+    flushSync(() => setText("ab"));
+    const emojiButton = container.querySelector('[aria-label="Add emoji"]');
+    const emojiBounds = emojiButton.getBoundingClientRect(),
+      iconBounds = emojiButton.querySelector("svg").getBoundingClientRect(),
+      sendBounds = container
+        .querySelector('button[type="submit"]')
+        .getBoundingClientRect();
+    check(
+      Math.abs(
+        (emojiBounds.left + emojiBounds.right) / 2 -
+          (iconBounds.left + iconBounds.right) / 2,
+      ) < 1 &&
+        Math.abs(
+          (emojiBounds.top + emojiBounds.bottom) / 2 -
+            (iconBounds.top + iconBounds.bottom) / 2,
+        ) < 1,
+      "Composer emoji SVG must be centered",
+    );
+    check(
+      emojiBounds.left > textarea.getBoundingClientRect().right &&
+        emojiBounds.right <= sendBounds.left + 1,
+      "Composer emoji button sits between the textarea and Send",
+    );
+    textarea.focus();
+    textarea.setSelectionRange(1, 1);
+    container.querySelector('[aria-label="Add emoji"]').click();
+    await wait();
+    const emojiSearch = document.querySelector('[aria-label="Search emojis"]');
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(emojiSearch, "blue heart");
+    emojiSearch.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    document.querySelector('[aria-label="💙 blue heart"]').click();
+    await wait();
+    check(
+      textarea.value === "a💙b" && textarea.selectionStart === 3,
+      "Emoji insertion must preserve the caret and surrounding text",
+    );
+    check(
+      !document.querySelector(".emojiPopover"),
+      "Choosing an emoji closes the picker",
+    );
+    await verifyEmojiReactions();
+    await verifyConversationDrafts();
+    await verifyTypingIndicators();
     return {
       growShrink: true,
+      emojiInsertion: true,
+      reactions: true,
+      liveReactionUpdates: true,
+      typingIndicators: true,
+      conversationDrafts: true,
       wrappedText: true,
       threeRowScroll: true,
       enter: true,
@@ -229,6 +285,569 @@ window.verifyMessageComposer = async () => {
     container.remove();
   }
 };
+
+async function verifyTypingIndicators() {
+  const host = document.createElement("section");
+  host.className = "chat";
+  document.body.append(host);
+  const root = createRoot(host),
+    sent = [];
+  const connection = {
+    readyState: 1,
+    send: (value) => sent.push(JSON.parse(value)),
+  };
+  const originalTimeout = window.setTimeout;
+  window.setTimeout = (callback, delay, ...args) =>
+    originalTimeout(callback, delay === 7000 ? 250 : delay, ...args);
+  function Fixture({ direct, target }) {
+    const ref = React.useRef(connection);
+    const [text, setText] = useState("");
+    const typing = useTyping(
+      ref,
+      "viewer",
+      direct ? { userId: target } : { channelId: target },
+    );
+    return h(
+      "div",
+      null,
+      h("div", { className: "typingIndicator", role: "status" }, typing.label),
+      h(
+        "form",
+        { onSubmit: (event) => event.preventDefault() },
+        h(MessageComposer, {
+          value: text,
+          onChange: setText,
+          onTyping: typing.change,
+          files: [],
+          onFiles() {},
+          placeholder: "Typing test",
+          progress: null,
+        }),
+        h("button", { type: "submit" }, "Send"),
+      ),
+    );
+  }
+  function input(value) {
+    const textarea = host.querySelector("textarea");
+    textarea.focus();
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    ).set.call(textarea, value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  try {
+    for (const direct of [false, true]) {
+      root.render(
+        h(Fixture, { direct, target: "conversation", key: String(direct) }),
+      );
+      await wait();
+      sent.length = 0;
+      input("Private draft");
+      input("Private draft continues");
+      await wait();
+      check(
+        sent.length === 1 &&
+          sent[0].active === true &&
+          !JSON.stringify(sent).includes("Private"),
+        "Typing is throttled and never sends draft text",
+      );
+      const scope = direct
+        ? { userId: "conversation" }
+        : { channelId: "conversation" };
+      window.dispatchEvent(
+        new CustomEvent("lc-typing", {
+          detail: {
+            ...scope,
+            users: [
+              { id: "other", name: "Alice" },
+              { id: "viewer", name: "Me" },
+            ],
+          },
+        }),
+      );
+      await wait();
+      check(
+        host.querySelector(".typingIndicator").textContent ===
+          "Alice is typing…",
+        "Typing indicator shows the other person and excludes yourself",
+      );
+      await new Promise((resolve) => originalTimeout(resolve, 300));
+      check(
+        host.querySelector(".typingIndicator").textContent === "",
+        "Typing expires without a stop packet",
+      );
+      host.querySelector("textarea").blur();
+      await wait();
+      check(sent.at(-1).active === false, "Blur immediately stops typing");
+      input("More draft");
+      await wait();
+      root.render(
+        h(Fixture, {
+          direct,
+          target: "next-conversation",
+          key: String(direct),
+        }),
+      );
+      await wait();
+      check(
+        sent.at(-1).active === false &&
+          (sent.at(-1).channelId ?? sent.at(-1).userId) === "conversation",
+        "Navigation stops the old conversation without restoring a call",
+      );
+    }
+  } finally {
+    root.unmount();
+    host.remove();
+    window.setTimeout = originalTimeout;
+  }
+}
+
+async function verifyConversationDrafts() {
+  const host = document.createElement("div");
+  host.className = "chat";
+  host.style.cssText = "position:fixed;top:20px;left:20px;width:300px";
+  document.body.append(host);
+  let root = createRoot(host),
+    current;
+  function Fixture({ account, conversation }) {
+    const draft = useConversationDraft(account, conversation);
+    React.useLayoutEffect(() => {
+      current = draft;
+    });
+    return h(MessageComposer, {
+      value: draft.text,
+      onChange: draft.setText,
+      files: draft.files,
+      onFiles: draft.setFiles,
+      placeholder: "Draft",
+      progress: null,
+    });
+  }
+  const visit = (conversation, account = "draft-owner") =>
+    flushSync(() => root.render(h(Fixture, { account, conversation })));
+  const write = (text) => flushSync(() => current.setText(text));
+  const file = new File(["pdf"], "draft.pdf", { type: "application/pdf" });
+  try {
+    visit("channel:server-one-general");
+    write("First channel draft");
+    flushSync(() => current.setFiles([file]));
+    const sent = current.clearSent;
+    visit("channel:server-one-other");
+    check(
+      current.text === "" && !current.files.length,
+      "New channel starts with an empty draft",
+    );
+    write("Second channel draft");
+    visit("channel:server-two-general");
+    write("Other server draft");
+    visit("direct:friend-one");
+    write("Private draft");
+    visit("direct:friend-two");
+    check(current.text === "", "Direct conversations have separate drafts");
+    write("Another private draft");
+    visit("channel:server-one-general");
+    check(
+      host.querySelector("textarea").value === "First channel draft" &&
+        current.files[0] === file,
+      "Channel text and selected files survive server/DM navigation",
+    );
+    write("A newer draft while the old send finishes");
+    flushSync(sent);
+    check(
+      current.text === "A newer draft while the old send finishes",
+      "An old successful send cannot clear a newer draft",
+    );
+    const finish = current.clearSent;
+    visit("direct:friend-one");
+    flushSync(finish);
+    check(
+      current.text === "Private draft",
+      "Send completion cannot clear the currently viewed conversation",
+    );
+    visit("channel:server-one-general");
+    check(
+      current.text === "" && !current.files.length,
+      "A successful send clears its original text and attachments even after navigation",
+    );
+    visit("channel:server-one-other");
+    check(
+      current.text === "Second channel draft",
+      "Other pending drafts remain intact",
+    );
+    visit("channel:server-two-general");
+    check(
+      current.text === "Other server draft",
+      "Drafts remain isolated across servers",
+    );
+    visit("direct:friend-two");
+    check(
+      current.text === "Another private draft",
+      "Second DM retains its own draft",
+    );
+    visit("direct:friend-two", "other-account");
+    check(
+      current.text === "" && !current.files.length,
+      "Drafts cannot leak between accounts",
+    );
+    visit("direct:friend-two");
+    check(
+      current.text === "",
+      "Switching accounts clears the previous session's drafts",
+    );
+    write("Ephemeral draft");
+    root.unmount();
+    root = createRoot(host);
+    visit("direct:friend-two");
+    check(
+      current.text === "" && !current.files.length,
+      "Remount/reload starts without saved drafts",
+    );
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+}
+
+async function verifyEmojiReactions() {
+  const originalFetch = window.fetch,
+    host = document.createElement("div");
+  host.className = "chatLog";
+  host.style.cssText =
+    "position:fixed;top:20px;left:20px;width:300px;height:100px;overflow:auto;display:block;scroll-behavior:auto";
+  document.body.append(host);
+  const root = createRoot(host);
+  const messageId = "11111111-1111-4111-8111-111111111111",
+    target = "22222222-2222-4222-8222-222222222222";
+  let count = 0,
+    mine = false,
+    deferReads = false;
+  const delayed = [];
+  const viewerAccount = `viewer-${Date.now()}-${Math.random()}`;
+  let deferDetails = false;
+  const pendingDetails = [];
+  const detailResponse = () =>
+    Response.json({
+      people: Array.from({ length: count }, (_, index) => ({
+        userId: `reactor-${index}`,
+        name: `Reactor ${index}`,
+        emoji: "👍",
+        me: mine && index === 0,
+      })),
+    });
+  window.fetch = async (url, options = {}) => {
+    check(
+      String(url).startsWith("/api/message-reactions"),
+      "Reactions use their dedicated API",
+    );
+    if (
+      !options.method &&
+      new URL(url, "https://lc.test").searchParams.get("details") === "1"
+    ) {
+      return deferDetails
+        ? new Promise((resolve) => pendingDetails.push(resolve))
+        : detailResponse();
+    }
+    if (!options.method)
+      return deferReads
+        ? new Promise((resolve) => delayed.push(resolve))
+        : Response.json({
+            [messageId]: count ? [{ emoji: "👍", count, me: mine }] : [],
+          });
+    const body = JSON.parse(options.body);
+    check(
+      body.emoji === "👍" && body.messageId === messageId,
+      "Reaction mutation sends the selected emoji and message",
+    );
+    if (options.method === "DELETE") {
+      mine = false;
+      count--;
+    } else {
+      if (!mine) count++;
+      mine = true;
+    }
+    return Response.json({ ok: true });
+  };
+  function Fixture({ direct, accountId = viewerAccount }) {
+    const [menu, setMenu] = useState(false);
+    const scope = direct ? { userId: target } : { channelId: target };
+    const reactions = useMessageReactions(accountId, scope, [messageId]);
+    const props = {
+      accountId,
+      messageId,
+      ...scope,
+      reactions: reactions.data[messageId],
+      onRefresh: reactions.refresh,
+    };
+    return h(
+      "article",
+      {
+        "data-message-id": messageId,
+        style: { paddingTop: "60px", paddingBottom: "12px" },
+        onContextMenu: (event) => {
+          event.preventDefault();
+          setMenu(true);
+        },
+      },
+      h("p", null, "React to this message"),
+      h(MessageReactions, props),
+      menu &&
+        h(
+          "div",
+          {
+            className: "messageContextMenu",
+            role: "menu",
+            style: {
+              position: "fixed",
+              left: "10px",
+              top: "20px",
+              width: "180px",
+            },
+          },
+          h(MessageReactionMenu, { ...props, onDone: () => setMenu(false) }),
+        ),
+    );
+  }
+  try {
+    for (const direct of [false, true]) {
+      count = 0;
+      mine = false;
+      root.render(h(Fixture, { direct, key: String(direct) }));
+      await wait();
+      host.scrollTop = host.scrollHeight;
+      const pageScroll = window.scrollY;
+      check(
+        !host.querySelector(".emojiTrigger"),
+        "Messages have no permanent emoji button",
+      );
+      host
+        .querySelector("article")
+        .dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        );
+      await wait();
+      const reactTrigger = host.querySelector(
+        '[role="menuitem"][aria-label="React"]',
+      );
+      if (direct) reactTrigger.click();
+      else
+        reactTrigger.dispatchEvent(
+          new PointerEvent("pointerover", {
+            bubbles: true,
+            pointerType: "mouse",
+          }),
+        );
+      await wait();
+      const bounds = document
+        .querySelector(".emojiPopover")
+        .getBoundingClientRect();
+      check(
+        bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0,
+        "Emoji picker stays inside the viewport",
+      );
+      const triggerBounds = reactTrigger.getBoundingClientRect();
+      const arrowBounds = reactTrigger
+        .querySelector("svg")
+        .getBoundingClientRect();
+      check(
+        Math.abs(
+          (arrowBounds.top +
+            arrowBounds.bottom -
+            triggerBounds.top -
+            triggerBounds.bottom) /
+            2,
+        ) < 1,
+        "React submenu arrow is vertically centered",
+      );
+      if (innerWidth > 600)
+        check(
+          bounds.left >= triggerBounds.right,
+          "Hover picker opens to the right when space permits",
+        );
+      if (!direct) {
+        const panel = document.querySelector(".emojiPopover");
+        reactTrigger.dispatchEvent(
+          new PointerEvent("pointerout", {
+            bubbles: true,
+            pointerType: "mouse",
+            relatedTarget: panel,
+          }),
+        );
+        panel.dispatchEvent(
+          new PointerEvent("pointerover", {
+            bubbles: true,
+            pointerType: "mouse",
+            relatedTarget: reactTrigger,
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        check(
+          document.querySelector(".emojiPopover"),
+          "Pointer can travel from React into its submenu",
+        );
+        reactTrigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        );
+        await wait();
+        check(
+          !document.querySelector(".emojiPopover"),
+          "Escape closes the hover submenu",
+        );
+        reactTrigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+        );
+        await wait();
+        check(
+          document.activeElement?.getAttribute("aria-label") ===
+            "Search emojis",
+          "Arrow Right opens and focuses the submenu for keyboard use",
+        );
+      }
+      document.querySelector('[aria-label="👍 thumbs up yes"]').click();
+      await wait();
+      check(
+        host
+          .querySelector('.reactionChip[aria-pressed="true"]')
+          ?.textContent.includes("1"),
+        "Own reaction appears with a count and selected state",
+      );
+      check(
+        !host.querySelector(".reactionRemove"),
+        "Reaction chips open details instead of displaying a removal X",
+      );
+      const messageBottom = host
+        .querySelector("article")
+        .getBoundingClientRect().bottom;
+      const visibleBottom =
+        host.getBoundingClientRect().top + host.clientTop + host.clientHeight;
+      check(
+        messageBottom <= visibleBottom + 1 && window.scrollY === pageScroll,
+        "Growing reactions remain visible by scrolling only the chat pane",
+      );
+      check(
+        !host.querySelector('[role="menu"]'),
+        "Picking a reaction closes the message context menu",
+      );
+      count = 2;
+      window.dispatchEvent(
+        new CustomEvent("lc-message-reactions", { detail: { messageId } }),
+      );
+      await wait();
+      check(
+        host.querySelector(".reactionChip")?.textContent.includes("2"),
+        "Another client's reaction updates the count",
+      );
+      deferReads = true;
+      window.dispatchEvent(
+        new CustomEvent("lc-message-reactions", { detail: { messageId } }),
+      );
+      window.dispatchEvent(
+        new CustomEvent("lc-message-reactions", { detail: { messageId } }),
+      );
+      await wait();
+      check(
+        delayed.length === 2,
+        "Both live invalidations request current counts",
+      );
+      count = 4;
+      delayed[1](
+        Response.json({ [messageId]: [{ emoji: "👍", count: 4, me: true }] }),
+      );
+      await wait();
+      delayed[0](
+        Response.json({ [messageId]: [{ emoji: "👍", count: 2, me: true }] }),
+      );
+      await wait();
+      check(
+        host.querySelector(".reactionChip")?.textContent.includes("4"),
+        "Late reaction responses must not regress newer counts",
+      );
+      delayed.length = 0;
+      deferReads = false;
+      deferDetails = true;
+      host.querySelector(".reactionChip").click();
+      await wait();
+      check(
+        document.querySelectorAll(".messageReactionsModal .skeletonRow")
+          .length === 3,
+        "Uncached reaction details use the shared skeleton template",
+      );
+      deferDetails = false;
+      pendingDetails.splice(0).forEach((resolve) => resolve(detailResponse()));
+      await wait();
+      const dialog = document.querySelector(".messageReactionsModal");
+      check(
+        dialog?.open &&
+          dialog.querySelectorAll(".reactionPeople li").length === 4,
+        "Clicking a chip shows everyone who reacted",
+      );
+      check(
+        count === 4 && dialog.querySelectorAll(".reactionRemove").length === 1,
+        "Opening details does not toggle reactions, and only your row has a removal X",
+      );
+      dialog.querySelector('[aria-label="Remove your reaction"]').click();
+      await wait();
+      check(
+        host
+          .querySelector('.reactionChip[aria-pressed="false"]')
+          ?.textContent.includes("3"),
+        "The X in reaction details removes only your own contribution",
+      );
+      check(
+        dialog.querySelectorAll(".reactionPeople li").length === 3 &&
+          !dialog.querySelector(".reactionRemove"),
+        "Open reaction details update after removal",
+      );
+      dialog.querySelector('[aria-label="Close reactions"]').click();
+      await wait();
+      deferDetails = true;
+      host.querySelector(".reactionChip").click();
+      await wait();
+      let reopened = document.querySelector(".messageReactionsModal");
+      check(
+        reopened.querySelectorAll(".reactionPeople li").length === 3 &&
+          !reopened.querySelector(".loadingSkeleton"),
+        "Reopening immediately displays cached participants while refresh is pending",
+      );
+      count = 2;
+      deferDetails = false;
+      pendingDetails.splice(0).forEach((resolve) => resolve(detailResponse()));
+      await wait();
+      check(
+        reopened.querySelectorAll(".reactionPeople li").length === 2,
+        "Background refresh updates cached details without a loading flash",
+      );
+      reopened.querySelector('[aria-label="Close reactions"]').click();
+      await wait();
+      root.render(
+        h(Fixture, {
+          direct,
+          accountId: `${viewerAccount}-other`,
+          key: `${direct}-other`,
+        }),
+      );
+      await wait();
+      deferDetails = true;
+      host.querySelector(".reactionChip").click();
+      await wait();
+      reopened = document.querySelector(".messageReactionsModal");
+      check(
+        reopened.querySelector(".loadingSkeleton") &&
+          !reopened.querySelector(".reactionPeople li"),
+        "Switching accounts cannot display another account's cached participants",
+      );
+      deferDetails = false;
+      pendingDetails.splice(0).forEach((resolve) => resolve(detailResponse()));
+      await wait();
+      reopened.querySelector('[aria-label="Close reactions"]').click();
+      await wait();
+    }
+  } finally {
+    root.unmount();
+    host.remove();
+    window.fetch = originalFetch;
+  }
+}
 window.verifyAttachmentPreview = async () => {
   const container = document.createElement("section");
   container.className = "chat";
@@ -2161,13 +2780,19 @@ async function verifySoundboard() {
   const joinSoundChanges = [];
   let canManageSounds = true;
   window.fetch = async (url, options = {}) => {
+    if (String(url).startsWith("/api/servers/call-server/join-sound?"))
+      return Response.json({ joinSoundId: "celebrate-v1" });
     if (String(url) === "/api/servers/call-server/join-sound") {
       check(
         options.method === "PATCH",
         "Join sound changes must be saved on the server",
       );
       const body = JSON.parse(options.body);
-      joinSoundChanges.push(body.joinSoundId);
+      joinSoundChanges.push(
+        Object.hasOwn(body, "joinSoundId")
+          ? body.joinSoundId
+          : body.leaveSoundId,
+      );
       return Response.json(body);
     }
     check(
@@ -2221,9 +2846,14 @@ async function verifySoundboard() {
     publishedTrack = track;
     return () => {};
   };
+  let boardActions;
   function Board() {
     const board = useSoundboard("call", {
+      serverId: "call-server",
       onSpeakingChange: (value) => speaking.push(value),
+    });
+    useEffect(() => {
+      boardActions = board;
     });
     return h(
       "div",
@@ -2552,12 +3182,21 @@ async function verifySoundboard() {
       joinSound.value = "custom-test";
       joinSound.dispatchEvent(new Event("change", { bubbles: true }));
       await wait();
+      check(
+        manager.textContent.includes("Join sound changed successfully") &&
+          !manager.textContent.includes("Saving join sound"),
+        "Join-sound save shows only the completed success message",
+      );
       joinSound.value = "";
       joinSound.dispatchEvent(new Event("change", { bubbles: true }));
       await wait();
       check(
         joinSoundChanges.join(",") === "custom-test,",
         "Server settings saves a soundboard clip and resets to Default",
+      );
+      check(
+        !manager.querySelector('[aria-label="Voice channel leave sound"]'),
+        "Custom leave sound is removed",
       );
       check(
         manager &&
@@ -2647,12 +3286,19 @@ async function verifySoundboard() {
       await wait();
       check(
         joinSoundChanges.at(-1) === "celebrate-v1",
-        "Members save the shared server join-sound choice",
+        "Members save their personal server join-sound choice",
       );
     } finally {
       managerRoot.unmount();
       managerHost.remove();
     }
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const beforeJoin = publications;
+    await boardActions.playJoinSound("arriving-user", publish);
+    check(
+      publications === beforeJoin + 1 && publishedTrack.readyState === "live",
+      "Automatic join must publish through the same live soundboard track path",
+    );
   } finally {
     root.unmount();
     container.remove();
@@ -3317,8 +3963,7 @@ async function verifySettingsCategories() {
   await wait();
   check(
     container.querySelectorAll("button").length === 1 &&
-      container.querySelector("button").textContent ===
-        "Voice channel join sound",
+      container.querySelector("button").textContent === "Voice channel sounds",
     "Member server settings must expose only the join-sound section",
   );
   root.render(

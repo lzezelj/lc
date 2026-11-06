@@ -1790,6 +1790,36 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .demoSettingsActions button { padding: 10px 14px; border: 1px solid #354158; border-radius: 7px; background: #222c40; color: var(--ink); }
 
 .composerInputRow { display: flex; align-items: flex-end; min-width: 0; }
+.emojiPicker { flex: 0 0 auto; display: inline-flex; }
+.emojiTrigger, .chat form .emojiTrigger { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 24px; line-height: 1; }
+.emojiTrigger:hover { color: var(--ink); background: #2a3448; }
+.emojiTrigger svg { display: block; }
+.composerInputRow > .emojiPicker { align-self: flex-end; margin: 0 6px 0 4px; }
+.emojiMenuItem { display: block; width: 100%; }
+.messageContextMenu .reactionMenuTrigger { width: 100%; text-align: left; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.reactionMenuArrow { display: block; flex-shrink: 0; }
+.emojiPopover { position: fixed; z-index: 180; width: min(288px, calc(100vw - 16px)); max-height: min(320px, calc(100dvh - 16px)); display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid #46536c; border-radius: 10px; background: #171e2c; box-shadow: 0 12px 32px #0008; }
+.emojiPopover input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid #3c4860; border-radius: 6px; background: #101622; color: var(--ink); }
+.emojiGrid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; overflow-y: auto; max-height: 248px; }
+.emojiGrid button { display: grid; place-items: center; height: 36px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; font-size: 23px; }
+.emojiGrid button:hover, .emojiGrid button:focus-visible { background: #34415a; border-color: #78a4ff; }
+.messageReactions { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.reactionChip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #3b465c; border-radius: 7px; background: #242d3e; color: var(--ink); font-size: 13px; }
+.reactionChip > span:first-child { font-size: 18px; line-height: 1.2; }
+.reactionChip.reacted { border-color: var(--accent); background: #294166; }
+.reactionEmoji { display: inline-flex; align-items: center; }
+.messageReactionsModal { width: min(420px, calc(100vw - 24px)); }
+.skeleton-reactions .skeletonRow { align-items: center; margin: 0 0 8px; padding: 10px; border-radius: 8px; background: #202838; }
+.reactionPeople { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.reactionPeople li { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 8px; background: #202838; }
+.reactionPersonEmoji { font-size: 24px; }
+.reactionPersonName { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.reactionPersonName small { color: var(--muted); }
+.reactionRemove { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 6px; flex-shrink: 0; }
+.typingIndicator { min-height: 20px; padding: 0 26px 3px; color: var(--muted); font-size: 12px; line-height: 17px; }
+.reactionChip:disabled, .emojiTrigger:disabled { opacity: .55; cursor: not-allowed; }
+.messageReactions .emojiTrigger { width: 28px; height: 28px; font-size: 21px; }
+.reactionError { color: #ffb2c0; display: block; font-size: 12px; }
 .chat .composerInputRow textarea {
   box-sizing: border-box;
   display: block;

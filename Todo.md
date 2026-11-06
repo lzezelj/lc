@@ -9,4 +9,4 @@ Automated tests for permissions and authorization
 Monitoring and structured logs
 
 Check if anything new has been added that should go in help and introduction
-Add kick from channel.
+Pinning messages

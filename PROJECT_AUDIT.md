@@ -26,6 +26,135 @@ database migration, package upgrade or infrastructure change was performed.
 
 ## Architecture preserved
 
+Conversation-draft follow-up: channel and DM text/files live in account-scoped
+workspace state and survive navigation between servers/channels/people. Reload,
+workspace unmount or account change discards them. A successful send clears only
+the submitted draft snapshot, including after navigation; newer drafts and other
+conversations stay intact. Failed sends retain their draft and editing uses its
+separate buffer. Added default/CI state regressions and muted composer checks for
+navigation, files, account isolation, late-send cleanup and reload/remount.
+Formatting, 232 default tests, production build and muted desktop/mobile composer
+checks passed. An initial composer run hit the already-recorded typing-blur
+assertion; a subsequent run passed both layouts. A focused test-worker launch
+hit sandbox EPERM and passed with the authorized rerun. No production changes.
+
+Reaction-menu/cache follow-up: React opens on hover beside the context menu with
+a centered right arrow, touch click and keyboard access, viewport fallback and a
+short gap-crossing delay. Participant lists reuse the shared account-scoped,
+bounded memory cache; reopening displays cached rows while checking the API in
+the background. Uncached details use shared delayed skeletons with reduced-motion
+support. Denied/missing details clear their cache. Composer browser regressions
+cover hover travel, arrow geometry, desktop placement, keyboard/touch access,
+skeletons, cached reopening, background refresh and account isolation.
+Formatting, all 231 default tests, production build and muted desktop/mobile
+composer checks passed. An initial mobile run hit the previously observed typing
+blur assertion; the rerun passed. A sandbox browser launch also returned EPERM;
+the authorized browser run passed. These results do not establish the cause of
+the intermittent blur failure. No database or deployment change was needed.
+
+Reaction-detail follow-up: chips now open a small shared dialog listing all
+reactors, with removal only beside the current user's row. Migration
+`0021_single_message_reaction` enforces one row per message/user in both chat
+types; a new selection replaces the old emoji atomically. Existing multi-emoji
+rows retain one deterministic choice, since old rows have no creation timestamp.
+Details enforce the same conversation access as counts and live invalidations
+update an open dialog. A message-size observer scrolls only the chat pane when
+a visible message grows below it; offscreen history does not force a jump.
+Help text and regression coverage reflect the new interaction. The reaction
+database fixture uses savepoints so route transactions cannot commit seed data.
+The local migration, formatting, 231 default tests, eight database tests,
+production build and muted desktop/mobile composer checks passed. Muted
+Friends/server navigation retained direct audio and the active group room.
+
+Learning/typing follow-up: own reaction chips show a small remove X on hover or
+keyboard focus. Added channel/DM typing indicators over authenticated signaling:
+no draft text or SQL writes, client throttling/idle stop, server expiry, disconnect
+cleanup, per-socket context replacement and per-account tab deduplication. Added
+tests for expiry/tab isolation, authorized recipients, forged-name rejection,
+non-friend denial and socket-close cleanup, plus desktop/mobile UI tests for
+throttling, blur/navigation and client expiry. Primitive/non-object socket frames
+are ignored instead of being treated as messages. Wrote LEARNING_GUIDE.md covering
+20 architecture topics, alternatives, code references, limitations and exercises.
+The first browser run timed out; the next reached a mobile blur assertion. The
+composer runner now supplies the same browser user-gesture context as the other
+interactive modes. Desktop/mobile checks then passed; this does not establish a
+cause for earlier unrelated browser/tour timeouts. Existing Todo edits preserved.
+Final verification: formatting, all 231 default tests, production build, muted
+desktop/mobile composer/typing checks and call-navigation checks passed. All 63
+relative source links in the learning guide resolve. No migration was needed for
+typing, and no production services or deployment were changed.
+
+Emoji control follow-up: replaced the text smiley trigger with a centered SVG,
+moved it after the composer textarea immediately before Send, and moved reaction
+selection into message right-click → React. DM menus now allow reacting to other
+participants' messages while preserving edit/delete ownership checks. Empty
+reaction rows disappear; existing chips remain toggleable. The composer and menu
+reuse the picker, and mutation controls share the same reaction action hook.
+Portal pointer/scroll handling preserves the parent menu during emoji selection.
+Help text was updated. Muted desktop/mobile composer checks passed placement,
+SVG centering, caret insertion, context-menu selection and reaction live updates.
+Formatting, all 228 default tests and production build also passed. No database
+or voice transport changes were introduced in this control-layout follow-up.
+
+Emoji/reaction follow-up: join-sound saves no longer show transient saving text;
+successful saves show "Join sound changed successfully". Added a shared searchable
+emoji picker for composer insertion and reactions in server channels/DMs. Reaction
+chips show counts and own participation, with per-user add/remove and dedicated
+metadata invalidation across clients. Backend authorization, idempotent writes,
+rate limits, bounded batch reads and stale-response guards preserve histories and
+calls. Applied local migration 0020 for reaction tables and deletion cleanup.
+New database regressions cover authorization, conversation boundaries, duplicate
+adds, per-user removal/counts, notification targets and soft-deletion cleanup.
+Browser checks cover caret insertion, picker bounds, server/DM reactions, live
+updates and out-of-order response handling. Existing uncommitted work was preserved.
+Verification: formatting, all 228 default tests, eight PostgreSQL tests and the
+production build passed. Muted desktop/mobile composer checks passed emoji/caret
+insertion, server/DM reaction toggles, live updates and stale-response rejection.
+Desktop/mobile media/settings checks confirmed success-only join feedback; call
+navigation retained direct audio and the group room/audio. The new default and
+database regressions use existing CI jobs. No production changes were made.
+
+Join playback/refresh correction: saving a personal join sound now sends a
+`voice-sounds-changed` event only to the actor's tabs/devices and merges only
+server sound metadata. It no longer invokes server-updated, clears conversations,
+refetches channels/members or refreshes other users' messages. Custom joins now
+publish from the arriving client through the shared manual soundboard permit,
+decode, publication and monitoring path. Listeners receive soundboard RTP rather
+than separately loading/playing the file. Native arrivals wait for a connected
+media path and announce once; LiveKit publishes after room connection. Removed
+custom leave settings and applied local migration 0019 to drop the unused field.
+Generated leave tones remain. Formatting, all 227 default tests, seven PostgreSQL
+tests and production build passed. Tests cover targeted saves preserving messages,
+sender-only custom publication and native connection-ready timing. Existing Todo
+edits and prior authorized work were preserved.
+Muted desktop/mobile checks passed, including actual automatic join publication
+through the soundboard path and removal of the leave selector. Navigation checks
+preserved direct audio and the group room/audio. The first combined browser run
+timed out in Runtime.evaluate during desktop workspace checks; a full rerun
+passed. The cause remains unproven; real SFU delivery is still not established
+by mocked LiveKit/browser checks.
+
+Personal voice sounds and tour navigation (6 November): join and leave choices
+are now stored per member per server. Everyone hears the arriving/departing
+member's chosen server-owned clip; the authenticated API scopes writes to the
+actor and authorizes listener lookups within that server. Native peer events now
+carry authenticated subject IDs; LiveKit uses participant account identity.
+Migration 0018 copies the previous shared join choice into existing memberships,
+adds an independent leave choice defaulting to Default, and drops the old server
+column. Deleting a clip resets both references. Applied to the verified local DB.
+The guide captures the original view, visits Friends/server views for relevant
+steps, and restores the original conversation/channel/call view on close without
+leaving voice. Accounts without servers retain fallback guidance. Existing Todo
+edits were preserved. Formatting, all 225 default tests, seven PostgreSQL tests
+and production build passed. PostgreSQL tests exercise actual PATCH/GET actor
+isolation and outsider denial as well as FK cleanup; default tests cover separate
+event clips, cancellation, authenticated native subject IDs and tour restoration.
+Muted desktop/mobile settings/guide and call-navigation checks passed, including
+independent leave-sound selection, stable direct audio and preserved group rooms.
+An initial combined run timed out in mobile `Runtime.evaluate`; the full rerun
+passed. No cause is established. Actual multi-person LiveKit sound delivery still
+needs real-SFU verification; the local browser group check uses a mocked room.
+
 Member-settings follow-up: all current server members can open server settings
 and change the shared voice channel join sound, including demo members. Non-owner
 navigation and content expose only that section and a local selected-sound preview;

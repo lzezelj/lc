@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import { createSignalingToken } from "../server/signaling-auth.mjs";
 import { createSignalingServer } from "../server/signaling.mjs";
 import { createVoiceSessions } from "../server/voice-sessions.mjs";
+import { TypingTracker } from "../server/typing.mjs";
 
 const resources = [];
 const authSecret = "test-signaling-secret";
@@ -16,6 +17,102 @@ const permittedChannelIds = [
   "random",
   "group-room",
 ];
+
+test("typing state deduplicates tabs, expires, switches contexts and clears disconnected users", () => {
+  let now = 0;
+  const updates = [];
+  const tracker = new TypingTracker(
+    (context, users) => updates.push({ key: context.key, users }),
+    () => now,
+    6000,
+  );
+  const channel = { key: "channel:a", channelId: "a" },
+    other = { key: "channel:b", channelId: "b" };
+  const first = {},
+    second = {};
+  tracker.update(first, channel, { id: "a", name: "Alice" }, true);
+  tracker.update(second, channel, { id: "a", name: "Alice" }, true);
+  assert.equal(updates.at(-1).users.length, 1);
+  tracker.clear(first);
+  assert.equal(updates.at(-1).users.length, 1, "another tab is still typing");
+  tracker.update(second, other, { id: "a", name: "Alice" }, true);
+  assert.deepEqual(updates.at(-2), { key: channel.key, users: [] });
+  tracker.update(second, channel, { id: "a", name: "Alice" }, false);
+  assert.equal(
+    tracker.entries.size,
+    1,
+    "late stop from an old context cannot clear the new one",
+  );
+  now = 6001;
+  tracker.expire();
+  assert.equal(tracker.entries.size, 0);
+  assert.deepEqual(updates.at(-1), { key: other.key, users: [] });
+});
+
+test("channel typing uses authenticated names and does not reach unauthorized viewers", async () => {
+  const url = await startServer();
+  const alice = await connect(url, "Typing Alice", ["general"]);
+  const bob = await connect(url, "Typing Bob", ["general"]);
+  const outsider = await connect(url, "Typing outsider", ["random"]);
+  const bobReady = nextMessage(bob),
+    outsiderReady = nextMessage(outsider);
+  bob.send(JSON.stringify({ type: "subscribe-workspace" }));
+  outsider.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await Promise.all([bobReady, outsiderReady]);
+  const incoming = matchingMessage(bob, (event) => event.type === "typing");
+  const quiet = expectNoMessage(outsider);
+  alice.send("null");
+  alice.send("[]");
+  alice.send(
+    JSON.stringify({
+      type: "typing",
+      channelId: "general",
+      active: true,
+      name: "Forged",
+      text: "Private draft",
+    }),
+  );
+  assert.deepEqual(await incoming, {
+    type: "typing",
+    channelId: "general",
+    users: [{ id: "test-Typing Alice", name: "Typing Alice" }],
+  });
+  await quiet;
+  const stopped = matchingMessage(bob, (event) => event.type === "typing");
+  alice.send(
+    JSON.stringify({ type: "typing", channelId: "general", active: false }),
+  );
+  assert.deepEqual((await stopped).users, []);
+  const denied = expectNoMessage(outsider);
+  alice.send(
+    JSON.stringify({ type: "typing", channelId: "random", active: true }),
+  );
+  await denied;
+});
+
+test("DM typing requires friendship and stops when the typing socket disconnects", async () => {
+  const url = await startServer();
+  const alice = await connect(url, "Typing A", [], [], ["test-Typing B"]);
+  const bob = await connect(url, "Typing B", [], [], ["test-Typing A"]);
+  const outsider = await connect(url, "Typing stranger", [], [], []);
+  const incoming = matchingMessage(bob, (event) => event.type === "typing");
+  alice.send(
+    JSON.stringify({ type: "typing", userId: "test-Typing B", active: true }),
+  );
+  assert.deepEqual(await incoming, {
+    type: "typing",
+    userId: "test-Typing A",
+    users: [{ id: "test-Typing A", name: "Typing A" }],
+  });
+  const stopped = matchingMessage(bob, (event) => event.type === "typing");
+  alice.close();
+  assert.deepEqual((await stopped).users, []);
+  const quiet = expectNoMessage(bob);
+  outsider.send(
+    JSON.stringify({ type: "typing", userId: "test-Typing B", active: true }),
+  );
+  await quiet;
+});
 
 test("voice claims serialize per account, remove SFU media before replacement and reject stale cleanup", async () => {
   const events = [];
@@ -649,6 +746,46 @@ test("authenticated users cannot subscribe to unauthorized channels", async () =
   });
 });
 
+test("reaction invalidations authenticate and reach only authorized channel subscribers", async () => {
+  const url = await startServer();
+  const viewer = await connect(url, "Reaction viewer", ["general"]);
+  const outsider = await connect(url, "Reaction outsider", ["random"]);
+  const subscribed = nextMessage(viewer),
+    otherSubscribed = nextMessage(outsider);
+  viewer.send(JSON.stringify({ type: "subscribe-workspace" }));
+  outsider.send(JSON.stringify({ type: "subscribe-workspace" }));
+  await Promise.all([subscribed, otherSubscribed]);
+  const endpoint = `${url.replace("ws://", "http://")}/internal/message-reactions-changed`;
+  const body = JSON.stringify({
+    channelId: "general",
+    messageId: "reacted-message",
+  });
+  assert.equal((await fetch(endpoint, { method: "POST", body })).status, 401);
+  const incoming = matchingMessage(
+    viewer,
+    (event) => event.type === "message-reactions-changed",
+  );
+  const quiet = expectNoMessage(outsider);
+  assert.equal(
+    (
+      await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${authSecret}`,
+          "Content-Type": "application/json",
+        },
+        body,
+      })
+    ).status,
+    204,
+  );
+  assert.deepEqual(await incoming, {
+    type: "message-reactions-changed",
+    messageId: "reacted-message",
+  });
+  await quiet;
+});
+
 function nextMessage(socket) {
   return once(socket, "message").then(([data]) => JSON.parse(data.toString()));
 }
@@ -1093,9 +1230,14 @@ test("peers join, relay messages, and announce departure", async () => {
 
   const secondJoined = nextMessage(second);
   const peerJoined = nextMessage(first);
-  second.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  second.send(
+    JSON.stringify({ type: "join", roomId: "lounge", userId: "spoofed" }),
+  );
   assert.deepEqual(await secondJoined, { type: "joined", initiator: false });
-  assert.deepEqual(await peerJoined, { type: "peer-joined" });
+  assert.deepEqual(await peerJoined, {
+    type: "peer-joined",
+    userId: "test-Second",
+  });
 
   const relayedChat = nextMessage(second);
   first.send(JSON.stringify({ type: "chat", text: "hello" }));
@@ -1103,7 +1245,10 @@ test("peers join, relay messages, and announce departure", async () => {
 
   const peerLeft = nextMessage(first);
   second.close();
-  assert.deepEqual(await peerLeft, { type: "peer-left" });
+  assert.deepEqual(await peerLeft, {
+    type: "peer-left",
+    userId: "test-Second",
+  });
 });
 
 test("a direct-room peer remains joined and accepts a replacement peer", async () => {
@@ -1122,7 +1267,10 @@ test("a direct-room peer remains joined and accepts a replacement peer", async (
 
   const peerLeft = nextMessage(remaining);
   leaving.close();
-  assert.deepEqual(await peerLeft, { type: "peer-left" });
+  assert.deepEqual(await peerLeft, {
+    type: "peer-left",
+    userId: "test-Leaving",
+  });
 
   const replacement = await connect(url, "Replacement");
   const replacementJoined = nextMessage(replacement);
@@ -1132,7 +1280,10 @@ test("a direct-room peer remains joined and accepts a replacement peer", async (
     type: "joined",
     initiator: false,
   });
-  assert.deepEqual(await replacementAnnounced, { type: "peer-joined" });
+  assert.deepEqual(await replacementAnnounced, {
+    type: "peer-joined",
+    userId: "test-Replacement",
+  });
 
   const relayed = nextMessage(remaining);
   replacement.send(JSON.stringify({ type: "candidate", candidate: "fresh" }));
@@ -1208,7 +1359,7 @@ test("internal voice kick closes only the selected room participant", async () =
   assert.equal(response.status, 204);
   assert.deepEqual(await kicked, { type: "voice-kicked" });
   await guestClosed;
-  assert.deepEqual(await peerLeft, { type: "peer-left" });
+  assert.deepEqual(await peerLeft, { type: "peer-left", userId: "test-Guest" });
   assert.equal(owner.readyState, WebSocket.OPEN);
 });
 
@@ -1243,7 +1394,10 @@ test("reconnecting user replaces an old room socket without evicting the peer", 
     type: "joined",
     initiator: false,
   });
-  assert.deepEqual(await replacementAnnounced, { type: "peer-joined" });
+  assert.deepEqual(await replacementAnnounced, {
+    type: "peer-joined",
+    userId: "test-Ada",
+  });
   await replaced;
   assert.equal(other.readyState, WebSocket.OPEN);
 });

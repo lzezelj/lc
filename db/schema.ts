@@ -120,10 +120,6 @@ export const servers = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
-    joinSoundId: uuid("join_sound_id").references(
-      (): AnyPgColumn => serverSounds.id,
-      { onDelete: "set null" },
-    ),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -144,6 +140,10 @@ export const serverMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     role: serverRole("role").default("member").notNull(),
+    joinSoundId: uuid("join_sound_id").references(
+      (): AnyPgColumn => serverSounds.id,
+      { onDelete: "set null" },
+    ),
     joinedAt: timestamp("joined_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -276,6 +276,33 @@ export const directMessages = pgTable(
       table.createdAt,
     ),
   ],
+);
+
+export const channelMessageReactions = pgTable(
+  "channel_message_reactions",
+  {
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    emoji: text("emoji").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.messageId, table.userId] })],
+);
+export const directMessageReactions = pgTable(
+  "direct_message_reactions",
+  {
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => directMessages.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    emoji: text("emoji").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.messageId, table.userId] })],
 );
 
 export const messageAttachments = pgTable(

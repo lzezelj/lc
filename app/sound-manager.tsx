@@ -244,20 +244,26 @@ export function SoundManager({
   const [error, setError] = useState("");
   const [removing, setRemoving] = useState("");
   const [savingJoinSound, setSavingJoinSound] = useState(false);
+  const [joinSoundSaved, setJoinSoundSaved] = useState(false);
   async function saveJoinSound(soundId: string) {
     if (savingJoinSound) return;
     setSavingJoinSound(true);
+    setJoinSoundSaved(false);
     setError("");
     try {
       const response = await fetch(`/api/servers/${serverId}/join-sound`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ joinSoundId: soundId || null }),
+        body: JSON.stringify({
+          joinSoundId: soundId || null,
+        }),
       });
       const result = await response.json();
       if (!response.ok)
         throw new Error(result.error ?? "Could not save join sound");
-      onJoinSoundChange?.(result.joinSoundId);
+      if (Object.hasOwn(result, "joinSoundId"))
+        onJoinSoundChange?.(result.joinSoundId);
+      setJoinSoundSaved(true);
     } catch (error) {
       setError(
         error instanceof Error ? error.message : "Could not save join sound",
@@ -318,19 +324,19 @@ export function SoundManager({
   const visible = sounds.filter((sound) =>
     sound.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
-  const selectedJoinSound = sounds.find((sound) => sound.id === joinSoundId);
+  const selectedSounds = sounds.filter((sound) => sound.id === joinSoundId);
   return (
     <section className="soundManager" aria-label="Manage soundboard">
-      <h3>{joinSoundOnly ? "Voice channel join sound" : "Soundboard"}</h3>
+      <h3>{joinSoundOnly ? "Voice channel sounds" : "Soundboard"}</h3>
       <p>
         {joinSoundOnly
-          ? "Choose the sound everyone hears when someone joins a voice channel in this server. Previews play only for you."
+          ? "Choose the soundboard sound everyone hears when you join a voice channel in this server. Previews play only for you."
           : "Add sounds for everyone in this server. Previews play only for you."}
       </p>
       {!loading && (
         <div className="deviceSelection">
           <label>
-            Voice channel join sound
+            Your voice channel join sound
             <select
               aria-label="Voice channel join sound"
               value={joinSoundId ?? ""}
@@ -346,10 +352,13 @@ export function SoundManager({
             </select>
           </label>
           <small className="deviceSelectionNote">
-            Played when someone joins a voice channel in this server. Removing
-            the selected sound restores Default.
+            This choice is yours for this server only. Everyone in the channel
+            hears your chosen sound through the soundboard when you join.
+            Removing a selected sound restores Default.
           </small>
-          {savingJoinSound && <small role="status">Saving join sound…</small>}
+          {joinSoundSaved && (
+            <small role="status">Join sound changed successfully</small>
+          )}
         </div>
       )}
       {!joinSoundOnly && (
@@ -424,13 +433,10 @@ export function SoundManager({
         </>
       )}
       {joinSoundOnly && loading && <p role="status">Loading sounds…</p>}
-      {joinSoundOnly && selectedJoinSound && (
-        <LocalSoundPreview
-          key={selectedJoinSound.id}
-          sound={selectedJoinSound}
-          output={output}
-        />
-      )}
+      {joinSoundOnly &&
+        selectedSounds.map((sound) => (
+          <LocalSoundPreview key={sound.id} sound={sound} output={output} />
+        ))}
       {error && <p role="alert">{error}</p>}
       {uploadOpen && canManage && !joinSoundOnly && (
         <SoundUploadDialog

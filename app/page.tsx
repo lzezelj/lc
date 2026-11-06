@@ -63,7 +63,11 @@ import {
   type MessageEdit,
 } from "./message-updates";
 import { MessageComposer, sendMessageRequest } from "./message-composer";
+import { MessageReactions, MessageReactionMenu } from "./message-reactions";
+import { useMessageReactions } from "./use-message-reactions";
+import { useTyping } from "./use-typing";
 import { MessageAttachments } from "./message-attachments";
+import { useConversationDraft } from "./use-conversation-draft";
 import type { MessageAttachment } from "./attachment-types";
 import { ServerInvites } from "./server-invites";
 import { PersonalMessages } from "./personal-messages";
@@ -229,6 +233,8 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  joinSoundId?: string | null;
+  userId?: string;
   author?: string;
   sessionId?: string;
   channel?: Channel;
@@ -307,6 +313,7 @@ export default function Home() {
   const remoteScreenAudio = useScreenAudio();
   const screenAudioSender = useRef<RTCRtpSender | null>(null);
   const soundboardSender = useRef<RTCRtpSender | null>(null);
+  const pendingJoinAnnouncement = useRef(false);
   const remoteSoundboardAudio = useSoundboardAudio();
   const stopScreenAudioSlot = useRef<(() => void) | null>(null);
   const remoteSharing = useRef(false);
@@ -374,6 +381,8 @@ export default function Home() {
     friends: boolean;
     friend: Friend | null;
     callView: boolean;
+    serverId: string;
+    channelId: string;
   } | null>(null);
   const [navigationReady, setNavigationReady] = useState(false);
   const pendingLocation = useRef<WorkspaceLocation | null>(null);
@@ -486,8 +495,23 @@ export default function Home() {
   } | null>(null);
   const [permanentMessageDeletion, setPermanentMessageDeletion] =
     useState(false);
-  const [draft, setDraft] = useState("");
   const composerKey = `${session?.user.id}:${friendsView ? `direct:${selectedFriend?.id}` : `channel:${selectedChannelId}`}`;
+  const {
+    text: draft,
+    files,
+    setText: setDraft,
+    setFiles: changeFiles,
+    clearSent,
+  } = useConversationDraft(
+    session?.user.id,
+    friendsView
+      ? selectedFriend
+        ? `direct:${selectedFriend.id}`
+        : undefined
+      : selectedChannelId
+        ? `channel:${selectedChannelId}`
+        : undefined,
+  );
   const [historyAtLatest, setHistoryAtLatest] = useState({
     key: "",
     visible: false,
@@ -522,6 +546,24 @@ export default function Home() {
   }, [historyRefreshKey]);
   const shownDirectMessages = activeContext?.messages ?? directMessages;
   const shownChannelMessages = activeContext?.messages ?? messages;
+  const channelReactions = useMessageReactions(
+    session?.user.id,
+    { channelId: !friendsView ? selectedChannelId : undefined },
+    !friendsView
+      ? shownChannelMessages
+          .filter((message) => !message.deleted)
+          .map((message) => message.id)
+      : [],
+  );
+  const directReactions = useMessageReactions(
+    session?.user.id,
+    { userId: friendsView ? selectedFriend?.id : undefined },
+    friendsView && selectedFriend
+      ? shownDirectMessages
+          .filter((message) => !message.deleted && message.kind !== "call")
+          .map((message) => message.id)
+      : [],
+  );
   function showSearchResult(rows: SearchMessage[], targetId: string) {
     setHistoryContext({
       key: composerKey,
@@ -536,17 +578,9 @@ export default function Home() {
         : current,
     );
   }
-  const [pendingFiles, setPendingFiles] = useState<{
-    key: string;
-    files: File[];
-  }>({ key: "", files: [] });
-  const files = pendingFiles.key === composerKey ? pendingFiles.files : [];
   const [sendingMessage, setSendingMessage] = useState(false);
   const sendingMessageRef = useRef(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  function changeFiles(next: File[]) {
-    setPendingFiles({ key: composerKey, files: next });
-  }
   const [status, setStatus] = useState("Not connected");
   const [joined, setJoined] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -615,9 +649,6 @@ export default function Home() {
   const directMicSpeaking = useRef(false);
   const soundboard = useSoundboard(activeVoiceChannelId, {
     serverId: activeVoiceChannelSnapshot?.serverId,
-    joinSoundId: servers.find(
-      (server) => server.id === activeVoiceChannelSnapshot?.serverId,
-    )?.joinSoundId,
     outputVolume,
     outputId,
     deafened,
@@ -673,6 +704,13 @@ export default function Home() {
   const remoteVisualStream = useRef<MediaStream | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const presenceSocket = useRef<WebSocket | null>(null);
+  const typing = useTyping(
+    presenceSocket,
+    session?.user.id,
+    friendsView
+      ? { userId: selectedFriend?.id }
+      : { channelId: selectedChannelId },
+  );
   const textSocket = useRef<WebSocket | null>(null);
   const connection = useRef<RTCPeerConnection | null>(null);
   const creatingConnection = useRef<Promise<RTCPeerConnection> | null>(null);
@@ -1330,7 +1368,6 @@ export default function Home() {
     if (messageCooldown.blocked() || sendingMessageRef.current) return;
     const text = draft.trim();
     if (!selectedFriend || (!text && !files.length)) return;
-    const generation = directHistoryGeneration.current;
     sendingMessageRef.current = true;
     setSendingMessage(true);
     try {
@@ -1352,10 +1389,7 @@ export default function Home() {
         setDirectMessages((current) =>
           mergeChatMessages(current, [toChatMessage(message)]),
         );
-      setPendingFiles((current) =>
-        current === pendingFiles ? { key: "", files: [] } : current,
-      );
-      if (generation === directHistoryGeneration.current) setDraft("");
+      clearSent();
       setHistoryContext((current) =>
         current?.key === composerKey ? null : current,
       );
@@ -1722,11 +1756,22 @@ export default function Home() {
   useEffect(() => {
     if (!messageMenu) return;
     const closeMessageMenu = (event: PointerEvent) => {
-      if (!messageContextMenu.current?.contains(event.target as Node)) {
+      if (
+        !messageContextMenu.current?.contains(event.target as Node) &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest(".emojiPopover")
+        )
+      ) {
         setMessageMenu(null);
       }
     };
-    const closeMessageMenuOnScroll = () => setMessageMenu(null);
+    const closeMessageMenuOnScroll = (event: Event) => {
+      if (!(
+        event.target instanceof Element && event.target.closest(".emojiPopover")
+      ))
+        setMessageMenu(null);
+    };
     document.addEventListener("pointerdown", closeMessageMenu);
     document.addEventListener("scroll", closeMessageMenuOnScroll, true);
     return () => {
@@ -1884,6 +1929,7 @@ export default function Home() {
         textSocket.current = openedSocket;
       },
       onOpen: (openedSocket) => {
+        window.dispatchEvent(new CustomEvent("lc-message-reactions"));
         if (hasOpened) {
           conversationCache.current.delete(
             session?.user.id,
@@ -2026,6 +2072,7 @@ export default function Home() {
       },
       onOpen: (openedSocket) => {
         if (presenceHasConnected.current) {
+          window.dispatchEvent(new CustomEvent("lc-message-reactions"));
           conversationCache.current.clear();
           serverViewCache.current.clear();
           setHistoryRefreshKey((current) => current + 1);
@@ -2067,6 +2114,20 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (message.type === "typing") {
+          window.dispatchEvent(
+            new CustomEvent("lc-typing", { detail: message }),
+          );
+          return;
+        }
+        if (message.type === "message-reactions-changed") {
+          window.dispatchEvent(
+            new CustomEvent("lc-message-reactions", {
+              detail: { messageId: message.messageId },
+            }),
+          );
+          return;
+        }
         if (
           [
             "channel-activity",
@@ -2157,6 +2218,14 @@ export default function Home() {
             current === message.channelId ? "" : current,
           );
           invalidateSignalingToken();
+          return;
+        }
+        if (message.type === "voice-sounds-changed" && message.serverId) {
+          if (
+            message.joinSoundId === null ||
+            typeof message.joinSoundId === "string"
+          )
+            applyVoiceSoundSettings(message.serverId, message.joinSoundId);
           return;
         }
         if (message.type === "server-updated" && message.serverId) {
@@ -2586,7 +2655,13 @@ export default function Home() {
     };
     peer.onconnectionstatechange = () => {
       if (peer !== connection.current) return;
-      if (peer.connectionState === "connected") setStatus("Media connected");
+      if (peer.connectionState === "connected") {
+        setStatus("Media connected");
+        if (pendingJoinAnnouncement.current) {
+          pendingJoinAnnouncement.current = false;
+          soundboard.playJoinSound(session?.user.id, publishDirectSound);
+        }
+      }
       if (["disconnected", "failed"].includes(peer.connectionState)) {
         setStatus("Guest disconnected");
       }
@@ -2668,7 +2743,11 @@ export default function Home() {
       setJoining(false);
       setJoined(true);
       setStatus("Waiting for another person...");
-      if (!directReconnectInProgress.current) soundboard.playJoinSound();
+      if (!directReconnectInProgress.current) {
+        pendingJoinAnnouncement.current = message.initiator === false;
+        if (!pendingJoinAnnouncement.current)
+          soundboard.playJoinSound(session?.user.id);
+      }
       directReconnectInProgress.current = false;
       directReconnectAttempt.current = 0;
       send({
@@ -2693,7 +2772,7 @@ export default function Home() {
     }
     if (message.type === "peer-joined") {
       setCallPeerPresent(true);
-      soundboard.playJoinSound();
+      soundboard.playJoinSound(message.userId);
       connection.current?.restartIce();
       await createOffer();
       send({ type: "camera-state", enabled: !cameraOff });
@@ -3158,6 +3237,7 @@ export default function Home() {
     soundPlayerRef.current?.stop();
     soundboard.preview.current?.stop();
     soundboard.stopJoinSound();
+    pendingJoinAnnouncement.current = false;
     soundboard.setOpen(false);
     soundboardSender.current = null;
     if (remoteSoundboardAudio.current)
@@ -3487,11 +3567,8 @@ export default function Home() {
         session?.user.id,
         `channel:${selectedChannelId}`,
       );
-      setPendingFiles((current) =>
-        current === pendingFiles ? { key: "", files: [] } : current,
-      );
+      clearSent();
       if (generation !== channelHistoryGeneration.current) return;
-      setDraft("");
       setHistoryContext((current) =>
         current?.key === composerKey ? null : current,
       );
@@ -4831,6 +4908,16 @@ export default function Home() {
       }
     />
   );
+  function applyVoiceSoundSettings(
+    serverId: string,
+    joinSoundId: string | null,
+  ) {
+    setServers((current) =>
+      current.map((server) =>
+        server.id === serverId ? { ...server, joinSoundId } : server,
+      ),
+    );
+  }
   const serverSoundSettings = (
     <SoundManager
       key={selectedServerId}
@@ -5241,21 +5328,45 @@ export default function Home() {
   );
   const panelClasses = `${activeVoiceChannel ? "voiceActive" : ""} ${serverListToggled ? "serverListToggled" : ""} ${channelsHidden ? "channelsHidden" : ""} ${userListToggled ? "userListToggled" : ""}`;
   function handleHelpStep(step: number | null) {
-    if (step === 1) {
-      helpPreviousView.current ??= {
-        friends: friendsView,
-        friend: selectedFriend,
-        callView: callViewOpen,
-      };
-      setFriendsView(true);
-      setSelectedFriend(null);
-      setCallViewOpen(false);
-    } else if (helpPreviousView.current) {
+    if (step === null) {
       const previous = helpPreviousView.current;
       helpPreviousView.current = null;
+      if (!previous) return;
+      if (
+        previous.serverId &&
+        servers.some((server) => server.id === previous.serverId)
+      ) {
+        void switchServer(previous.serverId);
+        setSelectedChannelId(previous.channelId);
+      } else if (!previous.serverId) {
+        setSelectedServerId("");
+        setSelectedChannelId(previous.channelId);
+      }
       setFriendsView(previous.friends);
       setSelectedFriend(previous.friend);
       setCallViewOpen(previous.callView);
+      return;
+    }
+    helpPreviousView.current ??= {
+      friends: friendsView,
+      friend: selectedFriend,
+      callView: callViewOpen,
+      serverId: selectedServerId,
+      channelId: selectedChannelId,
+    };
+    if (step === 1) {
+      setFriendsView(true);
+      setSelectedFriend(null);
+      setCallViewOpen(false);
+    } else if ([2, 3, 4, 6, 8, 9].includes(step)) {
+      const server =
+        servers.find((server) => server.id === selectedServerId) ?? servers[0];
+      if (server) {
+        void switchServer(server.id);
+        setFriendsView(false);
+        setSelectedFriend(null);
+        setCallViewOpen(false);
+      }
     }
   }
   const helpTour = session?.user.id && (
@@ -5394,23 +5505,24 @@ export default function Home() {
     </div>
   );
 
+  async function publishDirectSound(track: MediaStreamTrack) {
+    const sender = soundboardSender.current;
+    if (!sender || !connection.current)
+      throw new Error("Call is not connected");
+    await sender.replaceTrack(track);
+    await preferSharedAudio(sender);
+    return () => {
+      if (sender.track === track)
+        void sender.replaceTrack(null).catch(() => {});
+    };
+  }
   const directSoundboard = (
     <SoundboardButton
       board={soundboard}
       serverId={activeVoiceChannel?.serverId}
       serverName={activeVoiceChannel?.serverName}
       disabled={!voiceReady}
-      publish={async (track) => {
-        const sender = soundboardSender.current;
-        if (!sender || !connection.current)
-          throw new Error("Call is not connected");
-        await sender.replaceTrack(track);
-        await preferSharedAudio(sender);
-        return () => {
-          if (sender.track === track)
-            void sender.replaceTrack(null).catch(() => {});
-        };
-      }}
+      publish={publishDirectSound}
     />
   );
 
@@ -5421,10 +5533,6 @@ export default function Home() {
       channelId={activeVoiceChannel.id}
       sessionId={currentVoiceSessionId}
       serverId={activeVoiceChannel.serverId}
-      joinSoundId={
-        servers.find((server) => server.id === activeVoiceChannel.serverId)
-          ?.joinSoundId
-      }
       serverName={activeVoiceChannel.serverName}
       currentUserName={session.user.name ?? "You"}
       cameraResolution={cameraResolution}
@@ -5510,6 +5618,35 @@ export default function Home() {
       role="menu"
       style={{ left: messageMenu.x, top: messageMenu.y }}
     >
+      {!messageMenu.message.deleted && messageMenu.message.kind !== "call" && (
+        <MessageReactionMenu
+          accountId={session.user.id}
+          key={messageMenu.message.id}
+          messageId={messageMenu.message.id}
+          reactions={
+            (messageMenu.conversationUserId
+              ? directReactions
+              : channelReactions
+            ).data[messageMenu.message.id]
+          }
+          channelId={
+            messageMenu.conversationUserId ? undefined : selectedChannelId
+          }
+          userId={messageMenu.conversationUserId}
+          onRefresh={
+            (messageMenu.conversationUserId
+              ? directReactions
+              : channelReactions
+            ).refresh
+          }
+          onDone={() => {
+            const id = messageMenu.message.id;
+            setMessageMenu((current) =>
+              current?.message.id === id ? null : current,
+            );
+          }}
+        />
+      )}
       {!messageMenu.conversationUserId && (
         <button
           type="button"
@@ -6558,7 +6695,10 @@ export default function Home() {
                     }
                     onContextMenu={(event) => {
                       event.preventDefault();
-                      if (message.authorId !== session.user.id) {
+                      if (
+                        message.authorId !== session.user.id &&
+                        (message.deleted || message.kind === "call")
+                      ) {
                         setMessageMenu(null);
                         return;
                       }
@@ -6571,7 +6711,7 @@ export default function Home() {
                         ),
                         y: Math.max(
                           0,
-                          Math.min(event.clientY, window.innerHeight - 110),
+                          Math.min(event.clientY, window.innerHeight - 190),
                         ),
                       });
                     }}
@@ -6604,14 +6744,32 @@ export default function Home() {
                           files={message.attachments}
                           deleted={message.deleted}
                         />
+                        {!message.deleted && message.kind !== "call" && (
+                          <MessageReactions
+                            accountId={session.user.id}
+                            messageId={message.id}
+                            reactions={directReactions.data[message.id]}
+                            userId={selectedFriend.id}
+                            onRefresh={directReactions.refresh}
+                          />
+                        )}
                       </>
                     )}
                   </article>
                 ))}
               </ChatHistory>
+              {directReactions.error && (
+                <small className="reactionError" role="status">
+                  {directReactions.error}
+                </small>
+              )}
+              <div className="typingIndicator" role="status" aria-live="polite">
+                {typing.label}
+              </div>
               <form onSubmit={sendDirectMessage}>
                 <MessageComposer
                   key={composerKey}
+                  onTyping={activeEdit ? undefined : typing.change}
                   value={activeEdit ? editDraft : draft}
                   onChange={activeEdit ? setEditDraft : setDraft}
                   editId={activeEdit?.message.id}
@@ -7410,7 +7568,10 @@ export default function Home() {
                     setMessageMenu({
                       message,
                       x: Math.min(event.clientX, window.innerWidth - 190),
-                      y: Math.min(event.clientY, window.innerHeight - 110),
+                      y: Math.max(
+                        0,
+                        Math.min(event.clientY, window.innerHeight - 190),
+                      ),
                     });
                   }}
                 >
@@ -7445,12 +7606,30 @@ export default function Home() {
                     files={message.attachments}
                     deleted={message.deleted}
                   />
+                  {!message.deleted && (
+                    <MessageReactions
+                      accountId={session.user.id}
+                      messageId={message.id}
+                      reactions={channelReactions.data[message.id]}
+                      channelId={selectedChannelId}
+                      onRefresh={channelReactions.refresh}
+                    />
+                  )}
                 </article>
               ))}
             </ChatHistory>
+            {channelReactions.error && (
+              <small className="reactionError" role="status">
+                {channelReactions.error}
+              </small>
+            )}
+            <div className="typingIndicator" role="status" aria-live="polite">
+              {typing.label}
+            </div>
             <form onSubmit={submit}>
               <MessageComposer
                 key={composerKey}
+                onTyping={activeEdit ? undefined : typing.change}
                 mentionMembers={members.filter(
                   (member) => member.id !== session.user.id,
                 )}

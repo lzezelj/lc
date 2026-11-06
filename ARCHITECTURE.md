@@ -8,6 +8,8 @@ calls, and multi-person calls through a LiveKit selective forwarding unit
 This document describes the system as it exists today. The final section calls
 out limitations and possible scaling paths instead of presenting the current
 single-server design as production infrastructure for a large public service.
+For an explanation of the major choices, alternatives and learning exercises,
+see [LEARNING_GUIDE.md](LEARNING_GUIDE.md).
 
 ## Goals
 
@@ -302,7 +304,78 @@ responses. Text-channel clicks clear the previous channel's visible history;
 previously loaded message pages restore from the page-session cache, while an
 uncached channel shows loading until its authorized history arrives.
 
+### Conversation drafts
+
+`useConversationDraft` keeps unsent text and selected `File` objects in the mounted
+workspace's React state, keyed by channel UUID or DM peer UUID and scoped to the
+signed-in account. Switching servers, channels or direct conversations restores
+the matching draft immediately. Reloading/unmounting or changing accounts clears
+all drafts; there is no browser-storage, cross-tab or server synchronization.
+Empty drafts are removed. Attachment previews release their object URLs on
+unmount and recreate them from the retained files when the conversation returns.
+Successful sends clear only the original draft object, even after navigation;
+newer text/files and drafts in other conversations are preserved. Failed sends
+leave the draft available. Message editing remains separate from unsent drafts.
+
+### Emoji and message reactions
+
+The composer and reaction controls share a searchable local Unicode emoji catalog
+and an accessible picker rendered above chat clipping boundaries. Composer picks
+insert at the saved caret/selection and remain ordinary persisted message text.
+The centered SVG trigger sits immediately before Send. Reactions are added through
+the message context menu's React action; messages without reactions have no extra
+button or row. Chips open a shared, focus-trapped dialog listing every reactor;
+only the viewer's own row offers a removal button. Details are fetched on demand
+through the same conversation authorization and refreshed on live invalidations.
+Participant lists reuse the bounded `SessionCache` in memory (100 lists / 512 KiB,
+five-minute reuse window), scoped to the signed-in account and conversation/message.
+Reopening paints cached rows immediately and revalidates in the background;
+uncached lists use the shared delayed, reduced-motion-aware skeleton. Forbidden,
+unauthorized or missing-message responses remove cached details. Nothing is written
+to browser storage. Closed or superseded requests cannot update the cache/UI.
+When reaction rows grow below the viewport, only the chat pane scrolls enough to
+reveal the currently visible message; offscreen history does not pull the reader.
+The shared menu picker
+keeps pointer/scroll interactions inside its portal from closing the parent menu.
+React opens on pointer hover with a centered submenu arrow, prefers the right
+side and flips/clamps at viewport edges. A short pointer-leave delay bridges the
+gap into the portal; clicking remains available for touch, with Arrow Right and
+Escape/Arrow Left for keyboard access. Hover opening does not steal keyboard focus.
+Migration `0020_message_reactions` adds separate channel/direct reaction tables,
+with cascading user/message deletion and triggers
+that remove reactions on soft deletion. Calls and deleted messages cannot receive
+reactions. `/api/message-reactions` authorizes server membership or accepted DM
+friendship, constrains message IDs to that conversation, rate-limits mutations,
+and derives the reacting user exclusively from the session. Adds/removals are
+idempotent; responses aggregate counts and the viewer's own participation.
+Migration `0021_single_message_reaction` enforces one reaction per message/user.
+Selecting another emoji atomically replaces the existing row. Existing multiple
+reactions are reduced deterministically to one emoji (bytewise order), since the
+old rows have no creation timestamps from which to identify the latest choice.
+GET batches at most 100 loaded message IDs. The account/conversation-scoped client
+state retains only loaded IDs and rejects obsolete/out-of-order responses.
+Channel invalidations travel through the authenticated internal signaling endpoint
+only to authorized subscribers; DM invalidations target the two participants.
+Events re-fetch only affected reaction metadata, without clearing message history,
+refreshing unread counts or affecting calls. Focus, online and signaling recovery
+refresh missed counts. The current catalog supports a curated set of Unicode
+emoji; custom emoji uploads are not introduced.
+
 ### Server and channel activity
+
+Typing indicators use transient authenticated signaling, not PostgreSQL. The
+composer sends activity at most once per two seconds while input changes and
+sends stop on blur, submission, empty input or context cleanup. It sends no draft
+text. The server derives identity/name from signed claims, checks channel access
+or accepted-friend claims and limits active updates. One temporary context per
+socket expires after six seconds; a one-second sweep publishes changes. Multiple
+tabs deduplicate to one typist, and closing one preserves another tab's activity.
+Channel snapshots reach authorized subscribed clients; DM snapshots reach the
+two accounts with reciprocal friend claims. The client filters the active
+conversation and own identity, with a seven-second expiry fallback and offline
+cleanup. These events do not refresh messages, unread state or media. Typing
+shares the existing signaling permission snapshot/freshness boundary and its
+single-process limitation; scaling would require shared transient coordination.
 
 Unread text activity appears as a dot on the server icon and beside its channel
 name, in both Friends and server workspaces. The account's persistent signaling
@@ -448,25 +521,34 @@ also provides local preview. These native audio controls use temporary Blob URLs
 and the same bounded audio cache as call playback, with the selected output
 device/volume and Deafen. Dialog/preview teardown pauses playback and revokes
 the Blob URL; it never publishes tracks, announces speaking or tears down calls.
-Server settings → Soundboard also selects the server's voice channel join sound.
-Default retains the generated join tone; a custom choice references an existing
-sound in that server. Migration `0017_server_join_sound` adds nullable
-`servers.join_sound_id` with an `ON DELETE SET NULL` foreign key. Deleting the
-selected sound therefore restores Default. The member-authorized, rate-limited PATCH
-`/api/servers/{serverId}/join-sound` locks membership, validates the sound's server
-association, and persists the choice. Server-list responses carry the setting;
-Every current server member, including demo members, can open server settings
-and change this shared choice. Non-owners see only the Voice channel join sound
-section and its optional local preview; management sections, uploads, removal,
-invitations and other server mutations remain owner-authorized at their APIs.
-the existing authenticated server-updated event refreshes clients after saves and
-sound deletion. The open call reads its own server's choice independently of
-the viewed workspace. Native server channels and LiveKit participant joins use
-a call-owned local player, never a published track. Custom playback reuses authenticated audio
-loading and the bounded sound cache, honors output device/volume and Deafen, and
-cancels pending loads and revokes Blob URLs on stop, channel changes or teardown.
-Missing/unplayable custom audio falls back to the default tone. Friend calls keep
-the default sound. This does not change leave sounds or admission/signaling rules.
+Server settings selects each member's personal join sound from that server's
+soundboard. Migration 0018 moves the previous shared choice into existing
+memberships; migration 0019 removes the custom leave field. Join choices remain
+in nullable `server_members.join_sound_id`, reset to Default on sound deletion.
+The member-authorized PATCH `/api/servers/{serverId}/join-sound` validates the
+server/clip association and updates only the signed-in member. On save it emits
+`voice-sounds-changed` through the authenticated per-user event path to that
+account's tabs/devices. The client merges only sound metadata into server state:
+no conversation cache clearing, channel/member loading, signaling-token refresh,
+inbox refresh or other-member broadcast. Actual server structure changes retain
+the existing broad server-updated path.
+
+An arriving client resolves its personal choice and publishes a custom join
+through the exact manual soundboard path: authenticated play permit/cooldown,
+cached WAV decode, dedicated soundboard track, activity monitor and local sender
+monitoring. Listeners receive ordinary soundboard RTP and apply their soundboard
+volume/mute and main output/Deafen. They never download or independently play
+the custom clip. Remote join handling reads only whether a custom announcement
+is selected, suppressing the generated join tone for that member.
+Native channels queue the arriving second peer's announcement until the media
+connection is connected, then publish once; an empty native channel has nobody
+to announce to. LiveKit publishes after joining the room through the named
+`lc-soundboard` track. Both reuse the manual publisher rather than injecting
+audio into the microphone. Leaving/call changes cancel pending metadata/decode
+and release publications. Normal generated leave tones and friend-call sounds
+remain. Custom leave announcements are removed because the departing sender's
+transport is being closed. Upload/removal remain owner-only and soundboard clips
+cannot be selected across server boundaries.
 
 Every published play, including a cache hit, requests
 POST `/api/servers/{serverId}/soundboard/play?clip={id}`. The API rechecks current
@@ -1068,10 +1150,15 @@ Communication, Privacy and Session. Opening camera or
 microphone previews and expanding settings details scrolls the dialog's content
 pane toward the newly opened section's top, clamped to the available scroll range;
 the workspace behind the modal does not scroll.
-The header's circled-question-mark Help control reopens an informational,
+The footer's Help & introduction control reopens an informational,
 step-by-step LC introduction. The guide shares the native modal component and
 lives beside the persistent call layer, so workspace navigation and guidance
-do not remount media or start capture. It automatically opens after workspace
+do not remount media or start capture. The guide remembers the original view,
+shows Friends on its Friends step, and switches to an available server for
+channel/server/mention guidance even when started in a DM. Closing/finishing
+restores the previous server/channel, Friends conversation and call view. Accounts
+without server access retain the available workspace and fallback hints.
+It automatically opens after workspace
 startup unless `lc.help.dismissed:{userId}` is true in localStorage. Next/Back
 navigate the guide; Skip and modal dismissal offer a final preference prompt.
 The final step and skip prompt both offer Do not show again, checked by default

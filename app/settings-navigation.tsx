@@ -37,7 +37,7 @@ export function SettingsNavigation({
       ? [
           {
             label: "Server",
-            items: [["join-sound", "Voice channel join sound"]],
+            items: [["join-sound", "Voice channel sounds"]],
           },
         ]
       : [

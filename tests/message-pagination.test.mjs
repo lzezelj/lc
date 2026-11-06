@@ -366,6 +366,12 @@ function historyFixture(channel = false) {
     requests,
     cache,
     reconnect: () => {
+      context.window = { dispatchEvent() {} };
+      context.CustomEvent = class {
+        constructor(type) {
+          this.type = type;
+        }
+      };
       context.workspaceActivityRef.current.refresh = () => {};
       context.openedSocket = { send() {} };
       vm.runInNewContext(

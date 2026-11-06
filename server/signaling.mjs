@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { verifySignalingToken } from "./signaling-auth.mjs";
 import { createVoiceSessions } from "./voice-sessions.mjs";
+import { TypingTracker } from "./typing.mjs";
 
 export function createSignalingServer({
   port = 3001,
@@ -104,6 +105,41 @@ export function createSignalingServer({
                 }),
               );
           }
+          response.writeHead(204).end();
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      request.url === "/internal/message-reactions-changed"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret))
+        return response.writeHead(401).end("Unauthorized");
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            typeof body.channelId !== "string" ||
+            typeof body.messageId !== "string"
+          )
+            return response.writeHead(400).end("Invalid reaction event");
+          for (const client of ws.clients)
+            if (
+              client.readyState === WebSocket.OPEN &&
+              (client.subscribedTextChannelId === body.channelId ||
+                (client.subscribedWorkspace &&
+                  client.allowedChannelIds.has(body.channelId)))
+            )
+              client.send(
+                JSON.stringify({
+                  type: "message-reactions-changed",
+                  messageId: body.messageId,
+                }),
+              );
           response.writeHead(204).end();
         })
         .catch(() => response.writeHead(400).end("Invalid JSON"));
@@ -439,6 +475,38 @@ export function createSignalingServer({
   const ws = new WebSocketServer({ noServer: true });
   const rooms = new Map();
   const deletedChannels = new Set();
+  const typing = new TypingTracker((context, users) => {
+    for (const client of ws.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      if (context.channelId) {
+        if (
+          deletedChannels.has(context.channelId) ||
+          !client.allowedChannelIds.has(context.channelId) ||
+          !(
+            client.subscribedWorkspace ||
+            client.subscribedTextChannelId === context.channelId
+          )
+        )
+          continue;
+        client.send(
+          JSON.stringify({
+            type: "typing",
+            channelId: context.channelId,
+            users,
+          }),
+        );
+      } else if (context.pair.includes(client.identity.sub)) {
+        const partner = context.pair.find((id) => id !== client.identity.sub);
+        if (client.identity.friendIds.includes(partner))
+          client.send(
+            JSON.stringify({ type: "typing", userId: partner, users }),
+          );
+      }
+    }
+  });
+  const typingTimer = setInterval(() => typing.expire(), 1000);
+  typingTimer.unref();
+  server.once("close", () => clearInterval(typingTimer));
   const userStatuses = new Map();
   const validStatuses = new Set(["online", "away", "dnd", "invisible"]);
   const voiceSessions = createVoiceSessions({
@@ -471,7 +539,12 @@ export function createSignalingServer({
           if (roomId !== next.roomId || next.kind !== "direct")
             for (const remaining of peers)
               if (remaining.readyState === WebSocket.OPEN)
-                remaining.send(JSON.stringify({ type: "peer-left" }));
+                remaining.send(
+                  JSON.stringify({
+                    type: "peer-left",
+                    userId: peer.identity.sub,
+                  }),
+                );
         }
         if (changed) broadcastPresence(roomId);
         if (!peers.size) rooms.delete(roomId);
@@ -734,6 +807,43 @@ export function createSignalingServer({
         return;
       }
 
+      if (!message || typeof message !== "object" || Array.isArray(message))
+        return;
+
+      if (message.type === "typing") {
+        if (typeof message.active !== "boolean") return;
+        let context;
+        if (
+          typeof message.channelId === "string" &&
+          !message.userId &&
+          !deletedChannels.has(message.channelId) &&
+          socket.allowedChannelIds.has(message.channelId)
+        )
+          context = {
+            key: `channel:${message.channelId}`,
+            channelId: message.channelId,
+          };
+        else if (
+          typeof message.userId === "string" &&
+          !message.channelId &&
+          message.userId !== socket.identity.sub &&
+          socket.identity.friendIds.includes(message.userId)
+        ) {
+          const pair = [socket.identity.sub, message.userId].sort();
+          context = { key: `direct:${JSON.stringify(pair)}`, pair };
+        }
+        if (!context) return;
+        if (message.active && Date.now() - (socket.lastTypingAt ?? 0) < 1000)
+          return;
+        if (message.active) socket.lastTypingAt = Date.now();
+        typing.update(
+          socket,
+          context,
+          { id: socket.identity.sub, name: socket.identity.name },
+          message.active,
+        );
+        return;
+      }
       if (message.type === "subscribe-user-presence") {
         socket.subscribedUserPresence = true;
         broadcastUserPresence();
@@ -1063,7 +1173,12 @@ export function createSignalingServer({
 
             for (const peer of peers) {
               if (peer !== socket && peer.readyState === WebSocket.OPEN) {
-                peer.send(JSON.stringify({ type: "peer-joined" }));
+                peer.send(
+                  JSON.stringify({
+                    type: "peer-joined",
+                    userId: socket.identity.sub,
+                  }),
+                );
               }
             }
             broadcastPresence(joinedRoomId);
@@ -1085,6 +1200,7 @@ export function createSignalingServer({
     });
 
     socket.on("close", () => {
+      typing.clear(socket);
       voiceSessions.suspend(socket.identity.sub, socket.voiceSessionId, socket);
       voiceSessions.suspend(socket.identity.sub, socket.groupVoiceSessionId);
       const pendingRoom = clearPendingVoice(socket);
@@ -1112,7 +1228,9 @@ export function createSignalingServer({
       if (!peers?.delete(socket)) return;
       for (const peer of peers) {
         if (peer.readyState === WebSocket.OPEN) {
-          peer.send(JSON.stringify({ type: "peer-left" }));
+          peer.send(
+            JSON.stringify({ type: "peer-left", userId: socket.identity.sub }),
+          );
         }
       }
       broadcastPresence(joinedRoomId);

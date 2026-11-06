@@ -21,7 +21,7 @@ export async function GET() {
       id: servers.id,
       name: servers.name,
       role: serverMembers.role,
-      joinSoundId: servers.joinSoundId,
+      joinSoundId: serverMembers.joinSoundId,
     })
     .from(serverMembers)
     .innerJoin(servers, eq(servers.id, serverMembers.serverId))

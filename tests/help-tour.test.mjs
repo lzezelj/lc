@@ -45,7 +45,7 @@ test("separate controls retain separate outlines", () => {
   assert.deepEqual(mergeHelpBoxes([]), []);
 });
 
-test("Friends guidance opens the actual Friends list and restores the previous view without leaving a call", async () => {
+test("guide switches between Friends and an available server, then restores the original view without leaving a call", async () => {
   const page = await readFile(
     new URL("../app/page.tsx", import.meta.url),
     "utf8",
@@ -70,11 +70,23 @@ test("Friends guidance opens the actual Friends list and restores the previous v
     friendsView: false,
     selectedFriend: friend,
     callViewOpen: true,
+    selectedServerId: "server-a",
+    selectedChannelId: "text-a",
+    servers: [{ id: "server-a" }],
+    switchServer(id) {
+      context.selectedServerId = id;
+    },
     leaveRoom: () => {
       throw new Error("Tour navigation must preserve the call");
     },
   };
-  for (const name of ["FriendsView", "SelectedFriend", "CallViewOpen"]) {
+  for (const name of [
+    "FriendsView",
+    "SelectedFriend",
+    "CallViewOpen",
+    "SelectedChannelId",
+    "SelectedServerId",
+  ]) {
     const key = name[0].toLowerCase() + name.slice(1);
     context[`set${name}`] = (value) => {
       context[key] = value;
@@ -84,16 +96,56 @@ test("Friends guidance opens the actual Friends list and restores the previous v
     `${ts.transpile(declaration)}; handleHelpStep`,
     context,
   );
-  for (const next of [2, null]) {
+  for (const originallyFriends of [false, true]) {
+    context.friendsView = originallyFriends;
+    step(0);
     step(1);
     step(1);
     assert.equal(context.friendsView, true);
     assert.equal(context.selectedFriend, null);
     assert.equal(context.callViewOpen, false);
-    step(next);
+    step(2);
     assert.equal(context.friendsView, false);
+    assert.equal(context.selectedServerId, "server-a");
+    assert.equal(context.callViewOpen, false);
+    step(8);
+    assert.equal(
+      context.friendsView,
+      false,
+      "server-only mention guidance must leave DMs",
+    );
+    step(null);
+    assert.equal(context.friendsView, originallyFriends);
     assert.equal(context.selectedFriend, friend);
     assert.equal(context.callViewOpen, true);
     assert.equal(context.helpPreviousView.current, null);
   }
+  context.servers = [];
+  context.friendsView = true;
+  step(0);
+  step(2);
+  assert.equal(
+    context.friendsView,
+    true,
+    "accounts without servers must stay in a usable view",
+  );
+  step(null);
+  context.servers = [{ id: "fallback-server" }];
+  context.selectedServerId = "";
+  context.selectedChannelId = "";
+  step(0);
+  step(2);
+  assert.equal(context.friendsView, false);
+  assert.equal(
+    context.selectedServerId,
+    "fallback-server",
+    "DM-only navigation selects an available server",
+  );
+  step(null);
+  assert.equal(context.friendsView, true);
+  assert.equal(
+    context.selectedServerId,
+    "",
+    "closing restores an originally unset server selection",
+  );
 });

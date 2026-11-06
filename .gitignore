@@ -28,3 +28,5 @@ Thumbs.db
 
 # Local database volumes
 .data/
+
+LEARNING_GUIDE.md

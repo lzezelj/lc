@@ -74,7 +74,6 @@ type GroupCallDiagnostics = {
 type GroupCallProps = {
   sessionId?: string;
   serverId?: string;
-  joinSoundId?: string | null;
   serverName?: string;
   cameraResolution?: CameraResolution;
   onCameraResolutionChange?: (resolution: CameraResolution) => void;
@@ -222,7 +221,6 @@ function RemoteTrackView({
 export function GroupCall({
   sessionId,
   serverId,
-  joinSoundId,
   serverName,
   cameraResolution = "720",
   onCameraResolutionChange,
@@ -254,7 +252,6 @@ export function GroupCall({
 }: GroupCallProps) {
   const soundboard = useSoundboard(channelId, {
     serverId,
-    joinSoundId,
     outputVolume: outputVolume * 100,
     outputId,
     deafened,
@@ -635,6 +632,19 @@ export function GroupCall({
     };
   }, [channelId, autoJoin, soundPlayerRef]);
 
+  async function publishSound(track: MediaStreamTrack) {
+    const room = roomRef.current;
+    if (!room) throw new Error("Call is not connected");
+    const local = new LocalAudioTrack(track);
+    await room.localParticipant.publishTrack(local, {
+      name: "lc-soundboard",
+      source: Track.Source.Unknown,
+      ...sharedAudioPublish,
+    });
+    return () => {
+      void room.localParticipant.unpublishTrack(local).catch(() => {});
+    };
+  }
   async function join() {
     if (joining || joined || roomRef.current) return;
     if (reconnectTimer.current !== null)
@@ -757,9 +767,9 @@ export function GroupCall({
           speaking: localSpeaking.current,
         });
       })
-      .on(RoomEvent.ParticipantConnected, () => {
+      .on(RoomEvent.ParticipantConnected, (participant) => {
         updatePresence();
-        soundboard.playJoinSound();
+        soundboard.playJoinSound(participant.identity.split(":")[0]);
       })
       .on(RoomEvent.ParticipantDisconnected, (participant) => {
         playVoiceSound("leave");
@@ -859,7 +869,7 @@ export function GroupCall({
         screen: false,
         speaking: false,
       });
-      soundboard.playJoinSound();
+      soundboard.playJoinSound(currentUserId, publishSound);
     } catch {
       if (roomRef.current !== room) {
         releaseRoom(room);
@@ -1348,19 +1358,7 @@ export function GroupCall({
           serverId={serverId}
           serverName={serverName}
           disabled={!joined || joining}
-          publish={async (track) => {
-            const room = roomRef.current;
-            if (!room || !joined) throw new Error("Call is not connected");
-            const local = new LocalAudioTrack(track);
-            await room.localParticipant.publishTrack(local, {
-              name: "lc-soundboard",
-              source: Track.Source.Unknown,
-              ...sharedAudioPublish,
-            });
-            return () => {
-              void room.localParticipant.unpublishTrack(local).catch(() => {});
-            };
-          }}
+          publish={publishSound}
         />
       </div>
       {screenShareOptionsOpen && joined && !joining && (

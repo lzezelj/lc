@@ -48,7 +48,7 @@ const stepTargets: HelpTarget[] = [
   {
     selectors: [".profileSettings", "[aria-label='Server settings']"],
     fallbacks: [".panelControls > button:nth-child(2)"],
-    hint: "Show channels reveals your profile and server settings. Members can change the join sound; server management remains owner-only.",
+    hint: "Show channels reveals your profile and server settings. Members can choose their own join sound; server management remains owner-only.",
   },
   {
     selectors: [".profileBar .profileMicrophone", ".profileSettings"],
@@ -87,7 +87,7 @@ export const helpSteps = [
   {
     title: "Messages",
     location: "Conversation → message box",
-    text: "Right-click a message to reply, edit or delete your own message. Editing puts its text in the message box; choose Edit to save or Escape to cancel. Search the current conversation from its header to find older messages and attachments.",
+    text: "Use the smiley beside Send to insert emojis. Right-click a message and hover over React (or tap it) to pick your one reaction; choosing another emoji replaces it. Click a reaction count to see everyone who reacted and use the × beside your own reaction to remove it. The menu also lets you reply, edit or delete your own message. Editing uses the message box; choose Edit to save or Escape to cancel. Search the conversation header to find older messages and attachments.",
   },
   {
     title: "Joining and controlling voice",
@@ -102,7 +102,7 @@ export const helpSteps = [
   {
     title: "Settings and server management",
     location: "Your profile → cog · server name → cog",
-    text: "The cog beside your profile opens account, privacy, microphone, output and camera settings. Do not disturb silences notification alerts. The server cog lets members change the shared voice channel join sound. Owners also manage channels, members, invitations and sounds; their join-sound choice is under Soundboard. Right-click menus expose additional actions when you have permission.",
+    text: "The cog beside your profile opens account, privacy, microphone, output and camera settings. Do not disturb silences notification alerts. In server settings, choose your personal join sound from that server's soundboard. Joining publishes the clip through the soundboard so everyone in the channel hears it. Owners also manage channels, members, invitations and sounds; their join-sound choice is under Soundboard. Right-click menus expose additional actions when you have permission.",
   },
   {
     title: "Microphone processing",

@@ -10,24 +10,277 @@ import * as orm from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema.ts";
 import * as attachmentTypes from "../app/attachment-types.ts";
+import * as emojiCatalog from "../app/emoji-catalog.ts";
 
 const { Client } = pg;
 
-test("server join sounds default to null and reset when their sound is deleted", async () => {
+test("message reactions enforce conversation access, isolate actors, aggregate live counts and clean up deleted messages", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const a = randomUUID(),
+      b = randomUUID(),
+      outsider = randomUUID(),
+      server = randomUUID(),
+      channel = randomUUID(),
+      message = randomUUID(),
+      direct = randomUUID(),
+      call = randomUUID();
+    await database.insert(schema.users).values([
+      { id: a, name: "Reactor A" },
+      { id: b, name: "Reactor B" },
+      { id: outsider, name: "Outsider" },
+    ]);
+    await database
+      .insert(schema.servers)
+      .values({ id: server, name: "Reaction test", createdBy: a });
+    await database.insert(schema.serverMembers).values([
+      { serverId: server, userId: a },
+      { serverId: server, userId: b },
+    ]);
+    await database
+      .insert(schema.channels)
+      .values({ id: channel, serverId: server, name: "general", type: "text" });
+    await database.insert(schema.messages).values({
+      id: message,
+      channelId: channel,
+      authorId: a,
+      content: "React here",
+    });
+    await database
+      .insert(schema.friendships)
+      .values({ requesterId: a, recipientId: b, status: "accepted" });
+    await database.insert(schema.directMessages).values([
+      { id: direct, senderId: a, recipientId: b, content: "Private reaction" },
+      {
+        id: call,
+        senderId: a,
+        recipientId: b,
+        content: "Call ended",
+        kind: "call",
+      },
+    ]);
+    let actor = a,
+      authenticated = true;
+    const events = [];
+    const route = {};
+    const deps = {
+      "drizzle-orm": orm,
+      "../../../auth": {
+        auth: async () => (authenticated ? { user: { id: actor } } : null),
+      },
+      "../../../db": {
+        db: new Proxy(database, {
+          get(target, property) {
+            if (property === "transaction")
+              return async (callback) => {
+                await client.query("SAVEPOINT reaction_test");
+                try {
+                  const result = await callback(database);
+                  await client.query("RELEASE SAVEPOINT reaction_test");
+                  return result;
+                } catch (error) {
+                  await client.query("ROLLBACK TO SAVEPOINT reaction_test");
+                  await client.query("RELEASE SAVEPOINT reaction_test");
+                  throw error;
+                }
+              };
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }),
+      },
+      "../../../db/schema": schema,
+      "../../emoji-catalog": emojiCatalog,
+      "../../../server/rate-limit": {
+        checkRateLimit: () => ({ allowed: true }),
+      },
+      "../../../server/notify-user": {
+        notifyUser: async (userId, event) => events.push({ userId, event }),
+      },
+      "../../../server/friends": {
+        areFriends: async (left, right) => {
+          const result = await client.query(
+            "SELECT 1 FROM friendships WHERE status = 'accepted' AND ((requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1))",
+            [left, right],
+          );
+          return result.rowCount > 0;
+        },
+      },
+    };
+    vm.runInNewContext(
+      ts.transpile(
+        await readFile(
+          new URL("../app/api/message-reactions/route.ts", import.meta.url),
+          "utf8",
+        ),
+        { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      ),
+      {
+        exports: route,
+        Response,
+        URL,
+        process: { env: {} },
+        require: (name) => {
+          assert.ok(name in deps, name);
+          return deps[name];
+        },
+      },
+    );
+    const mutate = (id, scope, remove = false, emoji = "👍") =>
+      route[remove ? "DELETE" : "POST"](
+        new Request("https://lc.test/api/message-reactions", {
+          method: remove ? "DELETE" : "POST",
+          body: JSON.stringify({
+            messageId: id,
+            emoji,
+            ...scope,
+            actorId: outsider,
+          }),
+        }),
+      );
+    const read = (ids, scope) =>
+      route.GET(
+        new Request(
+          `https://lc.test/api/message-reactions?${new URLSearchParams({ messageIds: ids.join(","), ...scope })}`,
+        ),
+      );
+    assert.equal((await mutate(message, { channelId: channel })).status, 200);
+    await mutate(message, { channelId: channel });
+    let counts = await (await read([message], { channelId: channel })).json();
+    assert.deepEqual(
+      counts[message],
+      [{ emoji: "👍", count: 1, me: true }],
+      "duplicate adds are idempotent",
+    );
+    await mutate(message, { channelId: channel }, false, "❤️");
+    counts = await (await read([message], { channelId: channel })).json();
+    assert.deepEqual(
+      counts[message],
+      [{ emoji: "❤️", count: 1, me: true }],
+      "another emoji replaces the previous reaction",
+    );
+    await mutate(message, { channelId: channel });
+    actor = b;
+    await mutate(message, { channelId: channel });
+    counts = await (await read([message], { channelId: channel })).json();
+    assert.equal(counts[message][0].count, 2);
+    const details = await (
+      await read([message], { channelId: channel, details: "1" })
+    ).json();
+    assert.deepEqual(
+      details.people.map(({ name, me }) => ({ name, me })),
+      [
+        { name: "Reactor A", me: false },
+        { name: "Reactor B", me: true },
+      ],
+    );
+    assert.equal(
+      (await read([direct], { channelId: channel, details: "1" })).status,
+      404,
+    );
+    await mutate(message, { channelId: channel }, true);
+    counts = await (await read([message], { channelId: channel })).json();
+    assert.deepEqual(
+      counts[message],
+      [{ emoji: "👍", count: 1, me: false }],
+      "removing affects only the current user",
+    );
+    actor = outsider;
+    assert.equal((await mutate(message, { channelId: channel })).status, 403);
+    assert.equal((await read([message], { channelId: channel })).status, 403);
+    assert.equal(
+      (await read([message], { channelId: channel, details: "1" })).status,
+      403,
+    );
+    assert.equal((await mutate(direct, { userId: a })).status, 403);
+    actor = a;
+    assert.equal(
+      (await mutate(message, { channelId: channel }, false, "plain text"))
+        .status,
+      400,
+    );
+    assert.equal((await mutate(direct, { channelId: channel })).status, 404);
+    assert.equal((await mutate(call, { userId: b })).status, 404);
+    assert.equal((await mutate(direct, { userId: b })).status, 200);
+    assert.deepEqual(events.map((event) => event.userId).sort(), [a, b].sort());
+    assert.ok(
+      events.every((event) => event.event.type === "message-reactions-changed"),
+    );
+    counts = await (await read([direct], { userId: b })).json();
+    assert.equal(counts[direct][0].me, true);
+    await mutate(direct, { userId: b }, false, "❤️");
+    counts = await (await read([direct], { userId: b })).json();
+    assert.deepEqual(counts[direct], [{ emoji: "❤️", count: 1, me: true }]);
+    const directDetails = await (
+      await read([direct], { userId: b, details: "1" })
+    ).json();
+    assert.deepEqual(directDetails.people, [
+      { userId: a, name: "Reactor A", emoji: "❤️", me: true },
+    ]);
+    await database
+      .update(schema.messages)
+      .set({ deletedAt: new Date() })
+      .where(orm.eq(schema.messages.id, message));
+    await database
+      .update(schema.directMessages)
+      .set({ deletedAt: new Date() })
+      .where(orm.eq(schema.directMessages.id, direct));
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.channelMessageReactions)
+          .where(orm.eq(schema.channelMessageReactions.messageId, message))
+      ).length,
+      0,
+    );
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.directMessageReactions)
+          .where(orm.eq(schema.directMessageReactions.messageId, direct))
+      ).length,
+      0,
+    );
+    assert.equal((await mutate(message, { channelId: channel })).status, 404);
+    authenticated = false;
+    assert.equal((await read([message], { channelId: channel })).status, 401);
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
+test("member join sounds are isolated by person and server and reset on sound deletion", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   try {
     await client.query("BEGIN");
     const database = drizzle(client, { schema });
     const user = randomUUID(),
+      otherUser = randomUUID(),
       server = randomUUID(),
+      otherServer = randomUUID(),
       sound = randomUUID();
-    await database
-      .insert(schema.users)
-      .values({ id: user, name: "Join sound owner" });
+    await database.insert(schema.users).values([
+      { id: user, name: "Join sound owner" },
+      { id: otherUser, name: "Other member" },
+    ]);
+    await database.insert(schema.servers).values([
+      { id: server, name: "Join sound test", createdBy: user },
+      { id: otherServer, name: "Other server", createdBy: user },
+    ]);
     const [created] = await database
-      .insert(schema.servers)
-      .values({ id: server, name: "Join sound test", createdBy: user })
+      .insert(schema.serverMembers)
+      .values([
+        { serverId: server, userId: user },
+        { serverId: server, userId: otherUser },
+        { serverId: otherServer, userId: user },
+      ])
       .returning();
     assert.equal(created.joinSoundId, null);
     await database.insert(schema.serverSounds).values({
@@ -37,17 +290,98 @@ test("server join sounds default to null and reset when their sound is deleted",
       audio: Buffer.alloc(44),
       durationMs: 100,
     });
-    await database
-      .update(schema.servers)
-      .set({ joinSoundId: sound })
-      .where(orm.eq(schema.servers.id, server));
+    let actor = user;
+    const route = {};
+    const dependencies = {
+      "drizzle-orm": orm,
+      "next/server": { NextResponse: { json: Response.json } },
+      "../../../../../auth": {
+        auth: async () => ({ user: { id: actor, role: "member" } }),
+      },
+      "../../../../../db": { db: database },
+      "../../../../../db/schema": schema,
+      "../../../../../server/rate-limit": {
+        checkRateLimit: () => ({ allowed: true }),
+        rateLimits: { serverMutation: {} },
+      },
+      "../../../../../server/notify-user": { notifyUser: async () => {} },
+    };
+    vm.runInNewContext(
+      ts.transpile(
+        await readFile(
+          new URL(
+            "../app/api/servers/[serverId]/join-sound/route.ts",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      ),
+      {
+        exports: route,
+        URL,
+        require: (name) => {
+          assert.ok(name in dependencies, name);
+          return dependencies[name];
+        },
+      },
+    );
+    const scope = { params: Promise.resolve({ serverId: server }) };
+    const saved = await route.PATCH(
+      new Request("https://lc.test/join-sound", {
+        method: "PATCH",
+        body: JSON.stringify({
+          joinSoundId: sound,
+          userId: otherUser,
+        }),
+      }),
+      scope,
+    );
+    assert.equal(saved.status, 200);
+    actor = otherUser;
+    const target = await route.GET(
+      new Request(`https://lc.test/join-sound?userId=${user}`),
+      scope,
+    );
+    assert.deepEqual(
+      await target.json(),
+      { joinSoundId: sound },
+      "listeners resolve the joining/leaving member, not their own defaults",
+    );
+    const denied = await route.GET(
+      new Request(`https://lc.test/join-sound?userId=${user}`),
+      { params: Promise.resolve({ serverId: otherServer }) },
+    );
+    assert.equal(
+      denied.status,
+      403,
+      "outsiders cannot read another server's sound choices",
+    );
+    const others = await database
+      .select()
+      .from(schema.serverMembers)
+      .where(
+        orm.or(
+          orm.eq(schema.serverMembers.userId, otherUser),
+          orm.eq(schema.serverMembers.serverId, otherServer),
+        ),
+      );
+    assert.ok(
+      others.every((member) => member.joinSoundId === null),
+      "other people and servers retain independent defaults",
+    );
     await database
       .delete(schema.serverSounds)
       .where(orm.eq(schema.serverSounds.id, sound));
     const [reset] = await database
       .select()
-      .from(schema.servers)
-      .where(orm.eq(schema.servers.id, server));
+      .from(schema.serverMembers)
+      .where(
+        orm.and(
+          orm.eq(schema.serverMembers.serverId, server),
+          orm.eq(schema.serverMembers.userId, user),
+        ),
+      );
     assert.equal(reset.joinSoundId, null);
     await database.insert(schema.serverSounds).values({
       id: sound,
@@ -57,9 +391,14 @@ test("server join sounds default to null and reset when their sound is deleted",
       durationMs: 100,
     });
     await database
-      .update(schema.servers)
+      .update(schema.serverMembers)
       .set({ joinSoundId: sound })
-      .where(orm.eq(schema.servers.id, server));
+      .where(
+        orm.and(
+          orm.eq(schema.serverMembers.serverId, server),
+          orm.eq(schema.serverMembers.userId, user),
+        ),
+      );
     await database
       .delete(schema.servers)
       .where(orm.eq(schema.servers.id, server));
