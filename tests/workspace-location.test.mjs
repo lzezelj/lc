@@ -151,6 +151,7 @@ function fixture({
     readWorkspaceLocation,
     saveWorkspaceLocation,
     restoredTextChannel,
+    preloadServerPictures: () => {},
     fetch: async (url) => ({
       ok: true,
       json: async () =>
@@ -282,6 +283,41 @@ test("reload restores the authorized server and its selected text channel before
   assert.equal(f.context.selectedChannelId, "second");
   assert.equal(f.context.navigationReady, true);
   assert.equal(f.context.pendingLocation.current, null);
+});
+
+test("authorized server pictures preload before saved conversation restoration and never block navigation", async () => {
+  const f = fixture({
+    saved: { ...savedServer, view: "friends", friendId: "friend" },
+  });
+  const preloaded = [];
+  let finishFriends;
+  f.context.preloadServerPictures = (rows) => preloaded.push(...rows);
+  f.context.fetch = async (url) =>
+    url === "/api/servers"
+      ? {
+          ok: true,
+          json: async () => [
+            { id: "one", image: "/api/servers/one/picture?v=1" },
+          ],
+        }
+      : new Promise((resolve) => {
+          finishFriends = resolve;
+        });
+  f.run(bootstrap);
+  await settle();
+  assert.equal(preloaded.length, 1);
+  assert.equal(
+    f.context.navigationReady,
+    false,
+    "Conversation validation is still pending",
+  );
+  finishFriends({ ok: true, json: async () => [] });
+  await settle();
+  assert.equal(
+    f.context.navigationReady,
+    true,
+    "Image preloading is not awaited",
+  );
 });
 
 function invokeNavigation(fixture, name, id) {

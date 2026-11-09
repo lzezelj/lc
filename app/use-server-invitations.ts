@@ -5,6 +5,7 @@ export type ServerInvitation = {
   id: string;
   serverId: string;
   serverName: string;
+  serverImage?: string | null;
   inviterId: string;
   inviterName: string;
   recipientId: string;

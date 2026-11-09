@@ -16,6 +16,7 @@ import { useMessageReactions } from "./use-message-reactions.js";
 import { useTyping } from "./use-typing.js";
 import { useConversationDraft } from "./use-conversation-draft.js";
 import { Avatar } from "./avatar.js";
+import { StatusAvatar } from "./status-avatar.js";
 import { LocallyMuted } from "./locally-muted.js";
 import { ProfilePictureSettings } from "./profile-picture-settings.js";
 import { createAudioTransmissionGate } from "./audio-transmission.js";
@@ -38,6 +39,7 @@ import { PanelToggle } from "./panel-toggle.js";
 import { ServerInvites } from "./server-invites.js";
 import { useServerInvitations } from "./use-server-invitations.js";
 import { PendingServerInvitations } from "./pending-server-invitations.js";
+import { ServerLeaveConfirmation } from "./server-leave-confirmation.js";
 import { SettingsNavigation } from "./settings-navigation.js";
 import { PersonalMessages } from "./personal-messages.js";
 import { AccountDeletion } from "./account-deletion.js";
@@ -59,6 +61,7 @@ import { EmptyState } from "./empty-state.js";
 import { useMessageCooldown } from "./use-message-cooldown.js";
 import { MessageHeader } from "./message-header.js";
 import { SidebarResizer } from "./sidebar-resizer.js";
+import { LegalFrame } from "./legal-frame.js";
 import { DiagnosticsIndicator } from "./diagnostics.js";
 import { DeviceMenu } from "./device-menu.js";
 import { DeviceSelection } from "./device-selection.js";
@@ -67,7 +70,7 @@ import { UserStatusMenu } from "./user-status-menu.js";
 import { CallMediaProvider, useCallAudio } from "./call-media.js";
 import { SoundboardButton, useSoundboard } from "./soundboard.js";
 import { SoundManager } from "./sound-manager.js";
-import { ServerNavButton } from "./server-nav-button.js";
+import { ServerNavButton, preloadServerPictures } from "./server-nav-button.js";
 import { VoiceParticipantMenu } from "./voice-participant-menu.js";
 import { HelpTour, helpSteps } from "./help-tour.js";
 import { LoadingSkeleton } from "./loading-skeleton.js";
@@ -84,6 +87,361 @@ const check = (value, message) => {
   if (!value) throw new Error(message);
 };
 
+window.verifyVideoAttachments = async () => {
+  await verifyScreenShareOptions();
+  const canvas = document.createElement("canvas");
+  canvas.width = 160;
+  canvas.height = 90;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#78a4ff";
+  context.fillRect(0, 0, 160, 90);
+  const capture = canvas.captureStream(5);
+  const recorder = new MediaRecorder(capture, {
+    mimeType: "video/webm;codecs=vp8",
+  });
+  const chunks = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data.size) chunks.push(event.data);
+  };
+  const stopped = new Promise((resolve, reject) => {
+    recorder.onstop = resolve;
+    recorder.onerror = reject;
+  });
+  recorder.start();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  context.fillStyle = "#ed5965";
+  context.fillRect(0, 0, 160, 90);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  recorder.stop();
+  await stopped;
+  capture.getTracks().forEach((track) => track.stop());
+  const file = new File(chunks, "clip.webm", { type: "video/webm" });
+  const url = URL.createObjectURL(file);
+  const host = document.createElement("section");
+  host.className = "chat";
+  host.style.cssText =
+    "position:fixed;inset:16px;z-index:1000;display:block;overflow:auto";
+  document.body.append(host);
+  const root = createRoot(host);
+  let submissions = 0;
+  function Composer() {
+    const [files, setFiles] = useState([]);
+    return h(
+      "form",
+      {
+        onSubmit: (event) => {
+          event.preventDefault();
+          submissions++;
+        },
+      },
+      h(MessageComposer, {
+        value: "",
+        onChange() {},
+        files,
+        onFiles: setFiles,
+        placeholder: "Video draft",
+        progress: null,
+      }),
+      h("button", { type: "submit" }, "Send"),
+    );
+  }
+  const loaded = async (video) => {
+    video.muted = true;
+    for (
+      let count = 0;
+      count < 50 && video.readyState < 2 && !video.error;
+      count++
+    )
+      await wait();
+    check(
+      video.readyState >= 2 && video.videoWidth === 160,
+      "Video decodes in the browser",
+    );
+  };
+  try {
+    flushSync(() => root.render(h(Composer)));
+    const picker = host.querySelector('input[type="file"]');
+    check(
+      picker.accept.includes("video/mp4") &&
+        picker.accept.includes("video/webm"),
+      "Picker accepts supported videos",
+    );
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    picker.files = transfer.files;
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait();
+    const pending = host.querySelector(".pendingVideo");
+    await loaded(pending);
+    const trigger = host.querySelector(".pendingImageButton");
+    trigger.focus();
+    trigger.click();
+    await wait();
+    let dialog = document.querySelector(".attachmentPreviewModal[open]");
+    let preview = dialog.querySelector("video");
+    await loaded(preview);
+    await preview.play();
+    check(
+      preview.controls && !preview.paused && submissions === 0,
+      "Draft videos preview without uploading or submitting",
+    );
+    dialog.querySelector('[aria-label="Close video preview"]').click();
+    await wait();
+    check(
+      preview.paused &&
+        !preview.getAttribute("src") &&
+        document.activeElement === trigger,
+      "Closing a video preview stops playback and restores focus",
+    );
+    host.querySelector('[aria-label="Remove clip.webm"]').click();
+    await wait();
+    check(
+      !host.querySelector(".pendingVideo") &&
+        pending.paused &&
+        !pending.getAttribute("src"),
+      "Removing a draft releases its video source",
+    );
+    const metadata = [
+      { id: "video-test", name: file.name, type: file.type, size: file.size },
+    ];
+    flushSync(() => root.render(h(MessageAttachments, { files: metadata })));
+    const inline = host.querySelector("video");
+    inline.src = url;
+    check(
+      inline.controls && !inline.autoplay && inline.preload === "metadata",
+      "Sent clips use explicit playback and metadata preload",
+    );
+    await loaded(inline);
+    await inline.play();
+    const open = host.querySelector('[aria-label="Preview clip.webm"]');
+    open.focus();
+    open.click();
+    await wait();
+    check(inline.paused, "Opening the larger player pauses the inline player");
+    dialog = document.querySelector(".attachmentPreviewModal[open]");
+    preview = dialog.querySelector("video");
+    preview.src = url;
+    await loaded(preview);
+    await preview.play();
+    check(
+      dialog.getBoundingClientRect().width <= innerWidth &&
+        preview.getBoundingClientRect().width <=
+          dialog.getBoundingClientRect().width,
+      "Video window stays inside desktop/mobile viewport",
+    );
+    check(
+      host.querySelector(".attachmentDownload").getAttribute("href") ===
+        "/api/attachments/video-test?download=1",
+      "Video download uses the authorized attachment endpoint",
+    );
+    flushSync(() =>
+      root.render(
+        h(MessageAttachments, {
+          files: metadata.map((file) => ({ ...file, expired: true })),
+        }),
+      ),
+    );
+    check(
+      !document.querySelector(".attachmentPreviewModal") &&
+        preview.paused &&
+        !preview.getAttribute("src"),
+      "Expiry closes and stops the video",
+    );
+    check(
+      host.textContent.includes("Attachment expired") &&
+        !host.querySelector(".attachmentDownload") &&
+        !host.querySelector("video"),
+      "Expired attachments retain a label without playback or download",
+    );
+    return {
+      stagedVideo: true,
+      playback: true,
+      previewWindow: true,
+      cleanup: true,
+      noAutoplay: true,
+      download: true,
+    };
+  } finally {
+    root.unmount();
+    host.remove();
+    URL.revokeObjectURL(url);
+  }
+};
+
+window.verifyWorkspaceLayout = async () => {
+  const audio = window.workspaceAudio.element;
+  const stream = audio.srcObject;
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    for (const documentName of ["impressum", "privacy", "licenses"]) {
+      function Fixture() {
+        const [open, setOpen] = useState(true);
+        return open
+          ? h(LegalFrame, {
+              document: documentName,
+              title: documentName,
+              onClose: () => {
+                setOpen(false);
+              },
+            })
+          : null;
+      }
+      flushSync(() => root.render(h(Fixture, { key: documentName })));
+      const frame = host.querySelector("iframe");
+      const frameLoaded = new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`${documentName} fixture did not load`)),
+          3000,
+        );
+        frame.addEventListener(
+          "load",
+          () => {
+            clearTimeout(timer);
+            setTimeout(resolve, 0);
+          },
+          { once: true },
+        );
+      });
+      await frameLoaded;
+      for (
+        let attempt = 0;
+        attempt < 30 && !frame.contentDocument?.querySelector("a");
+        attempt++
+      )
+        await wait();
+      const click = new frame.contentWindow.MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+      });
+      frame.contentDocument.querySelector("a span").dispatchEvent(click);
+      await wait();
+      check(
+        click.defaultPrevented && !host.querySelector("iframe"),
+        `${documentName}: Back to LC closes the document instead of loading a nested app`,
+      );
+    }
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+  const soundHost = document.createElement("div");
+  soundHost.className = "workspace";
+  soundHost.style.cssText =
+    "position:fixed;top:0;left:0;width:320px;height:56px;display:block;z-index:1000";
+  document.body.append(soundHost);
+  const soundRoot = createRoot(soundHost);
+  try {
+    flushSync(() =>
+      soundRoot.render(
+        h(
+          "div",
+          {
+            className: "controls voiceDock",
+            style: {
+              position: "static",
+              width: "90px",
+              gridTemplateColumns: "minmax(0, 1fr)",
+            },
+          },
+          h(SoundboardButton, {
+            board: { open: false, setOpen() {} },
+            serverId: "layout-test",
+            disabled: false,
+            publish: async () => () => {},
+          }),
+        ),
+      ),
+    );
+    const label = soundHost.querySelector(".soundboardButton .soundName");
+    check(
+      label.title === "Soundboard" &&
+        label.scrollWidth > label.clientWidth &&
+        getComputedStyle(label).textOverflow === "ellipsis",
+      "Soundboard button uses an ellipsis and exposes its full hover title",
+    );
+  } finally {
+    soundRoot.unmount();
+    soundHost.remove();
+  }
+  const workspace = document.querySelector(".workspace");
+  const channelHandle = workspace.querySelector(
+    '[aria-label="Resize channel list"]',
+  );
+  if (innerWidth > 920) {
+    channelHandle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Home",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    check(
+      workspace.querySelector(".channelSidebar").getBoundingClientRect()
+        .width === 320,
+      "Channel sidebar clamps to the wider 320px minimum",
+    );
+    const avatar = workspace
+      .querySelector(".profileStatusTrigger .userAvatar")
+      .getBoundingClientRect();
+    const microphone = workspace
+      .querySelector(".voiceDock .mediaToggle")
+      .getBoundingClientRect();
+    check(
+      avatar.width >= 32 &&
+        avatar.right < microphone.left &&
+        document
+          .elementFromPoint(
+            avatar.left + avatar.width / 2,
+            avatar.top + avatar.height / 2,
+          )
+          ?.closest(".profileStatusTrigger"),
+      "The profile picture stays whole and clear of microphone controls at minimum width",
+    );
+    const members = workspace.querySelector(".memberSidebar"),
+      handle = members.querySelector('[aria-label="Resize All users"]');
+    handle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Home",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    const before = members.getBoundingClientRect().width;
+    handle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowLeft",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    check(
+      members.getBoundingClientRect().width === before + 10,
+      "Dragging direction and keyboard arrows grow All users from its left edge",
+    );
+    handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    channelHandle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    await wait();
+  }
+  check(
+    window.workspaceAudio.element === audio &&
+      audio.srcObject === stream &&
+      !audio.paused,
+    "Closing legal windows and resizing sidebars preserve call playback",
+  );
+  return {
+    legalBack: true,
+    widerMinimum: true,
+    membersResizable: true,
+    soundboardEllipsis: true,
+    callPreserved: true,
+  };
+};
+
 window.verifyParticipantAudio = async () => {
   await verifyParticipantControls();
   await verifyParticipantIndicators();
@@ -97,6 +455,8 @@ window.verifyParticipantAudio = async () => {
 };
 
 window.verifyServerInvitations = async () => {
+  await verifyServerPictureLoading();
+  await verifyServerLeaveConfirmation();
   await verifyInvitesAndReveal();
   const host = document.createElement("div"),
     original = window.fetch;
@@ -113,6 +473,8 @@ window.verifyServerInvitations = async () => {
     id: "incoming",
     serverId: "one",
     serverName: "Incoming server",
+    serverImage:
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOioAAAAASUVORK5CYII=",
     inviterId: "sender",
     inviterName: "Sender",
     recipientId: "viewer",
@@ -151,7 +513,20 @@ window.verifyServerInvitations = async () => {
     React.useLayoutEffect(() => {
       current = invitations;
     });
-    return h(PendingServerInvitations, { invitations });
+    return h(
+      React.Fragment,
+      {},
+      ...[true, false].map((incoming) =>
+        h(
+          "section",
+          {
+            key: String(incoming),
+            "aria-label": incoming ? "Incoming" : "Outgoing",
+          },
+          h(PendingServerInvitations, { invitations, incoming }),
+        ),
+      ),
+    );
   }
   const button = (text) =>
     [...host.querySelectorAll("button")].find(
@@ -167,6 +542,23 @@ window.verifyServerInvitations = async () => {
         button("Decline") &&
         button("Cancel invite"),
       "Pending list separates recipient actions from sender cancellation",
+    );
+    check(
+      host
+        .querySelector('[aria-label="Incoming"]')
+        .textContent.includes("Incoming server") &&
+        !host
+          .querySelector('[aria-label="Incoming"]')
+          .textContent.includes("Sent server") &&
+        host
+          .querySelector('[aria-label="Outgoing"]')
+          .textContent.includes("Sent server"),
+      "Incoming and outgoing server invites render in separate groups",
+    );
+    check(
+      host.querySelector(".serverPicture img")?.getAttribute("src") ===
+        incoming.serverImage,
+      "Invites show the server picture",
     );
     button("Accept").click();
     await wait();
@@ -247,6 +639,209 @@ window.verifyServerInvitations = async () => {
     window.fetch = original;
   }
 };
+
+async function verifyServerLeaveConfirmation() {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const confirmed = [];
+  let closed = 0,
+    release;
+  const server = { id: "captured-server", name: "Server to leave" };
+  const render = (key, onConfirm) =>
+    flushSync(() =>
+      root.render(
+        h(ServerLeaveConfirmation, {
+          key,
+          server,
+          onConfirm,
+          onClose: () => closed++,
+        }),
+      ),
+    );
+  try {
+    render("cancel", async (id) => confirmed.push(id));
+    await wait();
+    let dialog = document.querySelector("dialog[open]");
+    check(
+      dialog.textContent.includes(server.name) && confirmed.length === 0,
+      "Opening leave confirmation cannot remove membership",
+    );
+    [...dialog.querySelectorAll("button")]
+      .find((button) => button.textContent === "Cancel")
+      .click();
+    check(
+      closed === 1 && confirmed.length === 0,
+      "Cancel leaves the server membership untouched",
+    );
+    render("escape", async (id) => confirmed.push(id));
+    await wait();
+    document
+      .querySelector("dialog[open]")
+      .dispatchEvent(new Event("cancel", { cancelable: true }));
+    check(closed === 2 && confirmed.length === 0, "Escape cancels leaving");
+    render("failure", async () => {
+      throw new Error("Demo accounts must retain at least one server.");
+    });
+    await wait();
+    document.querySelector("dialog[open] button.danger").click();
+    await wait();
+    check(
+      document
+        .querySelector('dialog[open] [role="alert"]')
+        .textContent.includes("Demo accounts") && closed === 2,
+      "Backend leave errors stay in the confirmation dialog",
+    );
+    render("confirm", async (id) => {
+      confirmed.push(id);
+      await new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    await wait();
+    dialog = document.querySelector("dialog[open]");
+    const leave = dialog.querySelector("button.danger");
+    const color = getComputedStyle(leave)
+      .backgroundColor.match(/\d+/g)
+      .map(Number);
+    check(
+      color[0] > color[1] * 1.5 && color[0] > color[2],
+      "The destructive confirmation button is red",
+    );
+    leave.click();
+    leave.click();
+    await wait();
+    check(
+      confirmed.length === 1 && confirmed[0] === server.id && leave.disabled,
+      "Confirmation captures the intended server and prevents duplicate leave requests",
+    );
+    release();
+    await wait();
+    check(closed === 3, "Successful leave closes confirmation");
+    flushSync(() =>
+      root.render(
+        h(ServerNavButton, {
+          server: {
+            ...server,
+            image:
+              "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOioAAAAASUVORK5CYII=",
+          },
+          voiceUsers: [],
+          onClick() {},
+          onContextMenu() {},
+        }),
+      ),
+    );
+    await wait();
+    check(
+      host.querySelector(".workspaceButton .serverPicture img"),
+      "Server rail renders the server picture",
+    );
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+}
+
+async function verifyServerPictureLoading() {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const originalDecode = HTMLImageElement.prototype.decode;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 2;
+  const sources = ["red", "blue"].map((color) => {
+    canvas.getContext("2d").fillStyle = color;
+    canvas.getContext("2d").fillRect(0, 0, 2, 2);
+    return canvas.toDataURL();
+  });
+  const pending = new Map();
+  HTMLImageElement.prototype.decode = async function () {
+    const source = this.getAttribute("src");
+    await originalDecode.call(this);
+    if (sources.includes(source))
+      await new Promise((resolve) => pending.set(source, resolve));
+  };
+  const render = (image) =>
+    flushSync(() =>
+      root.render(
+        h(ServerNavButton, {
+          server: { id: "loading", name: "Loading server", image },
+          voiceUsers: [],
+          onClick() {},
+          onContextMenu() {},
+        }),
+      ),
+    );
+  const decoding = async (source) => {
+    for (let i = 0; i < 30 && !pending.has(source); i++) await wait();
+    check(
+      pending.has(source),
+      "Picture reaches decoding before it is revealed",
+    );
+  };
+  try {
+    preloadServerPictures([{ image: sources[0] }, { image: null }]);
+    check(
+      [...document.querySelectorAll('link[rel="preload"][as="image"]')].some(
+        (link) =>
+          link.getAttribute("href") === sources[0] &&
+          link.referrerPolicy === "no-referrer",
+      ),
+      "Server pictures preload with the rendered image request policy",
+    );
+    render(sources[0]);
+    await decoding(sources[0]);
+    const icon = host.querySelector(".serverPicture");
+    const before = icon.getBoundingClientRect();
+    check(
+      icon.textContent === "L" &&
+        getComputedStyle(icon.querySelector("img")).opacity === "0" &&
+        getComputedStyle(icon.querySelector(".avatarInitial")).visibility ===
+          "visible",
+      "Slow pictures keep a visible initial until decoding finishes",
+    );
+    render(sources[1]);
+    await decoding(sources[1]);
+    pending.get(sources[1])();
+    await wait();
+    check(
+      icon.classList.contains("avatarImageReady") &&
+        getComputedStyle(icon.querySelector(".avatarInitial")).visibility ===
+          "hidden",
+      "A decoded picture replaces its initial",
+    );
+    pending.get(sources[0])();
+    await wait();
+    check(
+      icon.classList.contains("avatarImageReady") &&
+        icon.querySelector("img").getAttribute("src") === sources[1],
+      "A late decode cannot hide or replace a newer picture",
+    );
+    const after = icon.getBoundingClientRect();
+    check(
+      before.width === 46 &&
+        before.height === 46 &&
+        after.width === before.width &&
+        after.height === before.height,
+      "Picture loading preserves the server icon dimensions",
+    );
+    render("data:image/png;base64,invalid");
+    await wait();
+    check(
+      !icon.querySelector("img") &&
+        icon.textContent === "L" &&
+        getComputedStyle(icon.querySelector(".avatarInitial")).visibility ===
+          "visible",
+      "Broken pictures retain initials",
+    );
+  } finally {
+    HTMLImageElement.prototype.decode = originalDecode;
+    for (const release of pending.values()) release();
+    root.unmount();
+    host.remove();
+  }
+}
 
 window.verifyMessageComposer = async () => {
   const container = document.createElement("section");
@@ -376,6 +971,7 @@ window.verifyMessageComposer = async () => {
         { type: "image/png" },
       ),
     );
+    const screenshotFile = picture.files[0];
     picker.files = picture.files;
     picker.dispatchEvent(new Event("change", { bubbles: true }));
     await wait();
@@ -385,6 +981,61 @@ window.verifyMessageComposer = async () => {
         preview.complete &&
         preview.naturalWidth === 1,
       "Selected image did not show a local thumbnail before sending",
+    );
+    const previewButton = container.querySelector(".pendingImageButton");
+    const submittedBeforePreview = submitted;
+    previewButton.focus();
+    previewButton.click();
+    await wait();
+    const previewDialog = document.querySelector(".attachmentPreviewModal");
+    check(
+      previewDialog?.open &&
+        previewDialog.querySelector("img").src === preview.src &&
+        submitted === submittedBeforePreview,
+      "Draft thumbnails open the local image in a window without submitting",
+    );
+    previewDialog.querySelector('[aria-label="Close image preview"]').click();
+    await wait();
+    check(
+      !document.querySelector(".attachmentPreviewModal") &&
+        document.activeElement === previewButton,
+      "Closing a draft preview restores focus to its thumbnail",
+    );
+    const sentBeforePaste = submitted;
+    const clipboardPicture = new DataTransfer();
+    clipboardPicture.items.add(screenshotFile);
+    const paste = new ClipboardEvent("paste", {
+      clipboardData: clipboardPicture,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(paste);
+    await wait();
+    check(
+      paste.defaultPrevented &&
+        container.querySelectorAll(".pendingImage").length === 2 &&
+        submitted === sentBeforePaste,
+      "Pasted screenshots stage previews without automatically sending",
+    );
+    const textClipboard = new DataTransfer();
+    textClipboard.setData("text/plain", "Ordinary pasted text");
+    const textPaste = new ClipboardEvent("paste", {
+      clipboardData: textClipboard,
+      bubbles: true,
+      cancelable: true,
+    });
+    textarea.dispatchEvent(textPaste);
+    check(
+      !textPaste.defaultPrevented,
+      "Ordinary text paste keeps browser behavior",
+    );
+    container.querySelector(".pendingImageButton").click();
+    await wait();
+    container.querySelector('[aria-label="Remove preview.png"]').click();
+    await wait();
+    check(
+      !document.querySelector(".attachmentPreviewModal"),
+      "Removing the selected draft image closes its preview window",
     );
     container.querySelector('[aria-label="Remove preview.png"]').click();
     await wait();
@@ -3485,7 +4136,10 @@ async function verifySoundboard() {
     { id: "celebrate-v1", name: "Celebrate", serverId: "call-server" },
     ...Array.from({ length: 7 }, (_, i) => ({
       id: `clip-${i}`,
-      name: `Sound ${i + 2}`,
+      name:
+        i === 6
+          ? "A very long custom sound name that must use an ellipsis"
+          : `Sound ${i + 2}`,
       serverId: "call-server",
     })),
   ];
@@ -3590,6 +4244,16 @@ async function verifySoundboard() {
     trigger.click();
     await wait();
     const panel = container.querySelector(".soundboardDropup");
+    const soundboardTrigger = container.querySelector(".soundboardButton");
+    soundboardTrigger.style.width = "70px";
+    const triggerLabel = soundboardTrigger.querySelector(".soundName");
+    check(
+      triggerLabel?.title === "Soundboard" &&
+        getComputedStyle(triggerLabel).textOverflow === "ellipsis" &&
+        triggerLabel.scrollWidth > triggerLabel.clientWidth,
+      "Soundboard button truncates with an ellipsis and keeps a full hover title",
+    );
+    soundboardTrigger.style.width = "";
     check(
       panel && !document.querySelector("dialog[open]"),
       "Soundboard must be a dropup, not a modal",
@@ -3608,6 +4272,16 @@ async function verifySoundboard() {
       "The stop control must be removed",
     );
     const grid = panel.querySelector(".soundboardClips");
+    const longName = [...grid.querySelectorAll(".soundName")].find((label) =>
+      label.textContent.startsWith("A very long"),
+    );
+    check(
+      longName &&
+        longName.title === longName.textContent &&
+        longName.scrollWidth > longName.clientWidth &&
+        getComputedStyle(longName).textOverflow === "ellipsis",
+      "Long sound names truncate with an ellipsis and expose their full hover title",
+    );
     const tiles = [...grid.querySelectorAll(".soundboardClip")].map((tile) =>
       tile.getBoundingClientRect(),
     );
@@ -5029,12 +5703,16 @@ async function verifyParticipantIndicators() {
           h(Avatar, { name, small: true }),
           h("b", { title: name }, name),
         ),
-        h(LocallyMuted, { muted: true, deafened: true }),
-        h(ParticipantMediaIndicators, {
-          participant: { ...participant, name, muted: true, deafened: true },
-          onCamera() {},
-          onWatch() {},
-        }),
+        h(
+          "span",
+          { className: "voiceParticipantControls" },
+          h(LocallyMuted, { muted: true, deafened: true }),
+          h(ParticipantMediaIndicators, {
+            participant: { ...participant, name, muted: true, deafened: true },
+            onCamera() {},
+            onWatch() {},
+          }),
+        ),
       ),
     ),
   );
@@ -5056,6 +5734,73 @@ async function verifyParticipantIndicators() {
     centers.length === 2 && Math.abs(centers[0] - centers[1]) < 1,
     "Personal mute/deafen icons share one centered row",
   );
+  for (const width of [150, 200, 240, 320]) {
+    row.style.width = `${width}px`;
+    const avatar = row.querySelector(".userAvatar").getBoundingClientRect();
+    const text = label.getBoundingClientRect();
+    check(
+      Math.abs(text.left - avatar.right - 4) < 1 &&
+        row.scrollWidth <= row.clientWidth + 1,
+      "Voice identity stays compact while icon groups fit narrow sidebars",
+    );
+    const boxes = [
+      ...row.querySelectorAll(
+        ".localAudioIndicators > span, .voiceIndicators > *",
+      ),
+    ].map((icon) => icon.getBoundingClientRect());
+    for (let a = 0; a < boxes.length; a++)
+      for (let b = a + 1; b < boxes.length; b++) {
+        const first = boxes[a],
+          second = boxes[b];
+        check(
+          Math.min(first.right, second.right) <=
+            Math.max(first.left, second.left) + 1 ||
+            Math.min(first.bottom, second.bottom) <=
+              Math.max(first.top, second.top) + 1,
+          "Participant icons never overlap",
+        );
+      }
+  }
+  for (const status of ["online", "away", "dnd", "offline"]) {
+    flushSync(() =>
+      root.render(
+        h(
+          "button",
+          { className: "member", style: { width: "240px" } },
+          h(StatusAvatar, { name, status }),
+          h("span", { className: "memberIdentity" }, h("strong", {}, name)),
+        ),
+      ),
+    );
+    const dot = container.querySelector(".statusDot"),
+      picture = container.querySelector(".userAvatar");
+    check(
+      dot.getAttribute("aria-label") &&
+        getComputedStyle(dot).backgroundColor !== "rgba(0, 0, 0, 0)" &&
+        dot.getBoundingClientRect().right >=
+          picture.getBoundingClientRect().right,
+      "Every All users status stays visible beside the avatar",
+    );
+  }
+  flushSync(() =>
+    root.render(
+      h(
+        "div",
+        { className: "voiceChannel", style: { width: "200px" } },
+        h(
+          "button",
+          { className: "channel" },
+          h("span", { className: "channelName" }, name),
+        ),
+        h("button", { className: "openCallView" }, "▣"),
+      ),
+    ),
+  );
+  check(
+    container.querySelector(".channelName").getBoundingClientRect().right <
+      container.querySelector(".openCallView").getBoundingClientRect().left,
+    "Long channel names reserve space for their video shortcut",
+  );
   root.unmount();
   container.remove();
 }
@@ -5067,7 +5812,7 @@ async function verifyScreenShareOptions() {
   let canceled = false;
   root.render(
     h(ScreenShareOptions, {
-      onShare: (value) => shared.push(value),
+      onShare: (value, fps) => shared.push([value, fps]),
       onClose: () => {
         canceled = true;
       },
@@ -5091,11 +5836,18 @@ async function verifyScreenShareOptions() {
     "Screen sharing must offer four resolutions and default to 1080p",
   );
   check(shared.length === 0, "Opening screen options must not start capture");
+  const fpsSelect = dialog.querySelector('[aria-label="Screen frame rate"]');
+  check(fpsSelect.value === "30", "Screen capture defaults to 30 fps");
+  fpsSelect.value = "60";
+  fpsSelect.dispatchEvent(new Event("change", { bubbles: true }));
   select.value = "720";
   select.dispatchEvent(new Event("change", { bubbles: true }));
   await wait();
   dialog.querySelector('button[type="submit"]').click();
-  check(shared[0] === "720", "Screen sharing must use the chosen resolution");
+  check(
+    shared[0][0] === "720" && shared[0][1] === 60,
+    "Screen sharing must use the chosen resolution and 60 fps",
+  );
   [...dialog.querySelectorAll('button[type="button"]')]
     .find((button) => button.textContent === "Cancel")
     .click();
@@ -5116,9 +5868,14 @@ async function verifyScreenShareOptions() {
     "Empty states must show explanatory content",
   );
   let resolution;
+  let cameraFps;
   root.render(
     h(CameraResolutionSelection, {
       resolution: "720",
+      frameRate: 30,
+      onFrameRateChange: (value) => {
+        cameraFps = value;
+      },
       onChange: (value) => {
         resolution = value;
       },
@@ -5126,17 +5883,29 @@ async function verifyScreenShareOptions() {
   );
   await wait();
   const cameraSelect = container.querySelector("select");
+  const cameraFpsSelect = container.querySelector(
+    '[aria-label="Camera frame rate"]',
+  );
+  cameraFpsSelect.value = "60";
+  cameraFpsSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  check(cameraFps === 60, "Camera menus expose a 60 fps choice");
   cameraSelect.value = "1080";
   cameraSelect.dispatchEvent(new Event("change", { bubbles: true }));
   check(
     resolution === "1080",
     "Camera resolution selector must pass the selected quality",
   );
-  const constraints = cameraCaptureConstraints("camera-id", resolution);
+  const constraints = cameraCaptureConstraints(
+    "camera-id",
+    resolution,
+    cameraFps,
+  );
   check(
     constraints.width.max === 1920 &&
       constraints.height.max === 1080 &&
-      constraints.deviceId.exact === "camera-id",
+      constraints.deviceId.exact === "camera-id" &&
+      constraints.frameRate.ideal === 60 &&
+      constraints.frameRate.max === 60,
     "Camera capture must use the chosen resolution and device",
   );
   root.unmount();
@@ -5168,6 +5937,7 @@ function Workspace() {
     window.profileMessageClicked = messageClicked;
   }, [savedName, messageClicked]);
   const [width, setWidth] = useState(null);
+  const [membersWidth, setMembersWidth] = useState(null);
   const [joined, setJoined] = useState(true);
   const [outputId, setOutputId] = useState("");
   const [status, setStatus] = useState("online");
@@ -5196,7 +5966,12 @@ function Workspace() {
     "main",
     {
       className: `workspace ${joined ? "voiceActive" : ""}`,
-      style: { "--preferred-sidebar-width": width ? `${width}px` : undefined },
+      style: {
+        "--preferred-sidebar-width": width ? `${width}px` : undefined,
+        "--preferred-member-width": membersWidth
+          ? `${membersWidth}px`
+          : undefined,
+      },
     },
     h("aside", { className: "workspaceRail" }, "LC"),
     h(
@@ -5307,6 +6082,11 @@ function Workspace() {
     h(
       "aside",
       { className: "memberSidebar friendsInfoSidebar" },
+      h(SidebarResizer, {
+        side: "members",
+        onResize: setMembersWidth,
+        onReset: () => setMembersWidth(null),
+      }),
       h("header", { className: "memberSidebarHeader" }, "Profile"),
       h(
         "div",
@@ -5551,6 +6331,13 @@ window.verifyMicrophonePosition = async () => {
       "Device menu was covered by chat content",
     );
     cover.remove();
+    for (let x = box.left + 10; x < box.right - 10; x += 24)
+      for (let y = box.top + 10; y < box.bottom - 10; y += 24) {
+        check(
+          dropdown.contains(document.elementFromPoint(x, y)),
+          "Every part of the device panel stays above microphone, camera and footer controls",
+        );
+      }
     const option = dropdown.querySelector(
       'select[aria-label="Microphone processing mode"]',
     );
@@ -5785,7 +6572,7 @@ window.verifyWorkspaceControlsTest = async () => {
   );
   document.querySelector('[aria-label="Output options"]').click();
   await wait();
-  const outputMenu = document.querySelector(".profileDeafen .deviceDropdown");
+  const outputMenu = document.querySelector(".deviceDropdownPortal");
   check(
     outputMenu
       .querySelector(".deviceSelection label")

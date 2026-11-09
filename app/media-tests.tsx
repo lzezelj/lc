@@ -2,6 +2,7 @@
 import {
   cameraCaptureConstraints,
   type CameraResolution,
+  type VideoFrameRate,
 } from "./camera-resolution";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -18,6 +19,7 @@ export function MediaTests({
   microphoneId,
   cameraId,
   cameraResolution = "720",
+  cameraFrameRate = 30,
   outputVolume = 100,
   outputId = "",
   deafened = false,
@@ -27,6 +29,7 @@ export function MediaTests({
   microphoneId: string;
   cameraId: string;
   cameraResolution?: CameraResolution;
+  cameraFrameRate?: VideoFrameRate;
   outputVolume?: number;
   outputId?: string;
   deafened?: boolean;
@@ -126,7 +129,11 @@ export function MediaTests({
     const preview = video.current;
     void navigator.mediaDevices
       .getUserMedia({
-        video: cameraCaptureConstraints(cameraId, cameraResolution),
+        video: cameraCaptureConstraints(
+          cameraId,
+          cameraResolution,
+          cameraFrameRate,
+        ),
         audio: false,
       })
       .then((stream) => {
@@ -148,7 +155,7 @@ export function MediaTests({
       captured?.getTracks().forEach((track) => track.stop());
       if (preview) preview.srcObject = null;
     };
-  }, [cameraTesting, cameraId, cameraResolution]);
+  }, [cameraTesting, cameraId, cameraResolution, cameraFrameRate]);
 
   return (
     <div className="mediaTests">

@@ -10,7 +10,6 @@ Monitoring and structured logs
 
 Check if anything new has been added that should go in help and introduction
 Pinning messages
-Delete server should be red in the notification
-Leaving a server should throw a confirmation popup message
-Separate outgoing and incoming pending invites
-Add server images for the server track and invite
+Add music
+Look up video sending (Video preview doesnt work, deleting a video throws a error)
+Soundboard sound preview and trimming the file?

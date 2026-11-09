@@ -20,6 +20,7 @@ export async function GET() {
     .select({
       id: servers.id,
       name: servers.name,
+      image: servers.image,
       role: serverMembers.role,
       joinSoundId: serverMembers.joinSoundId,
       voiceMuted: serverMembers.voiceMuted,

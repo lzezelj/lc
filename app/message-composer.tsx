@@ -10,14 +10,21 @@ import {
 } from "react";
 import { mentionQuery, type MentionMember } from "./mentions";
 import { EmojiPicker } from "./emoji-picker";
+import { ImagePreview, VideoPreview } from "./message-attachments";
 import {
   attachmentAccept,
-  attachmentMaxBytes,
+  attachmentLimit,
   attachmentMaxCount,
   attachmentMaxTotalBytes,
 } from "./attachment-types";
 
-function PendingImage({ file }: { file: File }) {
+function PendingImage({
+  file,
+  onPreview,
+}: {
+  file: File;
+  onPreview: (url: string) => void;
+}) {
   const image = useRef<HTMLImageElement>(null);
   useEffect(() => {
     const url = URL.createObjectURL(file);
@@ -25,9 +32,66 @@ function PendingImage({ file }: { file: File }) {
     return () => URL.revokeObjectURL(url);
   }, [file]);
   return (
-    // Local file preview; the temporary URL is released on removal or unmount.
-    // eslint-disable-next-line @next/next/no-img-element
-    <img ref={image} className="pendingImage" alt={`Preview of ${file.name}`} />
+    <>
+      <button
+        type="button"
+        className="pendingImageButton"
+        aria-label={`Preview ${file.name}`}
+        title={`Preview ${file.name}`}
+        onClick={() => {
+          if (image.current?.src) onPreview(image.current.src);
+        }}
+      >
+        {/* Local file preview; its URL is released on removal or unmount. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          ref={image}
+          className="pendingImage"
+          alt={`Preview of ${file.name}`}
+        />
+      </button>
+    </>
+  );
+}
+
+function PendingVideo({
+  file,
+  onPreview,
+}: {
+  file: File;
+  onPreview: (url: string) => void;
+}) {
+  const video = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    const element = video.current;
+    if (element) element.src = url;
+    return () => {
+      element?.pause();
+      element?.removeAttribute("src");
+      element?.load();
+      URL.revokeObjectURL(url);
+    };
+  }, [file]);
+  return (
+    <button
+      type="button"
+      className="pendingImageButton"
+      aria-label={`Preview ${file.name}`}
+      title={`Preview ${file.name}`}
+      onClick={() => {
+        if (video.current?.src) onPreview(video.current.src);
+      }}
+    >
+      <video
+        ref={video}
+        className="pendingVideo"
+        preload="metadata"
+        muted
+        playsInline
+        aria-hidden="true"
+      />
+    </button>
   );
 }
 
@@ -63,6 +127,9 @@ export function MessageComposer({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const picker = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
+  const [preview, setPreview] = useState<{ file: File; url: string } | null>(
+    null,
+  );
   const [dragging, setDragging] = useState(false);
   const [caret, setCaret] = useState(0),
     [mentionIndex, setMentionIndex] = useState(0),
@@ -142,8 +209,12 @@ export function MessageComposer({
       setError(`Attach up to ${attachmentMaxCount} files per message.`);
       return;
     }
-    if (incoming.some((file) => !file.size || file.size > attachmentMaxBytes)) {
-      setError("Each file must be between 1 byte and 10 MB.");
+    if (
+      incoming.some(
+        (file) => !file.size || file.size > attachmentLimit(file.type),
+      )
+    ) {
+      setError("Images/PDFs must be 1 byte–10 MiB; videos up to 25 MiB.");
       return;
     }
     if (
@@ -156,7 +227,7 @@ export function MessageComposer({
     if (
       incoming.some((file) => !attachmentAccept.split(",").includes(file.type))
     ) {
-      setError("Choose PNG, JPEG, GIF, WebP or PDF files.");
+      setError("Choose PNG, JPEG, GIF, WebP, PDF, MP4 or WebM files.");
       return;
     }
     setError("");
@@ -182,6 +253,21 @@ export function MessageComposer({
       }}
     >
       {children}
+      {preview &&
+        files.includes(preview.file) &&
+        (preview.file.type.startsWith("video/") ? (
+          <VideoPreview
+            src={preview.url}
+            name={preview.file.name}
+            onClose={() => setPreview(null)}
+          />
+        ) : (
+          <ImagePreview
+            src={preview.url}
+            name={preview.file.name}
+            onClose={() => setPreview(null)}
+          />
+        ))}
       {mentionOpen && (
         <div
           className="mentionSuggestions"
@@ -225,19 +311,38 @@ export function MessageComposer({
         <ul className="pendingAttachments">
           {files.map((file, index) => (
             <li key={index}>
-              {file.type.startsWith("image/") && <PendingImage file={file} />}
+              {file.type.startsWith("image/") && (
+                <PendingImage
+                  file={file}
+                  onPreview={(url) => setPreview({ file, url })}
+                />
+              )}
+              {file.type.startsWith("video/") && (
+                <PendingVideo
+                  file={file}
+                  onPreview={(url) => setPreview({ file, url })}
+                />
+              )}
               <span>{file.name}</span>
               <button
                 type="button"
                 disabled={busy}
                 aria-label={`Remove ${file.name}`}
-                onClick={() => onFiles(files.filter((_, i) => i !== index))}
+                onClick={() => {
+                  setPreview(null);
+                  onFiles(files.filter((_, i) => i !== index));
+                }}
               >
                 ×
               </button>
             </li>
           ))}
         </ul>
+      )}
+      {!!files.length && (
+        <small className="composerHint">
+          Attachments older than 30 days may expire when shared storage fills.
+        </small>
       )}
       <div className="composerInputRow">
         <input
@@ -256,7 +361,7 @@ export function MessageComposer({
           className="addAttachment"
           type="button"
           aria-label="Add attachment"
-          title="Add images or PDFs (10 MB each)"
+          title="Add images/PDFs (10 MiB each) or MP4/WebM videos (25 MiB each)"
           disabled={disabled || busy || !!editId}
           onClick={() => picker.current?.click()}
         >
@@ -286,6 +391,14 @@ export function MessageComposer({
           }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onBlur={() => onTyping?.(false)}
+          onPaste={(event) => {
+            const images = Array.from(event.clipboardData.files).filter(
+              (file) => file.type.startsWith("image/"),
+            );
+            if (!images.length) return;
+            event.preventDefault();
+            addFiles(images);
+          }}
           role={mentionMembers ? "combobox" : undefined}
           aria-autocomplete={mentionMembers ? "list" : undefined}
           aria-expanded={mentionMembers ? mentionOpen : undefined}

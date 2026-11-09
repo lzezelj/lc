@@ -1,6 +1,59 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  alphabeticalParticipants,
+  showParticipantSpeaking,
+} from "../app/voice-participants.ts";
+
+test("voice participants retain alphabetical order through presence/speaking updates without mutating snapshots", () => {
+  const rows = [
+    { name: "Zoe", userId: "z" },
+    { name: "alice", userId: "b" },
+    { name: "Alice", userId: "a" },
+    { name: "Bob", userId: "c" },
+  ];
+  assert.deepEqual(
+    alphabeticalParticipants(rows).map((person) => person.userId),
+    ["a", "b", "c", "z"],
+  );
+  assert.equal(rows[0].userId, "z");
+  assert.deepEqual(
+    alphabeticalParticipants(
+      [...rows].reverse().map((person) => ({ ...person, speaking: true })),
+    ).map((person) => person.userId),
+    ["a", "b", "c", "z"],
+  );
+});
+
+test("speaking highlights follow viewer deafen and personal/server moderation without changing presence", () => {
+  const person = { userId: "other", speaking: true };
+  assert.equal(showParticipantSpeaking(person, "me", false), true);
+  assert.equal(showParticipantSpeaking(person, "me", true), false);
+  assert.equal(
+    showParticipantSpeaking(person, "me", false, { muted: true }),
+    false,
+  );
+  assert.equal(
+    showParticipantSpeaking(person, "me", false, { deafened: true }),
+    false,
+  );
+  assert.equal(
+    showParticipantSpeaking(
+      person,
+      "me",
+      false,
+      {},
+      { voiceMuted: true, voiceDeafened: false },
+    ),
+    false,
+  );
+  assert.equal(
+    showParticipantSpeaking({ userId: "me", speaking: true }, "me", true),
+    true,
+  );
+  assert.equal(person.speaking, true);
+});
+import {
   monitorVoiceActivity,
   prepareVoiceActivity,
   microphoneProcessing,

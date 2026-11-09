@@ -1,5 +1,61 @@
 "use client";
 
+export type VideoFrameRate = 30 | 60;
+export function readCameraFrameRate(): VideoFrameRate {
+  try {
+    return typeof localStorage !== "undefined" &&
+      localStorage.getItem("lc.cameraFrameRate") === "60"
+      ? 60
+      : 30;
+  } catch {
+    return 30;
+  }
+}
+export function videoPublishEncoding(
+  height: number,
+  frameRate: VideoFrameRate,
+) {
+  const base =
+    height <= 480
+      ? 1_500_000
+      : height <= 720
+        ? 3_000_000
+        : height <= 1080
+          ? 6_000_000
+          : height <= 1440
+            ? 10_000_000
+            : 16_000_000;
+  return {
+    maxBitrate: Math.round(base * (frameRate === 60 ? 1.5 : 1)),
+    maxFramerate: frameRate,
+  };
+}
+export function FrameRateSelection({
+  value,
+  onChange,
+  label = "Frame rate",
+}: {
+  value: VideoFrameRate;
+  onChange: (value: VideoFrameRate) => void;
+  label?: string;
+}) {
+  return (
+    <div className="deviceSelection">
+      <label>
+        {label}
+        <select
+          aria-label={label}
+          value={value}
+          onChange={(event) => onChange(event.target.value === "60" ? 60 : 30)}
+        >
+          <option value="30">30 fps</option>
+          <option value="60">60 fps — smoother motion</option>
+        </select>
+      </label>
+    </div>
+  );
+}
+
 export const cameraResolutions = {
   "480": { width: 854, height: 480, frameRate: 30 },
   "720": { width: 1280, height: 720, frameRate: 30 },
@@ -22,22 +78,27 @@ export function readCameraResolution(): CameraResolution {
 export function cameraCaptureConstraints(
   deviceId: string,
   resolution: CameraResolution,
+  frameRate: VideoFrameRate = readCameraFrameRate(),
 ) {
   const quality = cameraResolutions[resolution];
   return {
     ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
     width: { ideal: quality.width, max: quality.width },
     height: { ideal: quality.height, max: quality.height },
-    frameRate: { ideal: 30, max: 30 },
+    frameRate: { ideal: frameRate, max: frameRate },
   };
 }
 
 export function CameraResolutionSelection({
   resolution,
   onChange,
+  frameRate = 30,
+  onFrameRateChange,
 }: {
   resolution: CameraResolution;
   onChange: (resolution: CameraResolution) => void;
+  frameRate?: VideoFrameRate;
+  onFrameRateChange?: (value: VideoFrameRate) => void;
 }) {
   return (
     <div className="deviceSelection">
@@ -55,9 +116,16 @@ export function CameraResolutionSelection({
         </select>
       </label>
       <small className="deviceSelectionNote">
-        Up to this resolution at 30 fps, depending on your camera and
+        Up to this resolution at {frameRate} fps, depending on your camera and
         connection.
       </small>
+      {onFrameRateChange && (
+        <FrameRateSelection
+          value={frameRate}
+          onChange={onFrameRateChange}
+          label="Camera frame rate"
+        />
+      )}
     </div>
   );
 }

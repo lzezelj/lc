@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import * as limits from "../app/attachment-types.ts";
+import { attachmentRange } from "../server/attachment-range.ts";
 
 async function moduleAt(path, deps) {
   const exports = {};
@@ -33,13 +34,14 @@ const op = (...args) => args;
 const orm = { eq: op, and: op, sql: op };
 const users = { id: "user.id" },
   attachments = { id: "attachment.id", data: "data", uploaderId: "uploader" };
-async function uploadModule(db = {}) {
+async function uploadModule(db = {}, notify = async () => {}) {
   return moduleAt("../server/message-attachments.ts", {
     "node:crypto": { randomUUID },
     "drizzle-orm": orm,
     "../db": { db },
     "../db/schema": { messageAttachments: attachments, users },
     "../app/attachment-types": limits,
+    "./notify-user": { notifyUser: notify },
   });
 }
 const uploads = await uploadModule();
@@ -54,6 +56,89 @@ function multipart(files, text = "") {
 }
 const pdf = (name = "document.pdf") =>
   new File(["%PDF-1.7\nexample"], name, { type: "application/pdf" });
+const mp4 = Buffer.from(
+  "000000186674797069736f6d0000020069736f6d6d703432",
+  "hex",
+);
+const webm = Buffer.from([
+  0x1a,
+  0x45,
+  0xdf,
+  0xa3,
+  0x87,
+  0x42,
+  0x82,
+  0x84,
+  ...Buffer.from("webm"),
+]);
+
+test("video uploads detect MP4/WebM containers and enforce detected-type limits", async () => {
+  for (const [bytes, type] of [
+    [mp4, "video/mp4"],
+    [webm, "video/webm"],
+  ]) {
+    const result = await uploads.readMessageRequest(
+      multipart([new File([bytes], "clip", { type: "text/html" })]),
+    );
+    assert.equal(result.files[0].metadata.type, type);
+  }
+  for (const bytes of [
+    mp4.subarray(0, 20),
+    Buffer.from("00000010667479706176696600000000", "hex"),
+    Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x80, ...Buffer.from("webm")]),
+  ])
+    assert.equal(uploads.attachmentMime(bytes), null);
+  const large = new File(
+    [mp4, Buffer.alloc(limits.attachmentMaxBytes)],
+    "larger-than-image.mp4",
+    { type: "image/png" },
+  );
+  assert.equal(
+    (await uploads.readMessageRequest(multipart([large]))).files[0].metadata
+      .type,
+    "video/mp4",
+  );
+  const spoofed = new File(
+    ["%PDF-1.7", Buffer.alloc(limits.attachmentMaxBytes)],
+    "spoof.mp4",
+    { type: "video/mp4" },
+  );
+  assert.equal(
+    (await uploads.readMessageRequest(multipart([spoofed]))).status,
+    400,
+  );
+  const tooLarge = new File(
+    [mp4, Buffer.alloc(limits.attachmentVideoMaxBytes)],
+    "large.mp4",
+    { type: "video/mp4" },
+  );
+  assert.equal(
+    (await uploads.readMessageRequest(multipart([tooLarge]))).status,
+    400,
+  );
+});
+
+test("video ranges support seeking, suffixes and clamped ends while rejecting invalid/multiple ranges", () => {
+  for (const [header, expected] of [
+    ["bytes=0-0", { start: 0, end: 0 }],
+    ["bytes=3-", { start: 3, end: 7 }],
+    ["bytes=-3", { start: 5, end: 7 }],
+    ["bytes=4-99", { start: 4, end: 7 }],
+    ["bytes=-99", { start: 0, end: 7 }],
+  ])
+    assert.deepEqual(attachmentRange(header, 8), expected);
+  for (const header of [
+    "bytes=8-",
+    "bytes=3-1",
+    "bytes=-0",
+    "bytes=-",
+    "bytes=0-1,3-4",
+    "bytes=999999999999999999999-",
+    "bytes=foo",
+    "items=0-1",
+  ])
+    assert.equal(attachmentRange(header, 8), null);
+});
 
 test("multipart detects supported bytes independently of claimed MIME and sanitizes names", async () => {
   const result = await uploads.readMessageRequest(
@@ -138,7 +223,17 @@ test("attachment quota locks the account before counting and writes message and 
   const events = [];
   let usage = 0;
   let failInsert = false;
+  let failBudget = false;
   const tx = {
+    async execute(query) {
+      if (failBudget)
+        throw Object.assign(new Error("LC_ATTACHMENT_STORAGE_FULL"), {
+          code: "P0001",
+        });
+      if (String(query[0]).includes("lc_attachment_budget"))
+        events.push("global-budget");
+      return { rows: [{ recipients: [], bytes: usage }] };
+    },
     select() {
       return {
         from(table) {
@@ -192,6 +287,7 @@ test("attachment quota locks the account before counting and writes message and 
   await api.saveAttachedMessage("actor", body.files, true, create);
   assert.deepEqual(events, [
     "begin",
+    "global-budget",
     "lock:no key update",
     "usage",
     "message",
@@ -213,6 +309,67 @@ test("attachment quota locks the account before counting and writes message and 
     /storage failure/,
   );
   assert.equal(events.at(-1), "rollback");
+  events.length = 0;
+  failInsert = false;
+  failBudget = true;
+  const full = await api.saveAttachedMessage("actor", body.files, true, create);
+  assert.equal(full.status, 413);
+  assert.match((await full.json()).error, /Global attachment storage is full/);
+  assert.deepEqual(events, ["begin", "rollback"]);
+});
+
+test("expiry and storage warnings notify users only after the upload commits", async () => {
+  const events = [];
+  const tx = {
+    async execute(query) {
+      return {
+        rows: [
+          String(query[0]).includes("lc_attachment_budget")
+            ? { recipients: ["viewer"] }
+            : { bytes: 1800000000 },
+        ],
+      };
+    },
+    select() {
+      return {
+        from: () => ({
+          where: () =>
+            Object.assign(Promise.resolve([{ bytes: 0 }]), {
+              for: async () => {},
+            }),
+        }),
+      };
+    },
+    insert: () => ({ values: async () => {} }),
+  };
+  const api = await uploadModule(
+    {
+      transaction: async (action) => {
+        const result = await action(tx);
+        events.push("commit");
+        return result;
+      },
+    },
+    async (user, event) => {
+      events.push(`${user}:${event.type}`);
+    },
+  );
+  const body = await uploads.readMessageRequest(multipart([pdf()]));
+  const create = async () => ({ id: "message", createdAt: new Date() });
+  await api.saveAttachedMessage("actor", body.files, false, create);
+  assert.deepEqual(events, [
+    "commit",
+    "viewer:attachments-expired",
+    "actor:attachment-storage-warning",
+  ]);
+  events.length = 0;
+  await assert.rejects(
+    api.saveAttachedMessage("actor", body.files, false, create, async () => {
+      throw new Error("save failed");
+    }),
+    /save failed/,
+  );
+  assert.deepEqual(events, [], "Rolled-back expiry must never be broadcast");
 });
 
 async function downloadFixture({
@@ -222,14 +379,17 @@ async function downloadFixture({
   friend = true,
   participant = true,
   deleted = false,
+  expired = false,
   exists = true,
+  type = "application/pdf",
 } = {}) {
   const fileId = "22222222-2222-4222-8222-222222222222";
   const metadata = {
     id: fileId,
     name: "file.pdf",
-    type: "application/pdf",
+    type,
     size: 8,
+    expired,
   };
   const messages = { id: "message.id" },
     directMessages = { id: "direct.id" };
@@ -246,7 +406,18 @@ async function downloadFixture({
               if (table === attachments) {
                 if (fields?.data) {
                   byteReads++;
-                  return [{ data: Buffer.from("%PDF-1.7") }];
+                  const bytes = Buffer.from("%PDF-1.7");
+                  return [
+                    {
+                      data:
+                        typeof fields.data === "string"
+                          ? bytes
+                          : bytes.subarray(
+                              fields.data[2] - 1,
+                              fields.data[2] - 1 + fields.data[3],
+                            ),
+                    },
+                  ];
                 }
                 return exists
                   ? [
@@ -293,25 +464,59 @@ async function downloadFixture({
         serverMembers: {},
       },
       "../../../../server/friends": { areFriends: async () => friend },
+      "../../../../server/attachment-range": { attachmentRange },
     },
   );
   return {
-    get: () =>
-      route.GET(new Request(`http://localhost/api/attachments/${fileId}`), {
-        params: Promise.resolve({ attachmentId: fileId }),
-      }),
+    get: (range, download = false) =>
+      route.GET(
+        new Request(
+          `http://localhost/api/attachments/${fileId}${download ? "?download=1" : ""}`,
+          { headers: range ? { Range: range } : {} },
+        ),
+        {
+          params: Promise.resolve({ attachmentId: fileId }),
+        },
+      ),
     byteReads: () => byteReads,
   };
 }
+
+test("video responses authorize before bytes, serve private ranges and retain explicit download", async () => {
+  const forbidden = await downloadFixture({ type: "video/mp4", member: false });
+  assert.equal((await forbidden.get("bytes=0-1")).status, 404);
+  assert.equal(forbidden.byteReads(), 0);
+  for (const direct of [false, true]) {
+    const f = await downloadFixture({ type: "video/mp4", direct });
+    const response = await f.get("bytes=2-4");
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("Content-Range"), "bytes 2-4/8");
+    assert.equal(response.headers.get("Content-Length"), "3");
+    assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+    assert.equal(await response.text(), "DF-");
+    assert.match(response.headers.get("Content-Disposition"), /^inline;/);
+    assert.match(
+      (await f.get(undefined, true)).headers.get("Content-Disposition"),
+      /^attachment;/,
+    );
+  }
+  const invalid = await downloadFixture({ type: "video/webm" });
+  const response = await invalid.get("bytes=20-");
+  assert.equal(response.status, 416);
+  assert.equal(response.headers.get("Content-Range"), "bytes */8");
+  assert.equal(invalid.byteReads(), 0);
+});
 test("private downloads require current membership or friendship and exact DM participation", async () => {
   for (const options of [
     { authenticated: false },
     { member: false },
     { deleted: true },
+    { expired: true },
     { exists: false },
     { direct: true, participant: false },
     { direct: true, friend: false },
     { direct: true, deleted: true },
+    { direct: true, expired: true },
   ]) {
     const fixture = await downloadFixture(options);
     const response = await fixture.get();
@@ -337,6 +542,7 @@ test("channel and DM endpoints save attachment-only messages and reject unauthor
       const writes = [],
         notices = [];
       const connection = {
+        execute: async () => ({ rows: [{ recipients: [], bytes: 0 }] }),
         select() {
           return {
             from(table) {

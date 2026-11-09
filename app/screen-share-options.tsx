@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { SettingsModal } from "./settings-modal";
+import { FrameRateSelection, type VideoFrameRate } from "./camera-resolution";
 
 export const screenShareResolutions = {
   "720": { width: 1280, height: 720, frameRate: 30 },
@@ -15,17 +16,21 @@ export function ScreenShareOptions({
   onShare,
   onClose,
 }: {
-  onShare: (resolution: ScreenShareResolution) => void;
+  onShare: (
+    resolution: ScreenShareResolution,
+    frameRate: VideoFrameRate,
+  ) => void;
   onClose: () => void;
 }) {
   const [resolution, setResolution] = useState<ScreenShareResolution>("1080");
+  const [frameRate, setFrameRate] = useState<VideoFrameRate>(30);
   return (
     <SettingsModal title="Share your screen" onClose={onClose}>
       <form
         className="screenShareOptions"
         onSubmit={(event) => {
           event.preventDefault();
-          onShare(resolution);
+          onShare(resolution, frameRate);
         }}
       >
         <div className="deviceSelection">
@@ -54,14 +59,21 @@ export function ScreenShareOptions({
             </select>
           </label>
         </div>
+        <FrameRateSelection
+          value={frameRate}
+          onChange={setFrameRate}
+          label="Screen frame rate"
+        />
         <p className="settingsDescription">
           To share sound, enable Share audio in the browser picker. Tab, window
           and system audio availability depends on your browser and operating
           system.
         </p>
         <p className="settingsDescription">
-          Up to the selected resolution at 30 fps. Quality also depends on the
-          shared window, browser and connection. Next, choose what to share.
+          Up to the selected resolution at {frameRate} fps. 60 fps prioritizes
+          smooth motion and may lower resolution when bandwidth is limited.
+          Quality also depends on the shared window, browser and connection.
+          Next, choose what to share.
         </p>
         <div className="modalActions">
           <button type="button" onClick={onClose}>

@@ -40,20 +40,27 @@ function FileDetails({ file }: { file: MessageAttachment }) {
     <div className="attachmentDetails">
       <strong title={file.name}>{file.name}</strong>
       <span>
-        {file.type === "application/pdf" ? "PDF document" : "Image"} · {size}
+        {file.type === "application/pdf"
+          ? "PDF document"
+          : file.type.startsWith("video/")
+            ? "Video"
+            : "Image"}{" "}
+        · {size}
       </span>
     </div>
   );
 }
 
-function ImagePreview({
-  file,
+export function ImagePreview({
+  src,
+  name,
   onClose,
-  onDownloadMenu,
+  onContextMenu,
 }: {
-  file: MessageAttachment;
+  src: string;
+  name: string;
   onClose: () => void;
-  onDownloadMenu: (event: React.MouseEvent, file: MessageAttachment) => void;
+  onContextMenu?: (event: React.MouseEvent<HTMLImageElement>) => void;
 }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   return (
@@ -67,20 +74,76 @@ function ImagePreview({
         {state !== "ready" && (
           <p role={state === "error" ? "alert" : "status"}>
             {state === "error"
-              ? "This image could not be loaded. It may have been deleted or access may have changed."
+              ? "This image could not be loaded."
               : "Loading image…"}
           </p>
         )}
-        {/* Authenticated original image; no public optimizer/cache URL. */}
+        {/* Original image or local Blob URL; no public optimizer/cache URL. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={`/api/attachments/${file.id}`}
-          alt={file.name}
+          src={src}
+          alt={name}
           hidden={state !== "ready"}
           onLoad={() => setState("ready")}
           onError={() => setState("error")}
-          onContextMenu={(event) => onDownloadMenu(event, file)}
+          onContextMenu={onContextMenu}
         />
+      </div>
+    </SettingsModal>
+  );
+}
+
+function VideoPlayer({ src, name }: { src: string; name: string }) {
+  const player = useRef<HTMLVideoElement>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const element = player.current;
+    return () => {
+      element?.pause();
+      element?.removeAttribute("src");
+      element?.load();
+    };
+  }, []);
+  return (
+    <>
+      <video
+        ref={player}
+        src={src}
+        className="attachmentVideo"
+        controls
+        preload="metadata"
+        playsInline
+        aria-label={`Video: ${name}`}
+        onError={() => setFailed(true)}
+      />
+      {failed && (
+        <p className="attachmentVideoError" role="alert">
+          This video could not be played. Its codec may not be supported by your
+          browser, or access may have changed.
+        </p>
+      )}
+    </>
+  );
+}
+
+export function VideoPreview({
+  src,
+  name,
+  onClose,
+}: {
+  src: string;
+  name: string;
+  onClose: () => void;
+}) {
+  return (
+    <SettingsModal
+      title="Video preview"
+      className="attachmentPreviewModal"
+      closeLabel="Close video preview"
+      onClose={onClose}
+    >
+      <div className="attachmentPreviewStage">
+        <VideoPlayer key={src} src={src} name={name} />
       </div>
     </SettingsModal>
   );
@@ -94,6 +157,7 @@ export function MessageAttachments({
   deleted?: boolean;
 }) {
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [videoPreviewId, setVideoPreviewId] = useState<string | null>(null);
   const [gallery, setGallery] = useState(false);
   const [capacity, setCapacity] = useState(1);
   const [downloadMenu, setDownloadMenu] = useState<{
@@ -133,7 +197,9 @@ export function MessageAttachments({
     };
   }, [downloadMenu]);
   const row = useRef<HTMLDivElement>(null);
-  const images = files?.filter((file) => file.type.startsWith("image/")) ?? [];
+  const images =
+    files?.filter((file) => !file.expired && file.type.startsWith("image/")) ??
+    [];
   useLayoutEffect(() => {
     const element = row.current;
     if (!element) return;
@@ -148,7 +214,14 @@ export function MessageAttachments({
   }, [deleted, images.length]);
   if (deleted || !files?.length) return null;
   const preview = files.find(
-    (file) => file.id === previewId && file.type.startsWith("image/"),
+    (file) =>
+      !file.expired && file.id === previewId && file.type.startsWith("image/"),
+  );
+  const videoPreview = files.find(
+    (file) =>
+      !file.expired &&
+      file.id === videoPreviewId &&
+      file.type.startsWith("video/"),
   );
   const visible =
     images.length > Math.min(2, capacity)
@@ -198,6 +271,44 @@ export function MessageAttachments({
   return (
     <>
       <div className="messageAttachments">
+        {files
+          .filter((file) => file.expired)
+          .map((file) => (
+            <p key={file.id} className="attachmentExpired">
+              <span title={file.name}>{file.name}</span> · Attachment expired
+            </p>
+          ))}
+        {files
+          .filter((file) => !file.expired && file.type.startsWith("video/"))
+          .map((file) => (
+            <div
+              className="messageAttachment messageVideoAttachment"
+              key={file.id}
+            >
+              <VideoPlayer
+                src={`/api/attachments/${file.id}`}
+                name={file.name}
+              />
+              <div className="attachmentFileRow">
+                <FileDetails file={file} />
+                <button
+                  type="button"
+                  className="attachmentOpenVideo"
+                  aria-label={`Preview ${file.name}`}
+                  onClick={(event) => {
+                    event.currentTarget
+                      .closest(".messageVideoAttachment")
+                      ?.querySelector("video")
+                      ?.pause();
+                    setVideoPreviewId(file.id);
+                  }}
+                >
+                  Open video
+                </button>
+                <DownloadAttachment file={file} />
+              </div>
+            </div>
+          ))}
         {images.length > 0 && (
           <div className="attachmentImageRow" ref={row}>
             {images.slice(0, visible).map((file) => thumbnail(file))}
@@ -206,7 +317,12 @@ export function MessageAttachments({
           </div>
         )}
         {files
-          .filter((file) => !file.type.startsWith("image/"))
+          .filter(
+            (file) =>
+              !file.expired &&
+              !file.type.startsWith("image/") &&
+              !file.type.startsWith("video/"),
+          )
           .map((file) => (
             <div key={file.id} className="messageAttachment">
               <div className="attachmentFileRow">
@@ -230,7 +346,7 @@ export function MessageAttachments({
             </div>
           ))}
       </div>
-      {gallery && (
+      {gallery && images.length > 0 && (
         <SettingsModal
           title="Pictures"
           closeLabel="Close pictures"
@@ -247,12 +363,24 @@ export function MessageAttachments({
       {preview && (
         <ImagePreview
           key={preview.id}
-          file={preview}
+          src={`/api/attachments/${preview.id}`}
+          name={preview.name}
           onClose={() => setPreviewId(null)}
-          onDownloadMenu={openDownloadMenu}
+          onContextMenu={(event) => openDownloadMenu(event, preview)}
+        />
+      )}
+      {videoPreview && (
+        <VideoPreview
+          key={videoPreview.id}
+          src={`/api/attachments/${videoPreview.id}`}
+          name={videoPreview.name}
+          onClose={() => setVideoPreviewId(null)}
         />
       )}
       {downloadMenu &&
+        files?.some(
+          (file) => file.id === downloadMenu.file.id && !file.expired,
+        ) &&
         createPortal(
           <div
             ref={menu}

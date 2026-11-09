@@ -1,6 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type CSSProperties,
+} from "react";
+import { createPortal } from "react-dom";
 import { DeviceSelection } from "./device-selection";
 import {
   MicrophoneModeSelector,
@@ -34,14 +43,79 @@ export function DeviceMenu({
 }: DeviceMenuProps) {
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+  const [placement, setPlacement] = useState<{
+    parent: HTMLElement;
+    style: CSSProperties;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!open || unavailable) return;
+    const position = () => {
+      const root = menu.current;
+      const anchor = trigger.current?.getBoundingClientRect();
+      if (!root || !anchor) return;
+      const dialog = root.closest("dialog");
+      const sidebar = !dialog
+        ? root
+            .closest(".workspace")
+            ?.querySelector(".channelSidebar")
+            ?.getBoundingClientRect()
+        : undefined;
+      const width = Math.min(
+        sidebar && sidebar.width > 0 ? sidebar.width - 16 : 300,
+        innerWidth - 16,
+      );
+      const left = Math.max(
+        8,
+        Math.min(
+          sidebar && sidebar.width > 0 ? sidebar.left + 8 : anchor.left,
+          innerWidth - width - 8,
+        ),
+      );
+      setPlacement({
+        parent: dialog ?? document.body,
+        style: {
+          position: "fixed",
+          left,
+          width,
+          bottom: Math.max(8, innerHeight - anchor.top + 8),
+          maxHeight: Math.max(40, Math.min(360, anchor.top - 16)),
+        },
+      });
+    };
+    position();
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [open, unavailable]);
 
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => {
-      if (!menu.current?.contains(event.target as Node)) setOpen(false);
+      if (
+        !menu.current?.contains(event.target as Node) &&
+        !panel.current?.contains(event.target as Node)
+      )
+        setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      trigger.current?.focus();
     };
     document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", escape);
+    };
   }, [open]);
 
   return (
@@ -85,34 +159,45 @@ export function DeviceMenu({
       </button>
       <button
         className="deviceMenuTrigger"
+        ref={trigger}
         disabled={unavailable}
         aria-label={kind === "headphones" ? "Output options" : `Choose ${kind}`}
         aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
         onClick={() => {
           setOpen((current) => !current);
         }}
       >
         ▴
       </button>
-      {open && !unavailable && (
-        <div className="deviceDropdown">
-          {kind === "microphone" && (
-            <>
-              <MicrophoneModeSelector />
-              <EchoCancellationToggle />
-            </>
-          )}
-          {kind !== "headphones" && (
-            <DeviceSelection
-              label={kind === "microphone" ? "Microphone" : "Camera"}
-              devices={devices}
-              selectedId={selectedId}
-              onSelect={onSelect}
-            />
-          )}
-          {extraOptions}
-        </div>
-      )}
+      {open &&
+        !unavailable &&
+        placement &&
+        createPortal(
+          <div
+            className="deviceDropdown deviceDropdownPortal"
+            ref={panel}
+            id={panelId}
+            style={placement.style}
+          >
+            {kind === "microphone" && (
+              <>
+                <MicrophoneModeSelector />
+                <EchoCancellationToggle />
+              </>
+            )}
+            {kind !== "headphones" && (
+              <DeviceSelection
+                label={kind === "microphone" ? "Microphone" : "Camera"}
+                devices={devices}
+                selectedId={selectedId}
+                onSelect={onSelect}
+              />
+            )}
+            {extraOptions}
+          </div>,
+          placement.parent,
+        )}
     </div>
   );
 }

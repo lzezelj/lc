@@ -35,6 +35,9 @@ import {
   CameraResolutionSelection,
   cameraCaptureConstraints,
   readCameraResolution,
+  readCameraFrameRate,
+  videoPublishEncoding,
+  type VideoFrameRate,
   type CameraResolution,
 } from "./camera-resolution";
 import { reserveScreenAudio } from "./screen-audio";
@@ -74,6 +77,7 @@ import {
 } from "./history-recovery";
 import type { MessageAttachment } from "./attachment-types";
 import { ServerInvites } from "./server-invites";
+import { ServerLeaveConfirmation } from "./server-leave-confirmation";
 import { useServerInvitations } from "./use-server-invitations";
 import { PendingServerInvitations } from "./pending-server-invitations";
 import { PersonalMessages } from "./personal-messages";
@@ -83,7 +87,7 @@ import { SettingsNavigation } from "./settings-navigation";
 import { SoundManager } from "./sound-manager";
 import { useWorkspaceActivity } from "./use-workspace-activity";
 import { serverVoiceUsers } from "./workspace-activity";
-import { ServerNavButton } from "./server-nav-button";
+import { ServerNavButton, preloadServerPictures } from "./server-nav-button";
 import { UnreadIndicator } from "./unread-indicator";
 import { MentionText } from "./mention-text";
 import {
@@ -115,6 +119,12 @@ import {
 import { useMessageCooldown } from "./use-message-cooldown";
 import { MessageHeader } from "./message-header";
 import { Avatar } from "./avatar";
+import { LegalFrame } from "./legal-frame";
+import { StatusAvatar } from "./status-avatar";
+import {
+  alphabeticalParticipants,
+  showParticipantSpeaking,
+} from "./voice-participants";
 import { LocallyMuted } from "./locally-muted";
 import { ProfilePictureSettings } from "./profile-picture-settings";
 import {
@@ -182,6 +192,7 @@ function mergeChatMessages(incoming: ChatMessage[], current: ChatMessage[]) {
 }
 
 type Server = {
+  image?: string | null;
   voiceMuted?: boolean;
   voiceDeafened?: boolean;
   id: string;
@@ -349,6 +360,7 @@ export default function Home() {
   const [streamVolume, setStreamVolume] = useState(100);
   const [cameraResolution, setCameraResolution] =
     useState(readCameraResolution);
+  const [cameraFrameRate, setCameraFrameRate] = useState(readCameraFrameRate);
   const [mediaFocusTarget, setMediaFocusTarget] = useState<{
     userId: string;
     kind: "camera" | "screen";
@@ -540,9 +552,18 @@ export default function Home() {
     if (typeof window === "undefined") return null;
     const saved = Number(localStorage.getItem("lc.sidebarWidth"));
     return Number.isFinite(saved) && saved >= 240 && saved <= 480
-      ? saved
+      ? Math.max(320, saved)
       : null;
   });
+  const [memberSidebarWidth, setMemberSidebarWidth] = useState<number | null>(
+    () => {
+      if (typeof window === "undefined") return null;
+      const saved = Number(localStorage.getItem("lc.memberSidebarWidth"));
+      return Number.isFinite(saved) && saved >= 240 && saved <= 480
+        ? saved
+        : null;
+    },
+  );
   const [userListToggled, setUserListToggled] = useState(false);
   const [serverSettingsOpen, setServerSettingsOpen] = useState(false);
   const [userSettingsSection, setUserSettingsSection] = useState("account");
@@ -581,6 +602,9 @@ export default function Home() {
   } | null>(null);
   const channelContextRef = useRef<HTMLDivElement>(null);
   const [deleteServerOpen, setDeleteServerOpen] = useState(false);
+  const [leaveServerTarget, setLeaveServerTarget] = useState<Server | null>(
+    null,
+  );
   const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
   const [editingDemoServers, setEditingDemoServers] = useState<string[]>([]);
   const [editingDemoAccount, setEditingDemoAccount] =
@@ -1199,6 +1223,8 @@ export default function Home() {
         const data = (await response.json()) as Server[];
         if (!Array.isArray(data))
           throw new Error("Servers could not be loaded.");
+        if (!active) return;
+        preloadServerPictures(data);
         let savedFriend: Friend | undefined;
         if (saved?.view === "friends" && saved.friendId) {
           const friendResponse = await fetch("/api/friends");
@@ -1922,8 +1948,7 @@ export default function Home() {
     });
     const result = await response.json();
     if (!response.ok) {
-      setErrorMessage(result.error ?? "Could not leave the server.");
-      return;
+      throw new Error(result.error ?? "Could not leave the server.");
     }
     if (
       activeVoiceChannel &&
@@ -2469,6 +2494,17 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (message.type === "attachments-expired") {
+          conversationCache.current.clear();
+          setHistoryRefreshKey((current) => current + 1);
+          return;
+        }
+        if (message.type === "attachment-storage-warning") {
+          setNoticeMessage(
+            "Attachment storage is over 80% full. Files older than 30 days may expire when space is needed.",
+          );
+          return;
+        }
         if (message.type === "server-invitations-changed") {
           window.dispatchEvent(
             new CustomEvent("lc-server-invitations", { detail: message }),
@@ -2609,6 +2645,21 @@ export default function Home() {
             typeof message.joinSoundId === "string"
           )
             applyVoiceSoundSettings(message.serverId, message.joinSoundId);
+          return;
+        }
+        if (
+          message.type === "server-picture-updated" &&
+          message.serverId &&
+          (message.image === null || typeof message.image === "string")
+        ) {
+          setServers((current) =>
+            current.map((server) =>
+              server.id === message.serverId
+                ? { ...server, image: message.image as string | null }
+                : server,
+            ),
+          );
+          window.dispatchEvent(new CustomEvent("lc-server-invitations"));
           return;
         }
         if (message.type === "server-updated" && message.serverId) {
@@ -3896,7 +3947,10 @@ export default function Home() {
     });
   }
 
-  async function toggleScreenShare(resolution?: ScreenShareResolution) {
+  async function toggleScreenShare(
+    resolution?: ScreenShareResolution,
+    frameRate: VideoFrameRate = 30,
+  ) {
     if (screenStream.current) {
       await stopScreenShare();
       return;
@@ -3913,7 +3967,7 @@ export default function Home() {
         video: {
           width: { ideal: quality.width, max: quality.width },
           height: { ideal: quality.height, max: quality.height },
-          frameRate: { ideal: 30, max: 30 },
+          frameRate: { ideal: frameRate, max: frameRate },
         },
         audio: sharedAudioCapture,
       });
@@ -3923,7 +3977,7 @@ export default function Home() {
       }
       const screenTrack = display.getVideoTracks()[0];
       if (!screenTrack) throw new Error("No screen track");
-      screenTrack.contentHint = "detail";
+      screenTrack.contentHint = frameRate === 60 ? "motion" : "detail";
       screenStream.current = display;
       if (screenAudioSender.current)
         await screenAudioSender.current.replaceTrack(
@@ -3943,10 +3997,10 @@ export default function Home() {
           .find((candidate) => candidate.track?.kind === "video");
         if (sender) {
           await sender.replaceTrack(screenTrack);
-          await preferVideoDetail(sender);
+          await preferVideoDetail(sender, frameRate);
         } else {
           const nextSender = peer.addTrack(screenTrack, display);
-          await preferVideoDetail(nextSender);
+          await preferVideoDetail(nextSender, frameRate);
           await createOffer();
         }
       }
@@ -4879,14 +4933,40 @@ export default function Home() {
         await track.applyConstraints(
           cameraCaptureConstraints(cameraId, resolution),
         );
+        if (!screenStream.current) {
+          const sender = connection.current
+            ?.getSenders()
+            .find((item) => item.track?.kind === "video");
+          if (sender) await preferVideoDetail(sender, cameraFrameRate);
+        }
       } catch {
         setErrorMessage("The selected camera resolution could not be applied.");
       }
     }
   }
+  async function changeCameraFrameRate(frameRate: VideoFrameRate) {
+    localStorage.setItem("lc.cameraFrameRate", String(frameRate));
+    setCameraFrameRate(frameRate);
+    const track = stream.current?.getVideoTracks()[0];
+    try {
+      await track?.applyConstraints(
+        cameraCaptureConstraints(cameraId, cameraResolution, frameRate),
+      );
+      if (!screenStream.current) {
+        const sender = connection.current
+          ?.getSenders()
+          .find((item) => item.track?.kind === "video");
+        if (sender) await preferVideoDetail(sender, frameRate);
+      }
+    } catch {
+      setErrorMessage("The selected camera frame rate could not be applied.");
+    }
+  }
   const cameraResolutionOptions = (
     <CameraResolutionSelection
       resolution={cameraResolution}
+      frameRate={cameraFrameRate}
+      onFrameRateChange={(value) => void changeCameraFrameRate(value)}
       onChange={(value) => void changeCameraResolution(value)}
     />
   );
@@ -5034,7 +5114,11 @@ export default function Home() {
             ×
           </button>
         </header>
-        <iframe title={legalTitle} src={`/${legalDocument}`} />
+        <LegalFrame
+          title={legalTitle}
+          document={legalDocument}
+          onClose={() => setLegalDocument(null)}
+        />
       </section>
     </div>
   );
@@ -5093,7 +5177,7 @@ export default function Home() {
               setFriendsView(false);
               setDeleteServerOpen(true);
             });
-          } else void leaveServer(target.id);
+          } else setLeaveServerTarget(target);
         }}
       >
         {serverContext.server.role === "owner"
@@ -5142,6 +5226,7 @@ export default function Home() {
         microphoneId={microphoneId}
         cameraId={cameraId}
         cameraResolution={cameraResolution}
+        cameraFrameRate={cameraFrameRate}
         outputVolume={outputVolume}
         outputId={outputId}
         deafened={deafened}
@@ -5563,6 +5648,29 @@ export default function Home() {
             {serverSettingsSection === "overview" && (
               <>
                 <h3>Server overview</h3>
+                <ProfilePictureSettings
+                  key={`picture:${selectedServerId}`}
+                  kind="server"
+                  endpoint={`/api/servers/${selectedServerId}/picture`}
+                  name={
+                    servers.find((server) => server.id === selectedServerId)
+                      ?.name ?? "Server"
+                  }
+                  image={
+                    servers.find((server) => server.id === selectedServerId)
+                      ?.image
+                  }
+                  onSaved={async (image) => {
+                    setServers((current) =>
+                      current.map((server) =>
+                        server.id === selectedServerId
+                          ? { ...server, image }
+                          : server,
+                      ),
+                    );
+                    void serverInvitations.refresh();
+                  }}
+                />
                 <SettingsNameForm
                   key={selectedServerId}
                   name={
@@ -5756,6 +5864,8 @@ export default function Home() {
       </SettingsModal>
     );
   const sidebarStyle = {
+    "--preferred-member-width":
+      memberSidebarWidth === null ? undefined : `${memberSidebarWidth}px`,
     "--preferred-sidebar-width":
       sidebarWidth === null ? undefined : `${sidebarWidth}px`,
   } as CSSProperties;
@@ -5768,6 +5878,19 @@ export default function Home() {
       onReset={() => {
         setSidebarWidth(null);
         localStorage.removeItem("lc.sidebarWidth");
+      }}
+    />
+  );
+  const memberSidebarResizer = (
+    <SidebarResizer
+      side="members"
+      onResize={(width) => {
+        setMemberSidebarWidth(width);
+        localStorage.setItem("lc.memberSidebarWidth", String(width));
+      }}
+      onReset={() => {
+        setMemberSidebarWidth(null);
+        localStorage.removeItem("lc.memberSidebarWidth");
       }}
     />
   );
@@ -5982,6 +6105,8 @@ export default function Home() {
       currentUserName={session.user.name ?? "You"}
       cameraResolution={cameraResolution}
       onCameraResolutionChange={(value) => void changeCameraResolution(value)}
+      cameraFrameRate={cameraFrameRate}
+      onCameraFrameRateChange={(value) => void changeCameraFrameRate(value)}
       focusTarget={mediaFocusTarget}
       currentUserId={session.user.id}
       microphoneId={microphoneId}
@@ -6190,6 +6315,13 @@ export default function Home() {
 
   const managementOverlays = (
     <>
+      {leaveServerTarget && (
+        <ServerLeaveConfirmation
+          server={leaveServerTarget}
+          onConfirm={leaveServer}
+          onClose={() => setLeaveServerTarget(null)}
+        />
+      )}
       {renameTarget && (
         <div
           className="modalBackdrop"
@@ -7035,30 +7167,65 @@ export default function Home() {
                         description="Friend requests and server invitations you send or receive will appear here."
                       />
                     )}
-                  <PendingServerInvitations invitations={serverInvitations} />
-                  {pendingRequests.map((friend) => (
-                    <div className="friendRow" key={friend.id}>
-                      <span>
-                        <b>{friend.name}</b>
-                        <small>{formatUserHandle(friend.handle)}</small>
-                      </span>
-                      {friend.incoming ? (
-                        <>
-                          <button
-                            onClick={() => void friendAction("accept", friend)}
-                          >
-                            Accept
-                          </button>
-                          <button
-                            onClick={() => void friendAction("decline", friend)}
-                          >
-                            Decline
-                          </button>
-                        </>
-                      ) : (
-                        <small>Sent</small>
-                      )}
-                    </div>
+                  {[true, false].map((incoming) => (
+                    <section
+                      className="pendingInviteGroup"
+                      aria-label={
+                        incoming
+                          ? "Incoming pending invites"
+                          : "Outgoing pending invites"
+                      }
+                      key={String(incoming)}
+                    >
+                      <h3>{incoming ? "Incoming" : "Outgoing"}</h3>
+                      {serverInvitations.ready &&
+                        !serverInvitations.error &&
+                        !serverInvitations.rows.some(
+                          (invite) => invite.incoming === incoming,
+                        ) &&
+                        !pendingRequests.some(
+                          (friend) => friend.incoming === incoming,
+                        ) && (
+                          <p className="settingsDescription">
+                            No {incoming ? "incoming" : "outgoing"} pending
+                            invites.
+                          </p>
+                        )}
+                      <PendingServerInvitations
+                        invitations={serverInvitations}
+                        incoming={incoming}
+                      />
+                      {pendingRequests
+                        .filter((friend) => friend.incoming === incoming)
+                        .map((friend) => (
+                          <div className="friendRow" key={friend.id}>
+                            <span>
+                              <b>{friend.name}</b>
+                              <small>{formatUserHandle(friend.handle)}</small>
+                            </span>
+                            {friend.incoming ? (
+                              <>
+                                <button
+                                  onClick={() =>
+                                    void friendAction("accept", friend)
+                                  }
+                                >
+                                  Accept
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    void friendAction("decline", friend)
+                                  }
+                                >
+                                  Decline
+                                </button>
+                              </>
+                            ) : (
+                              <small>Sent</small>
+                            )}
+                          </div>
+                        ))}
+                    </section>
                   ))}
                 </>
               ) : (
@@ -7089,12 +7256,11 @@ export default function Home() {
                         openNotificationMute(event, "direct", friend)
                       }
                     >
-                      <span className="friendListAvatar" aria-hidden="true">
-                        <Avatar name={friend.name} image={friend.image} />
-                        <i
-                          className={`friendStatusDot statusDot status-${userStatuses[friend.id] ?? "offline"}`}
-                        />
-                      </span>
+                      <StatusAvatar
+                        name={friend.name}
+                        image={friend.image}
+                        status={userStatuses[friend.id] ?? "offline"}
+                      />
                       <span className="friendConversationLink">
                         <b>{friend.name}</b>
                         <small>
@@ -7299,7 +7465,21 @@ export default function Home() {
                       : "Calling"
                     : "Server voice"}
                 </small>
-                <strong className={directRemoteSpeaking ? "speaking" : ""}>
+                <strong
+                  className={
+                    showParticipantSpeaking(
+                      {
+                        userId: directPeerUserId ?? undefined,
+                        speaking: directRemoteSpeaking,
+                      },
+                      session.user.id,
+                      deafened,
+                      participantAudio.values[directPeerUserId ?? ""],
+                    )
+                      ? "speaking"
+                      : ""
+                  }
+                >
                   {activeVoiceChannel.name}
                 </strong>
                 <span>{joining ? "Connecting…" : status}</span>
@@ -7427,6 +7607,7 @@ export default function Home() {
           )}
         </section>
         <aside className="memberSidebar friendsInfoSidebar">
+          {memberSidebarResizer}
           <header className="memberSidebarHeader">
             Profile
             {closeUserList}
@@ -7466,7 +7647,9 @@ export default function Home() {
           voiceReady && (
             <ScreenShareOptions
               onClose={() => setScreenShareOptionsOpen(false)}
-              onShare={(resolution) => void toggleScreenShare(resolution)}
+              onShare={(resolution, frameRate) =>
+                void toggleScreenShare(resolution, frameRate)
+              }
             />
           )}
         {serverContextMenu}
@@ -7741,110 +7924,116 @@ export default function Home() {
                 )}
                 {(voicePresence[channel.id]?.length ?? 0) > 0 && (
                   <div className="voicePresence">
-                    {voicePresence[channel.id].map((participant, index) => {
-                      const serverPolicy = participant.userId
-                        ? (voicePolicies[
-                            `${session.user.id}:${channel.serverId}`
-                          ]?.[participant.userId] ??
-                          members.find(
-                            (member) => member.id === participant.userId,
-                          ))
-                        : undefined;
-                      return (
-                        <span
-                          className={`voiceParticipant ${channel.id === activeVoiceChannelId && participant.speaking ? "speaking" : ""}`}
-                          key={
-                            participant.userId ?? `${participant.name}-${index}`
-                          }
-                          onContextMenu={(event) => {
-                            if (
-                              !participant.userId ||
-                              participant.connecting ||
-                              participant.userId === session.user.id
-                            )
-                              return;
-                            event.preventDefault();
-                            setVoiceMenu({
-                              userId: participant.userId,
-                              name: participant.name,
-                              channelId: channel.id,
-                              x: event.clientX,
-                              y: event.clientY,
-                            });
-                          }}
-                        >
-                          <button
-                            className="voiceParticipantIdentity"
-                            type="button"
-                            disabled={!participant.userId}
-                            onClick={() =>
-                              participant.userId &&
-                              setProfileUser({
-                                id: participant.userId,
+                    {alphabeticalParticipants(voicePresence[channel.id]).map(
+                      (participant, index) => {
+                        const serverPolicy = participant.userId
+                          ? (voicePolicies[
+                              `${session.user.id}:${channel.serverId}`
+                            ]?.[participant.userId] ??
+                            members.find(
+                              (member) => member.id === participant.userId,
+                            ))
+                          : undefined;
+                        return (
+                          <span
+                            className={`voiceParticipant ${channel.id === activeVoiceChannelId && showParticipantSpeaking(participant, session.user.id, deafened, participantAudio.values[participant.userId ?? ""], serverPolicy) ? "speaking" : ""}`}
+                            key={
+                              participant.userId ??
+                              `${participant.name}-${index}`
+                            }
+                            onContextMenu={(event) => {
+                              if (
+                                !participant.userId ||
+                                participant.connecting ||
+                                participant.userId === session.user.id
+                              )
+                                return;
+                              event.preventDefault();
+                              setVoiceMenu({
+                                userId: participant.userId,
                                 name: participant.name,
-                                image: userImage(participant.userId),
-                              })
-                            }
+                                channelId: channel.id,
+                                x: event.clientX,
+                                y: event.clientY,
+                              });
+                            }}
                           >
-                            <Avatar
-                              name={participant.name}
-                              image={userImage(participant.userId)}
-                              small
-                            />
-                            <b title={participant.name}>{participant.name}</b>
-                            {participant.connecting && (
-                              <small
-                                className="voiceConnectingLabel"
-                                role="status"
-                              >
-                                Connecting…
-                              </small>
-                            )}
-                          </button>
-                          <LocallyMuted
-                            serverPolicy={serverPolicy}
-                            deafened={Boolean(
-                              participant.userId &&
-                              participantAudio.values[participant.userId]
-                                ?.deafened,
-                            )}
-                            muted={
-                              participant.userId
-                                ? participantAudio.values[participant.userId]
-                                    ?.muted
-                                : false
-                            }
-                          />
-                          <ParticipantMediaIndicators
-                            participant={participant}
-                            serverPolicy={serverPolicy}
-                            selfState={
-                              participant.userId === session.user.id
-                                ? { muted, deafened }
-                                : undefined
-                            }
-                            showCamera={
-                              channel.type === "voice_group" ||
-                              !participant.screen
-                            }
-                            onCamera={() =>
-                              openParticipantMedia(
-                                channel,
-                                participant,
-                                "camera",
-                              )
-                            }
-                            onWatch={() =>
-                              openParticipantMedia(
-                                channel,
-                                participant,
-                                "screen",
-                              )
-                            }
-                          />
-                        </span>
-                      );
-                    })}
+                            <button
+                              className="voiceParticipantIdentity"
+                              type="button"
+                              disabled={!participant.userId}
+                              onClick={() =>
+                                participant.userId &&
+                                setProfileUser({
+                                  id: participant.userId,
+                                  name: participant.name,
+                                  image: userImage(participant.userId),
+                                })
+                              }
+                            >
+                              <Avatar
+                                name={participant.name}
+                                image={userImage(participant.userId)}
+                                small
+                              />
+                              <b title={participant.name}>{participant.name}</b>
+                              {participant.connecting && (
+                                <small
+                                  className="voiceConnectingLabel"
+                                  role="status"
+                                >
+                                  Connecting…
+                                </small>
+                              )}
+                            </button>
+                            <span className="voiceParticipantControls">
+                              <LocallyMuted
+                                serverPolicy={serverPolicy}
+                                deafened={Boolean(
+                                  participant.userId &&
+                                  participantAudio.values[participant.userId]
+                                    ?.deafened,
+                                )}
+                                muted={
+                                  participant.userId
+                                    ? participantAudio.values[
+                                        participant.userId
+                                      ]?.muted
+                                    : false
+                                }
+                              />
+                              <ParticipantMediaIndicators
+                                participant={participant}
+                                serverPolicy={serverPolicy}
+                                selfState={
+                                  participant.userId === session.user.id
+                                    ? { muted, deafened }
+                                    : undefined
+                                }
+                                showCamera={
+                                  channel.type === "voice_group" ||
+                                  !participant.screen
+                                }
+                                onCamera={() =>
+                                  openParticipantMedia(
+                                    channel,
+                                    participant,
+                                    "camera",
+                                  )
+                                }
+                                onWatch={() =>
+                                  openParticipantMedia(
+                                    channel,
+                                    participant,
+                                    "screen",
+                                  )
+                                }
+                              />
+                            </span>
+                          </span>
+                        );
+                      },
+                    )}
                   </div>
                 )}
               </div>
@@ -8197,6 +8386,7 @@ export default function Home() {
         )}
       </section>
       <aside className="memberSidebar">
+        {memberSidebarResizer}
         <header className="memberSidebarHeader">
           {closeUserList}
           <strong>ALL USERS — {members.length}</strong>
@@ -8235,9 +8425,10 @@ export default function Home() {
                 });
               }}
             >
-              <Avatar
+              <StatusAvatar
                 name={member.name}
                 image={member.image}
+                status={userStatuses[member.id] ?? "online"}
                 className={`role-${member.role}`}
               />
               <span className="memberIdentity">
@@ -8273,9 +8464,10 @@ export default function Home() {
                 });
               }}
             >
-              <Avatar
+              <StatusAvatar
                 name={member.name}
                 image={member.image}
+                status="offline"
                 className={`role-${member.role}`}
               />
               <span className="memberIdentity">
@@ -8295,7 +8487,9 @@ export default function Home() {
         voiceReady && (
           <ScreenShareOptions
             onClose={() => setScreenShareOptionsOpen(false)}
-            onShare={(resolution) => void toggleScreenShare(resolution)}
+            onShare={(resolution, frameRate) =>
+              void toggleScreenShare(resolution, frameRate)
+            }
           />
         )}
       {serverContextMenu}
@@ -8637,9 +8831,24 @@ function videoQuality(video: HTMLVideoElement) {
   return `${video.videoWidth}×${video.videoHeight}`;
 }
 
-async function preferVideoDetail(sender: RTCRtpSender) {
+async function preferVideoDetail(
+  sender: RTCRtpSender,
+  frameRate: VideoFrameRate = readCameraFrameRate(),
+) {
   const parameters = sender.getParameters();
-  parameters.degradationPreference = "maintain-resolution";
+  parameters.degradationPreference =
+    frameRate === 60 ? "maintain-framerate" : "maintain-resolution";
+  parameters.encodings ??= [{}];
+  for (const encoding of parameters.encodings) {
+    Object.assign(
+      encoding,
+      videoPublishEncoding(
+        (sender.track?.getSettings()?.height ?? 1080) /
+          (encoding.scaleResolutionDownBy ?? 1),
+        frameRate,
+      ),
+    );
+  }
   try {
     await sender.setParameters(parameters);
   } catch {

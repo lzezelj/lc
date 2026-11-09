@@ -19,6 +19,7 @@ export async function GET() {
       id: serverInvitations.id,
       serverId: servers.id,
       serverName: servers.name,
+      serverImage: servers.image,
       inviterId: serverInvitations.inviterId,
       recipientId: serverInvitations.recipientId,
       createdAt: serverInvitations.createdAt,

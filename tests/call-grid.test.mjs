@@ -161,12 +161,36 @@ const cameraSource = await readFile(
 const cameraResolutions = vm.runInNewContext(
   `(${cameraSource.match(/export const cameraResolutions = ([\s\S]*?);/)[1]})`,
 );
+const cameraHelpers = {};
+vm.runInNewContext(
+  ts.transpile(cameraSource, {
+    module: ts.ModuleKind.CommonJS,
+    jsx: ts.JsxEmit.ReactJSX,
+  }),
+  { exports: cameraHelpers, require: () => ({}) },
+);
 const elements = (node) =>
   Array.isArray(node)
     ? node.flatMap(elements)
     : node && typeof node === "object"
       ? [node, ...elements(node.props?.children)]
       : [];
+
+test("camera capture and encoder ceilings follow the requested 30 or 60 fps", () => {
+  for (const fps of [30, 60]) {
+    const constraints = cameraHelpers.cameraCaptureConstraints(
+      "camera",
+      "1080",
+      fps,
+    );
+    assert.equal(constraints.frameRate.ideal, fps);
+    assert.equal(constraints.frameRate.max, fps);
+    const encoding = cameraHelpers.videoPublishEncoding(1080, fps);
+    assert.equal(encoding.maxFramerate, fps);
+    assert.equal(encoding.maxBitrate, fps === 60 ? 9000000 : 6000000);
+  }
+  assert.equal(cameraHelpers.readCameraFrameRate(), 30);
+});
 
 // Render the actual call component with named hook state and track attachment
 // doubles, so no LiveKit server or physical capture device is required.
@@ -372,6 +396,7 @@ function renderCall(state = {}, options = {}) {
     ScreenShareOptions: "ScreenShareOptions",
     screenShareResolutions,
     cameraResolutions,
+    videoPublishEncoding: cameraHelpers.videoPublishEncoding,
     CameraResolutionSelection: "CameraResolutionSelection",
     RemoteTrackView: "RemoteTrackView",
     HideTileButton: "HideTileButton",
@@ -1433,7 +1458,7 @@ test("starting screen sharing requests the call grid without forcing self-view o
   const selected = renderCall({ joined: true, screenShareOptionsOpen: true });
   elements(selected.tree)
     .find((element) => element.type === "ScreenShareOptions")
-    .props.onShare("1440");
+    .props.onShare("1440", 60);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(selected.opened, [true]);
   assert.equal(selected.stateWrites.hiddenTiles, undefined);
@@ -1442,8 +1467,14 @@ test("starting screen sharing requests the call grid without forcing self-view o
   );
   assert.equal(capture[2].resolution.width, 2560);
   assert.equal(capture[2].resolution.height, 1440);
+  assert.equal(capture[2].resolution.frameRate, 60);
+  assert.equal(capture[2].contentHint, "motion");
   assert.deepEqual(capture[2].audio, sharedAudioCapture);
-  assert.deepEqual(capture[3], sharedAudioPublish);
+  assert.deepEqual(JSON.parse(JSON.stringify(capture[3])), {
+    ...sharedAudioPublish,
+    screenShareEncoding: { maxBitrate: 15000000, maxFramerate: 60 },
+    degradationPreference: "maintain-framerate",
+  });
 });
 
 test("screen picker completing after leave cannot reopen the call or restore presence", async () => {
@@ -1742,18 +1773,25 @@ test("microphone menu shares the processing selector and omits retired capture a
       require: (name) =>
         name === "react"
           ? {
-              useState: () => [true, () => {}],
+              useState: (initial) => [
+                initial === false ? true : { parent: {}, style: {} },
+                () => {},
+              ],
               useEffect() {},
+              useLayoutEffect() {},
+              useId: () => "device-menu",
               useRef: () => ({ current: null }),
             }
-          : name === "react/jsx-runtime"
-            ? { jsx, jsxs: jsx }
-            : name === "./microphone-processing"
-              ? {
-                  MicrophoneModeSelector: "MicrophoneModeSelector",
-                  EchoCancellationToggle: "EchoCancellationToggle",
-                }
-              : { DeviceSelection: "DeviceSelection" },
+          : name === "react-dom"
+            ? { createPortal: (children) => children }
+            : name === "react/jsx-runtime"
+              ? { jsx, jsxs: jsx }
+              : name === "./microphone-processing"
+                ? {
+                    MicrophoneModeSelector: "MicrophoneModeSelector",
+                    EchoCancellationToggle: "EchoCancellationToggle",
+                  }
+                : { DeviceSelection: "DeviceSelection" },
     },
   );
   for (const kind of ["microphone", "headphones", "camera"]) {

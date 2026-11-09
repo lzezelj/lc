@@ -316,7 +316,9 @@ export function SoundboardButton({
           board.setOpen(!board.open);
         }}
       >
-        Soundboard
+        <span className="soundName" title="Soundboard">
+          Soundboard
+        </span>
       </button>
       {board.open && serverId && (
         <section
@@ -353,7 +355,9 @@ export function SoundboardButton({
                     }
                     onClick={() => void play(sound)}
                   >
-                    {sound.name}
+                    <span className="soundName" title={sound.name}>
+                      {sound.name}
+                    </span>
                   </button>
                   <div className="soundboardClipActions">
                     <button

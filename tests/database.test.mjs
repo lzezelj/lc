@@ -11,8 +11,303 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema.ts";
 import * as attachmentTypes from "../app/attachment-types.ts";
 import * as emojiCatalog from "../app/emoji-catalog.ts";
+import { attachmentRange } from "../server/attachment-range.ts";
 
 const { Client } = pg;
+
+test("video attachment migration permits 25 MiB, serves authorized PostgreSQL byte ranges and cleans up deletions", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const owner = randomUUID(),
+      outsider = randomUUID(),
+      serverId = randomUUID(),
+      channelId = randomUUID(),
+      messageId = randomUUID(),
+      fileId = randomUUID();
+    await database.insert(schema.users).values([
+      { id: owner, name: "Video owner" },
+      { id: outsider, name: "Video outsider" },
+    ]);
+    await database
+      .insert(schema.servers)
+      .values({ id: serverId, name: "Video range test", createdBy: owner });
+    await database
+      .insert(schema.serverMembers)
+      .values({ serverId, userId: owner, role: "owner" });
+    await database
+      .insert(schema.channels)
+      .values({ id: channelId, serverId, name: "clips", type: "text" });
+    const data = Buffer.alloc(25 * 1024 * 1024);
+    Buffer.from("000000186674797069736f6d0000020069736f6d6d703432", "hex").copy(
+      data,
+    );
+    const metadata = [
+      { id: fileId, name: "clip.mp4", type: "video/mp4", size: data.length },
+    ];
+    await database.insert(schema.messages).values({
+      id: messageId,
+      channelId,
+      authorId: owner,
+      content: "",
+      attachments: metadata,
+    });
+    await database
+      .insert(schema.messageAttachments)
+      .values({ id: fileId, uploaderId: owner, messageId, data });
+    await client.query("SAVEPOINT oversized_video");
+    await assert.rejects(
+      client.query(
+        "INSERT INTO message_attachments(uploader_id,message_id,data) VALUES($1,$2,$3)",
+        [owner, messageId, Buffer.alloc(data.length + 1)],
+      ),
+      /attachment_size/,
+    );
+    await client.query("ROLLBACK TO SAVEPOINT oversized_video");
+    let actor = owner;
+    const route = {};
+    const dependencies = {
+      "drizzle-orm": orm,
+      "../../../../auth": { auth: async () => ({ user: { id: actor } }) },
+      "../../../../db": { db: database },
+      "../../../../db/schema": schema,
+      "../../../../server/friends": { areFriends: async () => false },
+      "../../../../server/attachment-range": { attachmentRange },
+    };
+    vm.runInNewContext(
+      ts.transpile(
+        await readFile(
+          new URL(
+            "../app/api/attachments/[attachmentId]/route.ts",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+        { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      ),
+      {
+        exports: route,
+        Response,
+        Uint8Array,
+        URL,
+        require: (name) => {
+          assert.ok(name in dependencies, name);
+          return dependencies[name];
+        },
+      },
+    );
+    const read = () =>
+      route.GET(
+        new Request(`http://local/api/attachments/${fileId}`, {
+          headers: { Range: "bytes=4-15" },
+        }),
+        { params: Promise.resolve({ attachmentId: fileId }) },
+      );
+    const response = await read();
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("Content-Length"), "12");
+    assert.deepEqual(
+      Buffer.from(await response.arrayBuffer()),
+      data.subarray(4, 16),
+    );
+    actor = outsider;
+    assert.equal((await read()).status, 404);
+    actor = owner;
+    await database
+      .update(schema.messages)
+      .set({ deletedAt: new Date() })
+      .where(orm.eq(schema.messages.id, messageId));
+    assert.equal((await read()).status, 404);
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.messageAttachments)
+          .where(orm.eq(schema.messageAttachments.id, fileId))
+      ).length,
+      0,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
+test("server pictures persist privately for members and pending invitees, revoke access and cascade on server deletion", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const owner = randomUUID(),
+      member = randomUUID(),
+      invitee = randomUUID(),
+      outsider = randomUUID(),
+      serverId = randomUUID();
+    await database.insert(schema.users).values(
+      [owner, member, invitee, outsider].map((id) => ({
+        id,
+        name: "Picture test",
+      })),
+    );
+    await database
+      .insert(schema.servers)
+      .values({ id: serverId, name: "Private picture", createdBy: owner });
+    await database.insert(schema.serverMembers).values([
+      { serverId, userId: owner, role: "owner" },
+      { serverId, userId: member },
+    ]);
+    await database
+      .insert(schema.serverInvitations)
+      .values({ serverId, inviterId: owner, recipientId: invitee });
+    const transactional = new Proxy(database, {
+      get(target, key) {
+        if (key === "transaction") return async (run) => run(database);
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const helpers = {},
+      route = {},
+      events = [];
+    let actor = owner;
+    const load = async (path, exports, deps) =>
+      vm.runInNewContext(
+        ts.transpile(await readFile(new URL(path, import.meta.url), "utf8"), {
+          module: ts.ModuleKind.CommonJS,
+          target: ts.ScriptTarget.ES2022,
+        }),
+        {
+          exports,
+          Response,
+          Buffer,
+          Uint8Array,
+          require: (name) => {
+            assert.ok(name in deps, name);
+            return deps[name];
+          },
+        },
+      );
+    await load("../server/profile-pictures.ts", helpers, {
+      "node:crypto": { randomUUID },
+      "drizzle-orm": orm,
+      "../db": { db: transactional },
+      "../db/schema": schema,
+      "./notify-user": {},
+    });
+    await load("../app/api/servers/[serverId]/picture/route.ts", route, {
+      "node:crypto": { randomUUID },
+      "drizzle-orm": orm,
+      "../../../../../auth": {
+        auth: async () => (actor ? { user: { id: actor } } : null),
+      },
+      "../../../../../db": { db: transactional },
+      "../../../../../db/schema": schema,
+      "../../../../../server/profile-pictures": helpers,
+      "../../../../../server/rate-limit": {
+        checkRateLimit: () => ({ allowed: true }),
+      },
+      "../../../../../server/notify-user": {
+        notifyUser: async (id, event) => events.push({ id, event }),
+      },
+    });
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1cAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const run = (method) =>
+      route[method](
+        new Request("http://local/picture", {
+          method,
+          ...(method === "PUT"
+            ? { headers: { "Content-Type": "image/png" }, body: png }
+            : {}),
+        }),
+        { params: Promise.resolve({ serverId }) },
+      );
+    assert.equal((await run("PUT")).status, 200);
+    assert.deepEqual(
+      events.map((event) => event.id).sort(),
+      [owner, member, invitee].sort(),
+    );
+    for (const viewer of [owner, member, invitee]) {
+      actor = viewer;
+      const response = await run("GET");
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+    }
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.serverMembers)
+          .where(orm.eq(schema.serverMembers.userId, invitee))
+      ).length,
+      0,
+      "Seeing an invitation picture grants no membership",
+    );
+    actor = outsider;
+    for (const method of ["GET", "PUT", "DELETE"])
+      assert.equal((await run(method)).status, method === "GET" ? 404 : 403);
+    await database
+      .delete(schema.serverInvitations)
+      .where(orm.eq(schema.serverInvitations.serverId, serverId));
+    actor = invitee;
+    assert.equal(
+      (await run("GET")).status,
+      404,
+      "Cancelling an invite revokes picture access",
+    );
+    await database
+      .delete(schema.serverMembers)
+      .where(orm.eq(schema.serverMembers.userId, member));
+    actor = member;
+    assert.equal(
+      (await run("GET")).status,
+      404,
+      "Leaving revokes picture access",
+    );
+    actor = owner;
+    assert.equal((await run("DELETE")).status, 200);
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.serverPictures)
+          .where(orm.eq(schema.serverPictures.serverId, serverId))
+      ).length,
+      0,
+    );
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.servers)
+          .where(orm.eq(schema.servers.id, serverId))
+      )[0].image,
+      null,
+    );
+    assert.equal((await run("PUT")).status, 200);
+    await database
+      .delete(schema.servers)
+      .where(orm.eq(schema.servers.id, serverId));
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.serverPictures)
+          .where(orm.eq(schema.serverPictures.serverId, serverId))
+      ).length,
+      0,
+      "Server deletion removes picture bytes",
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
 
 test("pending server invitations grant access only on recipient acceptance and isolate senders, accounts and server lifetimes", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
@@ -919,6 +1214,7 @@ test("real PostgreSQL edit/search queries preserve files, enforce conversation s
       return exports;
     }
     const reader = await load("../server/message-attachments.ts", {
+      "./notify-user": { notifyUser: async () => {} },
       "node:crypto": { randomUUID },
       "drizzle-orm": orm,
       "../db": { db: database },
@@ -1183,6 +1479,190 @@ test("real PostgreSQL edit/search queries preserve files, enforce conversation s
   } finally {
     await client.query("ROLLBACK");
     await client.end();
+  }
+});
+
+test("global attachment retention expires old files transactionally and preserves messages", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  const observer = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  await observer.connect();
+  const schema = `lc_retention_${randomUUID().replaceAll("-", "")}`;
+  const [
+    channel,
+    server,
+    message,
+    direct,
+    recentMessage,
+    oldFile,
+    directFile,
+    recentFile,
+    sender,
+    recipient,
+    member,
+  ] = Array.from({ length: 11 }, () => randomUUID());
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE SCHEMA "${schema}"`);
+    await client.query(`SET LOCAL search_path TO "${schema}"`);
+    await client.query(`
+      CREATE TABLE channels (id uuid PRIMARY KEY, server_id uuid);
+      CREATE TABLE server_members (server_id uuid, user_id uuid);
+      CREATE TABLE messages (id uuid PRIMARY KEY, channel_id uuid, text text, attachments jsonb, created_at timestamptz);
+      CREATE TABLE direct_messages (id uuid PRIMARY KEY, sender_id uuid, recipient_id uuid, text text, attachments jsonb, created_at timestamptz);
+      CREATE TABLE message_attachments (id uuid PRIMARY KEY, message_id uuid, direct_message_id uuid, data bytea);
+    `);
+    await client.query("INSERT INTO channels VALUES ($1,$2)", [
+      channel,
+      server,
+    ]);
+    await client.query("INSERT INTO server_members VALUES ($1,$2)", [
+      server,
+      member,
+    ]);
+    await client.query(
+      "INSERT INTO messages VALUES ($1,$2,'keep channel text',$3,now()-interval '50 days'),($4,$2,'keep recent text',$5,now())",
+      [
+        message,
+        channel,
+        JSON.stringify([{ id: oldFile, name: "old.png" }]),
+        recentMessage,
+        JSON.stringify([{ id: recentFile, name: "recent.png" }]),
+      ],
+    );
+    await client.query(
+      "INSERT INTO direct_messages VALUES ($1,$2,$3,'keep direct text',$4,now()-interval '40 days')",
+      [
+        direct,
+        sender,
+        recipient,
+        JSON.stringify([{ id: directFile, name: "old.mp4" }]),
+      ],
+    );
+    await client.query(
+      "INSERT INTO message_attachments VALUES ($1,$2,null,$3),($4,null,$5,$6),($7,$8,null,$9)",
+      [
+        oldFile,
+        message,
+        Buffer.alloc(20),
+        directFile,
+        direct,
+        Buffer.alloc(30),
+        recentFile,
+        recentMessage,
+        Buffer.alloc(40),
+      ],
+    );
+    await client.query(
+      await readFile(
+        new URL(
+          "../db/migrations/0027_attachment_retention.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(
+      (await client.query("SELECT lc_attachment_budget(10,100,50) AS audience"))
+        .rows[0].audience,
+      [],
+    );
+    assert.equal(
+      (
+        await observer.query(
+          "SELECT pg_try_advisory_xact_lock(73492017) AS acquired",
+        )
+      ).rows[0].acquired,
+      false,
+      "Budget checks hold the shared lock until transaction completion",
+    );
+    const firstExpired = await client.query(
+      "SELECT lc_attachment_budget(30,100,70) AS audience",
+    );
+    assert.deepEqual(firstExpired.rows[0].audience, [member]);
+    assert.deepEqual(
+      new Set(
+        (await client.query("SELECT id FROM message_attachments")).rows.map(
+          (row) => row.id,
+        ),
+      ),
+      new Set([directFile, recentFile]),
+      "The oldest file expires before a newer eligible file",
+    );
+    const expired = await client.query(
+      "SELECT lc_attachment_budget(40,100,50) AS audience",
+    );
+    assert.deepEqual(
+      new Set(expired.rows[0].audience),
+      new Set([sender, recipient]),
+    );
+    assert.deepEqual(
+      (await client.query("SELECT id FROM message_attachments")).rows.map(
+        (row) => row.id,
+      ),
+      [recentFile],
+    );
+    const channelRow = (
+      await client.query("SELECT text, attachments FROM messages WHERE id=$1", [
+        message,
+      ])
+    ).rows[0];
+    assert.equal(channelRow.text, "keep channel text");
+    assert.equal(channelRow.attachments[0].expired, true);
+    const directRow = (
+      await client.query(
+        "SELECT text, attachments FROM direct_messages WHERE id=$1",
+        [direct],
+      )
+    ).rows[0];
+    assert.equal(directRow.text, "keep direct text");
+    assert.equal(directRow.attachments[0].expired, true);
+    assert.equal(
+      (
+        await client.query("SELECT attachments FROM messages WHERE id=$1", [
+          recentMessage,
+        ])
+      ).rows[0].attachments[0].expired,
+      undefined,
+    );
+
+    // A failed cleanup must restore even the eligible file it tried deleting.
+    await client.query(
+      "INSERT INTO message_attachments (id,message_id,data,created_at) VALUES ($1,$2,$3,now()-interval '50 days')",
+      [oldFile, message, Buffer.alloc(10)],
+    );
+    await client.query("UPDATE messages SET attachments=$2 WHERE id=$1", [
+      message,
+      JSON.stringify([{ id: oldFile, name: "restored.png" }]),
+    ]);
+    await client.query("SAVEPOINT cannot_free_enough");
+    await assert.rejects(
+      client.query("SELECT lc_attachment_budget(70,100,50)"),
+      (error) =>
+        error.code === "P0001" &&
+        error.message === "LC_ATTACHMENT_STORAGE_FULL",
+    );
+    await client.query("ROLLBACK TO SAVEPOINT cannot_free_enough");
+    assert.equal(
+      (
+        await client.query(
+          "SELECT count(*)::int AS count FROM message_attachments",
+        )
+      ).rows[0].count,
+      2,
+    );
+    assert.equal(
+      (
+        await client.query("SELECT attachments FROM messages WHERE id=$1", [
+          message,
+        ])
+      ).rows[0].attachments[0].expired,
+      undefined,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+    await observer.end();
   }
 });
 

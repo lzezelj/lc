@@ -40,9 +40,9 @@ button {
 
 .workspace {
   --rail-width: 72px;
-  --sidebar-width: var(--preferred-sidebar-width, 380px);
+  --sidebar-width: max(320px, var(--preferred-sidebar-width, 380px));
   --channel-width: var(--sidebar-width);
-  --member-width: 340px;
+  --member-width: var(--preferred-member-width, 340px);
   --profile-row-height: 76px;
   --connection-row-height: 60px;
   --footer-inset: 8px;
@@ -586,6 +586,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
   gap: 8px;
   white-space: nowrap;
 }
+.voiceChannel:has(> .openCallView) > .channel { padding-right: 48px; }
 
 .channelIcon,
 .connectionIndicators {
@@ -748,9 +749,10 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 
 .voiceParticipant {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
   padding: 3px 5px;
   color: #c8cfdd;
   font-size: 12px;
@@ -760,7 +762,6 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 
 .voiceParticipant:hover {
   background: #293147;
-  transform: translateX(2px);
 }
 
 .voiceParticipant i {
@@ -811,6 +812,8 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
   font-size: 9px;
   font-style: normal;
 }
+.voiceParticipantControls { display: flex; align-items: center; justify-content: flex-end; flex: 0 1 auto; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 4px; margin-left: auto; }
+.voiceParticipantControls .voiceIndicators { flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .voiceIndicators > span, .voiceIndicators > button { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 3px 6px; border: 1px solid #59627a; border-radius: 5px; background: #252b3b; color: var(--ink); line-height: 1; flex-shrink: 0; }
 .voiceIndicators > button:hover { background: #2b4369; border-color: #71829d; }
 .voiceIndicators > .serverModerated { color: #ff8297; border-color: #a34458; background: #3a2230; }
@@ -893,10 +896,6 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .workspace .profileDeafen .deviceMenuTrigger { width: 20px; min-width: 20px; display: grid; place-items: center; padding: 0; line-height: 1; }
 .profileDeafen button { padding: 7px 6px; font-size: 11px; }
 .profileDeafen button:focus-visible { outline: 2px solid #91a7c4; outline-offset: 2px; }
-.workspace .profileDeafen .deviceDropdown,
-.workspace .profileMicrophone .deviceDropdown,
-.workspace .voiceDock .deviceDropdown { position: fixed; bottom: calc(var(--audio-controls-bottom) + 48px); left: calc(var(--rail-width) + var(--footer-inset)); width: calc(var(--sidebar-width) - 2 * var(--footer-inset)); max-width: calc(100vw - 16px); max-height: min(360px, calc(100dvh - var(--audio-controls-bottom) - 64px)); z-index: 120; }
-.workspace .voiceDock:has(.deviceControl.open), .profileBar:has(.deviceControl.open), .profileMenu:has(.deviceControl.open) { z-index: 120; }
 .rnnoiseToggle, .settingsContent .rnnoiseToggle { display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px; color: var(--ink); }
 .rnnoiseToggle input { flex: 0 0 auto; accent-color: var(--accent); }
 .rnnoiseToggle span { min-width: 0; overflow-wrap: anywhere; }
@@ -916,6 +915,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .soundboardDropup header small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .soundboardClips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 64px; align-content: start; gap: 8px; height: 208px; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 .soundboardClip { position: relative; display: grid; min-width: 0; border: 1px solid #30384b; border-radius: 7px; background: #20283a; }
+.soundName { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace .voiceDock .soundboardPlay { display: grid; place-items: center; width: 100%; height: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 28px; border: 0; border-radius: 7px; background: transparent; color: inherit; font-size: 13px; text-align: center; }
 .soundboardClipActions { position: absolute; right: 3px; bottom: 3px; display: flex; opacity: 0; pointer-events: none; }
 .soundboardClip:is(:hover, :focus-within) .soundboardClipActions { opacity: 1; pointer-events: auto; }
@@ -931,7 +931,8 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .soundLocalPreview { min-width: 0; }
 .soundLocalPreview audio { display: block; width: 100%; }
 .soundManagerList { display: grid; gap: 8px; max-height: 360px; overflow-y: auto; }
-.soundManagerRow { display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.soundManagerRow { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.soundManagerRow > button { flex-shrink: 0; }
 .soundManagerRow > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .soundManagerRow small { display: block; color: var(--muted); }
 .soundboardVolume { display: flex; align-items: center; gap: 8px; }
@@ -1341,6 +1342,9 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .voiceDock button:focus-visible, .profileMicrophone button:focus-visible { outline: 2px solid #91a7c4; outline-offset: 2px; }
 .sidebarResizer { position: absolute; top: 58px; right: -4px; bottom: 0; width: 8px; z-index: 47; cursor: col-resize; touch-action: none; user-select: none; }
 .sidebarResizer:focus-visible { outline: 1px dashed var(--muted); outline-offset: -2px; }
+.memberSidebar { position: relative; }
+.sidebarResizer.memberSidebarResizer { left: -4px; right: auto; }
+.workspace .voiceDock .soundboardButton { min-width: 0; overflow: hidden; }
 
 .settingsModal { position: fixed; inset: 0; margin: auto; width: min(600px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid #35445f; border-radius: 16px; background: var(--panel); color: var(--ink); box-shadow: 0 24px 80px #0009; }
 .settingsModal::backdrop { background: #05070cc7; backdrop-filter: blur(3px); }
@@ -1487,7 +1491,7 @@ button.member { width: calc(100% - 20px); min-width: 0; border: 1px solid transp
 button.member:hover, button.member:focus-visible { background: #ffffff09; border-color: #ffffff12; }
 button.friendProfileCard { width: calc(100% - 24px); min-width: 0; border: 1px solid var(--line); background: #171d2b; color: var(--ink); cursor: pointer; border-radius: 12px; padding: 20px; }
 button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
-.voiceParticipant .voiceParticipantIdentity { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 4px; border: 0; border-radius: 5px; color: inherit; background: transparent; text-align: left; }
+.voiceParticipant .voiceParticipantIdentity { display: flex; align-items: center; gap: 4px; flex: 1 1 110px; min-width: 0; padding: 4px; border: 0; border-radius: 5px; color: inherit; background: transparent; text-align: left; }
 .voiceParticipantIdentity:hover { background: #ffffff09; }
 .voiceParticipantIdentity b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .friendRow > .friendConversationLink { display: grid; gap: 4px; flex: 1; min-width: 0; text-align: left; }
@@ -1572,15 +1576,16 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   background: #171d2b;
   box-shadow: 0 12px 30px #0008;
 }
+.deviceDropdownPortal { z-index: 180; }
 
-.controls .deviceDropdown button {
+.deviceDropdown button {
   border-radius: 5px;
   background: transparent;
   text-align: left;
 }
 
-.controls .deviceDropdown button:hover,
-.controls .deviceDropdown button.selected {
+.deviceDropdown button:hover,
+.deviceDropdown button.selected {
   background: #30384d;
 }
 
@@ -1851,8 +1856,16 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .pendingAttachments { list-style: none; margin: 0; padding: 4px 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 .pendingAttachments li { display: flex; align-items: center; min-width: 0; max-width: 100%; background: #1c2232; border-radius: 6px; }
 .pendingImage { display: block; flex: 0 0 64px; width: 64px; height: 64px; object-fit: contain; border-radius: 6px 0 0 6px; background: #111724; }
+.pendingVideo { display: block; width: 64px; height: 64px; object-fit: contain; background: #111724; }
+.attachmentVideo { display: block; width: 100%; max-height: 320px; border-radius: 8px; object-fit: contain; background: #080b11; }
+.messageVideoAttachment { width: min(480px, 100%); }
+.attachmentVideoError { color: var(--muted); font-size: 12px; }
+.attachmentExpired { max-width: 100%; margin: 4px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.attachmentPreviewStage .attachmentVideo { height: min(64dvh, 680px); max-height: none; }
+.attachmentOpenVideo { flex-shrink: 0; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: #252b3b; color: var(--ink); }
 .pendingAttachments span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 8px; font-size: 12px; }
 .chat .pendingAttachments button { padding: 4px 8px; background: transparent; }
+.chat .pendingAttachments .pendingImageButton { flex: 0 0 64px; width: 64px; height: 64px; padding: 0; border: 0; border-radius: 6px 0 0 6px; overflow: hidden; }
 .messageAttachments { display: grid; gap: 8px; width: 100%; max-width: 100%; margin-top: 6px; }
 .messageOwn .messageAttachments { margin-left: auto; }
 .messageAttachment { min-width: 0; overflow: hidden; border: 1px solid #30394d; border-radius: 10px; background: #151b28; text-align: left; }
@@ -1892,7 +1905,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .localAudioIndicators { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; vertical-align: middle; margin-left: 4px; }
 .localAudioIndicators .locallyMuted { margin-left: 0; }
 .localAudioIndicators svg { width: 15px; height: 15px; }
-.voiceParticipant > .localAudioIndicators { margin-left: 0; }
+.voiceParticipant .localAudioIndicators { margin-left: 0; }
 .profilePictureSettings { display: grid; gap: 8px; }
 .profilePictureSettings { padding: 20px 0; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
 .profilePictureSettings h4 { margin: 0 0 10px; }
@@ -1922,15 +1935,22 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .attachmentGalleryGrid .attachmentThumbnail img { height: 100%; }
 .userAvatar { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%; overflow: hidden; background: #345780; color: #fff; font-size: 14px; font-weight: 600; vertical-align: middle; }
 .userAvatar img { width: 100%; height: 100%; object-fit: cover; }
+.userAvatar.avatarWithPlaceholder { display: inline-grid; place-items: center; }
+.avatarWithPlaceholder > * { grid-area: 1 / 1; min-width: 0; min-height: 0; }
+.avatarWithPlaceholder > img { opacity: 0; transition: opacity 140ms ease; }
+.avatarWithPlaceholder.avatarImageReady > img { opacity: 1; }
+.avatarImageReady > .avatarInitial { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .avatarWithPlaceholder > img { transition: none; } }
 .userAvatarSmall { width: 20px; height: 20px; flex-basis: 20px; font-size: 10px; }
 .messageHeader .profileLink { display: inline-flex; align-items: center; gap: 8px; }
 .messageHeader { align-items: center; }
 .messageAuthorName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.voiceParticipantIdentity .userAvatar { margin-right: 5px; }
+.voiceParticipantIdentity .userAvatar { margin-right: 0; }
 .voiceParticipant.speaking .userAvatar { box-shadow: 0 0 0 2px #64e6a5; }
 .friendProfileCard .userAvatar { width: 56px; height: 56px; flex-basis: 56px; font-size: 22px; }
 @media (max-width: 680px) { .profileStatusTrigger .userAvatar { width: 28px; height: 28px; flex-basis: 28px; } }
 .friendRow .friendListAvatar { background: transparent; border-radius: 50%; }
+.statusAvatar { position: relative; display: inline-flex; flex: 0 0 auto; width: 32px; height: 32px; }
 .friendConversationTitle > .userAvatar { margin-right: 4px; }
 .participantAudioControls { display: grid; gap: 9px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
 .participantAudioControls small, .participantAudioControls label { color: var(--muted); font-size: 12px; }
@@ -2051,6 +2071,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 .member {
   display: flex;
+  width: calc(100% - 20px);
+  min-width: 0;
   align-items: center;
   gap: 10px;
   margin: 4px 10px;
@@ -2071,10 +2093,9 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .member:hover {
   border-color: #71829d;
   background: #232a3c;
-  transform: translateY(-1px);
 }
 
-.member:not(:has(.avatar.role-owner)) {
+.member:not(:has(.userAvatar.role-owner)) {
   cursor: context-menu;
 }
 
@@ -2085,23 +2106,6 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   opacity: 0.5;
 }
 
-.member.online .avatar::after {
-  position: absolute;
-  right: -1px;
-  bottom: -1px;
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--panel);
-  border-radius: 50%;
-  background: #43b581;
-  content: "";
-}
-.member[data-status="away"] .avatar::after { background: #edb74b; }
-.member[data-status="dnd"] .avatar::after { background: #ed5965; }
-
-.member .avatar {
-  position: relative;
-}
 
 .appLegalLinks {
   display: flex;
@@ -2444,7 +2448,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   line-height: 1.35;
 }
 
-.deletionConfirmation .modalActions .danger {
+.deletionConfirmation .modalActions .danger,
+.deletionConfirmationModal .modalActions .danger {
   background: #a9364d;
   color: #fff;
 }
@@ -2499,6 +2504,12 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   background: var(--accent);
   color: var(--accent-ink);
 }
+
+.serverPicture.userAvatar { border-radius: 10px; flex-shrink: 0; }
+.workspaceButton:has(> .serverPicture) { padding: 0; }
+.workspaceButton > .serverPicture { width: 100%; height: 100%; border-radius: inherit; background: transparent; color: inherit; font: inherit; }
+.serverPictureSettings .userAvatar, .serverPictureSettings .profileCropResult canvas { border-radius: 12px; }
+.pendingInviteGroup { margin-top: 20px; }
 
 .mediaSettings {
   display: grid;
@@ -2816,7 +2827,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 @media (max-width: 920px) {
   .workspace {
     --rail-width: 64px;
-    --sidebar-width: var(--preferred-sidebar-width, 240px);
+    --sidebar-width: max(320px, var(--preferred-sidebar-width, 320px));
     --member-width: 0px;
   }
 
@@ -2825,7 +2836,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   }
   .workspace.userListToggled > .memberSidebar {
     display: flex; position: fixed; right: 0; top: 0; bottom: 0;
-    width: min(280px, 85vw); z-index: 50; box-shadow: -12px 0 30px #0008;
+    width: min(var(--preferred-member-width, 340px), 85vw); z-index: 50; box-shadow: -12px 0 30px #0008;
   }
   .closeUserList { display: inline-flex; }
   .memberSidebarHeader { display: flex; align-items: center; gap: 8px; }
@@ -2840,7 +2851,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   .workspace .profileBar > .avatar { width: 28px; height: 28px; flex: 0 0 28px; }
   .workspace {
     --rail-width: 0px;
-    --sidebar-width: min(var(--preferred-sidebar-width, 280px), 56vw);
+    --sidebar-width: min(max(320px, var(--preferred-sidebar-width, 320px)), 56vw);
     --voice-dock-height: 0px;
   }
   .workspace > .workspaceRail { display: none; }

@@ -71,7 +71,7 @@ to tracks selected by LiveKit.
 
 Screen capture is requested only after a participant selects Share screen in a
 connected call. A shared setup dialog offers 720p, 1080p (default), 1440p and 4K
-at 30 fps before the browser's source picker. Direct capture requests the chosen
+with 30 fps (default) or 60 fps before the browser's source picker. Direct capture requests the chosen
 resolution, and its help tooltip explains that selecting 4K cannot add pixels
 to a lower-resolution source. Audio capture is requested alongside screen video;
 the browser picker and OS determine whether tab, window or system audio is
@@ -143,8 +143,14 @@ identity, dimensions and available network statistics on hover or keyboard focus
 
 The client keeps the camera resolution preference in browser storage (720p by default). Camera menus
 and Voice/video settings expose the same 480p–4K choice, requesting up to that
-size at 30 fps. Direct calls apply constraints to active capture; LiveKit
-restarts only the camera track. Camera previews use that same preference.
+size at 30 fps (default) or 60 fps. Frame rate is saved alongside camera resolution.
+Direct calls apply constraints to active capture; LiveKit
+restarts only the camera track. Camera previews use those same preferences.
+Both call paths set matching sender frame-rate and resolution-based bitrate ceilings.
+At 60 fps, encoders prioritize frame rate over resolution and screen capture uses
+the motion content hint; 30 fps prioritizes resolution. Capture constraints are
+requests: browsers, source hardware, codecs, bandwidth, and LiveKit adaptation
+can reduce delivered frame rate. Static screen content may produce fewer frames.
 Voice membership is independent from navigation. The client keeps the active
 direct peer connection or LiveKit room mounted while the user visits another
 server or text channel, and disconnects only when the user leaves or joins a
@@ -378,6 +384,15 @@ avatars are 32px (26px in the compact conversation list). Message history, searc
 workspace. A known user's explicit null picture overrides stale message metadata.
 External profile images use no-referrer and bypass the image optimizer.
 
+Voice-channel rosters render alphabetically by name, with user IDs breaking ties,
+independently of presence update order or speaking activity. Participant names sit
+beside their avatars with a shared compact gap. Indicator groups wrap on narrow
+sidebars rather than overlapping names or adjacent controls. Speaking highlights
+are local to the viewer: deafen hides remote speaking, and personal mute/deafen
+and server moderation suppress affected highlights without modifying presence
+broadcasts. The shared status avatar places an online/away/do-not-disturb/offline
+dot outside the picture in Friends and All users, including image fallbacks.
+
 My account groups the profile picture before display-name controls.
 `ProfilePictureSettings` accepts PNG/JPEG/WebP up to 2 MiB and opens a local crop
 editor with drag positioning, zoom/position sliders and a live circular preview.
@@ -400,7 +415,49 @@ bytes. A targeted `profile-updated` user event updates current friend/member
 metadata and invalidates server snapshots without clearing message history or
 restarting calls. Other tabs of the same account also refresh session metadata.
 
+### Server pictures and pending invitations
+
+Server settings → Overview lets the server owner upload, crop or remove a server
+picture using the shared picture editor. The server rail and pending server
+invitations show that picture, falling back to the server initial. Pending friend
+requests and server invitations are grouped into Incoming and Outgoing sections.
+Leaving a server requires confirmation before the existing membership-removal API
+is called; cancellation leaves membership and active calls intact.
+
+Migration `0025_server_pictures` adds `servers.image` and one bounded bytea row
+per server in `server_pictures`, with server-delete cleanup. The authenticated
+`/api/servers/{serverId}/picture` route accepts owner-only PUT/DELETE operations,
+rechecking ownership under a server-row lock. It reuses the profile PNG validator
+and streamed 512 KiB limit; client crops produce 256px PNGs. The same header-only
+validation limitation documented for profile images applies. GET authorizes
+current membership or a pending invitation issued by the current owner, allowing
+recipients to preview the picture without gaining channel access. Responses are
+private/no-store, PNG-only and nosniff. Lists carry versioned URLs, not image bytes.
+Targeted `server-picture-updated` events update members and invitation recipients
+without clearing history, refreshing signaling authorization or restarting calls;
+invitation focus refreshes and server-list reload/reconnects recover missed updates.
+
+On reload, the authorized server-list response starts low-priority image preloads
+before saved conversation/channel restoration finishes. Rendering never waits for
+image requests. Server pictures retain their initials in a fixed-size icon until
+the image loads and decodes, then fade in with reduced-motion support. Failed
+loads keep initials; obsolete decodes cannot reveal a replaced image. Preloads
+use the same no-referrer policy as rendered images and keep the existing private,
+no-store authorization checks; no persistent image cache is introduced.
+
 ### Conversation drafts
+
+Pasting clipboard images into either chat composer adds them to the existing
+attachment draft with local previews; Send or Enter submits them. Ordinary text
+paste is unchanged. Clipboard images use the same file/count/size/type limits,
+edit/busy guards, authenticated upload API and draft lifetime as picked files.
+Draft image thumbnails open the same focus-trapped image-preview dialog used by
+sent images. Draft previews reuse their local Blob URLs without uploading or
+submitting; closing restores focus and removing the file closes its preview and
+releases its URL.
+Soundboard tiles and sound settings truncate long names with an ellipsis and
+retain the full name in a hover title. Browser/OS screen-capture indicators are
+controlled by the browser and cannot be suppressed by LC.
 
 `useConversationDraft` keeps unsent text and selected `File` objects in the mounted
 workspace's React state, keyed by channel UUID or DM peer UUID and scoped to the
@@ -1075,7 +1132,8 @@ Channel chats and friend DMs share `MessageComposer`. Its textarea retains the
 single-line height, grows and shrinks with explicit or wrapped lines up to three
 rows, then scrolls vertically. Enter sends; Shift+Enter inserts a newline; IME
 composition does not send. A left attachment button and drop target stage up to
-20 PNG/JPEG/GIF/WebP images or PDFs, at 10 MiB per file and 40 MiB total. Uploads show progress,
+20 PNG/JPEG/GIF/WebP images, PDFs or MP4/WebM videos. Images/PDFs are limited
+to 10 MiB each, videos to 25 MiB each, with 40 MiB total per message. Uploads show progress,
 prevent duplicate sends, and retain staged files/draft on failure or rate limiting.
 Staged files are scoped to the account and destination, so navigation cannot
 attach them to another conversation.
@@ -1119,6 +1177,38 @@ identify formats; uploads are not malware-scanned or fully decoded/sanitized.
 Object storage and streaming uploads remain future scaling work. No storage
 service or production infrastructure change is required, but the migration must
 run before this application version starts.
+
+Migration `0026_video_attachments` increases the database byte-size ceiling to
+25 MiB; API validation retains the lower image/PDF limit based on detected bytes,
+not client MIME labels. MP4 recognition checks a bounded ftyp box and known MP4
+major brands; WebM recognition parses a bounded EBML header and DocType. These
+checks identify containers rather than fully decoding media or guaranteeing codec
+compatibility. Unsupported codecs show playback errors and remain downloadable;
+no transcoding worker is introduced. The existing 100 MiB shared account quota,
+transactional upload/deletion behavior and authorization apply to videos too.
+Migration `0027_attachment_retention` adds a global 2 GiB cap on stored attachment
+bytes across channel messages and DMs, in addition to the 100 MiB account quota.
+Attachment timestamps are backfilled from their messages. Upload transactions
+take a database-wide advisory lock before checking usage; an insert trigger also
+enforces the cap. Under upload pressure, the database removes the oldest files
+older than 30 days, targeting 1.5 GiB before the incoming upload. If eligible files
+cannot free enough space, the transaction rolls back and the upload returns 413.
+There is no time-only expiry or migration-time purge. Cleanup preserves message
+text and attachment metadata, marking the files expired; downloads return 404
+and clients show an expired placeholder. After commit, affected users receive a
+refresh notification. Uploaders receive a warning at 80% global usage. The cap
+counts attachment payloads, not the entire database, WAL, indexes, or backups;
+deleting rows makes database space reusable rather than immediately shrinking
+the PostgreSQL files on disk.
+
+Video drafts use local Blob previews without uploading. Sent videos use native
+controls, metadata-only preload and explicit Play; a larger in-app player and
+download are available. Opening that player pauses inline playback. Closing,
+removing or deleting a preview stops playback and releases its source. Video GETs
+support single HTTP byte ranges with 206/416 responses after authorization, and
+PostgreSQL substring queries return only requested bytes to the application.
+Responses retain private/no-store and nosniff headers. Videos are not routed
+through WebRTC/LiveKit or recorded from live calls.
 
 Attachment regressions cover parser limits/signatures, quota transaction order
 and failure, private-download permissions, and isolated migration cleanup. The
@@ -1407,10 +1497,18 @@ incoming requests, and a pending state for sent requests. Demo accounts retain
 the API restriction on friendship changes. Profiles use already authorized client data; they
 do not fetch private account details or introduce new public profile fields.
 Both cogs use
-the same SVG. The channel/conversation sidebar can be resized with its right-edge
-drag handle or arrow keys; its preferred width is stored locally and reset by
-double-clicking the handle. Mobile retains a viewport-limited width. Call
+the same SVG. The channel/conversation sidebar has a 320px minimum to reserve
+space for the profile picture and media controls. Both it and All users can be
+resized using their inner-edge drag handles or arrow keys; independent preferred
+widths are stored locally and reset by double-clicking the relevant handle.
+The member sidebar grows leftwards. Mobile retains viewport-limited widths. Call
 diagnostics open beside the connection-info icon and remain within the viewport.
+Device menus render through a shared portal outside footer/call stacking contexts,
+aligned to the sidebar and clamped above their trigger. Pointer events within the
+portal stay inside the open menu; Escape closes it and restores trigger focus.
+Embedded legal documents intercept their same-origin Back to LC link before
+navigation and close only the overlay, preserving the mounted app and call.
+Directly opened legal pages retain their ordinary return link.
 The optional `npm run test:webrtc-browser -- --workspace-controls` browser check
 exercises modal focus/stacking, pointer and keyboard resizing, diagnostic placement,
 mobile bounds and persistent call audio while opening and closing settings.

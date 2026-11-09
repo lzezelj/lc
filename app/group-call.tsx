@@ -31,6 +31,8 @@ import { applyVoiceSubscriptions } from "./voice-permissions";
 import {
   CameraResolutionSelection,
   cameraResolutions,
+  videoPublishEncoding,
+  type VideoFrameRate,
   type CameraResolution,
 } from "./camera-resolution";
 import {
@@ -91,6 +93,8 @@ type GroupCallProps = {
   serverName?: string;
   cameraResolution?: CameraResolution;
   onCameraResolutionChange?: (resolution: CameraResolution) => void;
+  cameraFrameRate?: VideoFrameRate;
+  onCameraFrameRateChange?: (value: VideoFrameRate) => void;
   currentUserId?: string;
   focusTarget?: {
     userId: string;
@@ -241,6 +245,8 @@ export function GroupCall({
   serverName,
   cameraResolution = "720",
   onCameraResolutionChange,
+  cameraFrameRate = 30,
+  onCameraFrameRateChange,
   currentUserId,
   focusTarget,
   channelId,
@@ -526,20 +532,62 @@ export function GroupCall({
     const track = room?.localParticipant.getTrackPublication(
       Track.Source.Camera,
     )?.videoTrack;
+    const encoding = videoPublishEncoding(
+      cameraResolutions[cameraResolution].height,
+      cameraFrameRate,
+    );
+    const preference =
+      cameraFrameRate === 60 ? "maintain-framerate" : "maintain-resolution";
+    if (room?.options)
+      room.options.publishDefaults = {
+        ...room.options.publishDefaults,
+        videoEncoding: encoding,
+        degradationPreference: preference,
+      };
     if (!track || cameraOffRef.current) return;
+    track.publishOptions = {
+      ...track.publishOptions,
+      videoEncoding: encoding,
+      degradationPreference: preference,
+    };
+    let canceled = false;
     void track
       .restartTrack({
         ...(cameraId ? { deviceId: cameraId } : {}),
-        resolution: cameraResolutions[cameraResolution],
-        frameRate: 30,
+        resolution: {
+          ...cameraResolutions[cameraResolution],
+          frameRate: cameraFrameRate,
+        },
+        frameRate: cameraFrameRate,
+      })
+      .then(async () => {
+        if (canceled || roomRef.current !== room) return;
+        await track.setDegradationPreference?.(preference);
+        const sender = track.sender;
+        if (sender) {
+          const parameters = sender.getParameters();
+          for (const layer of parameters.encodings ?? [])
+            Object.assign(
+              layer,
+              videoPublishEncoding(
+                cameraResolutions[cameraResolution].height /
+                  (layer.scaleResolutionDownBy ?? 1),
+                cameraFrameRate,
+              ),
+            );
+          await sender.setParameters(parameters);
+        }
       })
       .catch(() => {
-        if (roomRef.current === room)
+        if (!canceled && roomRef.current === room)
           audioCallbacks.current.onError(
             "The selected camera resolution could not be applied.",
           );
       });
-  }, [cameraResolution, cameraId]);
+    return () => {
+      canceled = true;
+    };
+  }, [cameraResolution, cameraId, cameraFrameRate]);
 
   useEffect(() => {
     if (!screenSharing) return;
@@ -764,7 +812,14 @@ export function GroupCall({
       dynacast: true,
       webAudioMix: { audioContext: prepareVoiceActivity() },
       ...(outputId ? { audioOutput: { deviceId: outputId } } : {}),
-      publishDefaults: { degradationPreference: "maintain-resolution" },
+      publishDefaults: {
+        degradationPreference:
+          cameraFrameRate === 60 ? "maintain-framerate" : "maintain-resolution",
+        videoEncoding: videoPublishEncoding(
+          cameraResolutions[cameraResolution].height,
+          cameraFrameRate,
+        ),
+      },
     });
     roomRef.current = room;
     if (credentials.voicePolicies) {
@@ -1032,11 +1087,27 @@ export function GroupCall({
     const room = roomRef.current;
     if (!room) return;
     try {
-      await room.localParticipant.setCameraEnabled(cameraOff, {
-        ...(cameraId ? { deviceId: cameraId } : {}),
-        resolution: cameraResolutions[cameraResolution],
-        frameRate: 30,
-      });
+      await room.localParticipant.setCameraEnabled(
+        cameraOff,
+        {
+          ...(cameraId ? { deviceId: cameraId } : {}),
+          resolution: {
+            ...cameraResolutions[cameraResolution],
+            frameRate: cameraFrameRate,
+          },
+          frameRate: cameraFrameRate,
+        },
+        {
+          videoEncoding: videoPublishEncoding(
+            cameraResolutions[cameraResolution].height,
+            cameraFrameRate,
+          ),
+          degradationPreference:
+            cameraFrameRate === 60
+              ? "maintain-framerate"
+              : "maintain-resolution",
+        },
+      );
       if (roomRef.current !== room) {
         releaseRoom(room);
         return;
@@ -1077,7 +1148,10 @@ export function GroupCall({
     }
   }
 
-  async function toggleScreenShare(resolution?: ScreenShareResolution) {
+  async function toggleScreenShare(
+    resolution?: ScreenShareResolution,
+    frameRate: VideoFrameRate = 30,
+  ) {
     const room = roomRef.current;
     if (!room) return;
     if (!screenSharing && !resolution) {
@@ -1090,12 +1164,20 @@ export function GroupCall({
         !screenSharing,
         resolution
           ? {
-              resolution: screenShareResolutions[resolution],
+              resolution: { ...screenShareResolutions[resolution], frameRate },
               audio: sharedAudioCapture,
-              contentHint: "detail",
+              contentHint: frameRate === 60 ? "motion" : "detail",
             }
           : undefined,
-        sharedAudioPublish,
+        {
+          ...sharedAudioPublish,
+          screenShareEncoding: videoPublishEncoding(
+            screenShareResolutions[resolution ?? "1080"].height,
+            frameRate,
+          ),
+          degradationPreference:
+            frameRate === 60 ? "maintain-framerate" : "maintain-resolution",
+        },
       );
       if (roomRef.current !== room) {
         releaseRoom(room);
@@ -1428,6 +1510,8 @@ export function GroupCall({
               <CameraResolutionSelection
                 resolution={cameraResolution}
                 onChange={onCameraResolutionChange}
+                frameRate={cameraFrameRate}
+                onFrameRateChange={onCameraFrameRateChange}
               />
             ) : undefined
           }
@@ -1456,7 +1540,9 @@ export function GroupCall({
       {screenShareOptionsOpen && joined && !joining && (
         <ScreenShareOptions
           onClose={() => setScreenShareOptionsOpen(false)}
-          onShare={(resolution) => void toggleScreenShare(resolution)}
+          onShare={(resolution, frameRate) =>
+            void toggleScreenShare(resolution, frameRate)
+          }
         />
       )}
       <p className="mediaNotice">

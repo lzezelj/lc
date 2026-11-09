@@ -121,6 +121,7 @@ export const servers = pgTable(
   {
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
+    image: text("image"),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -205,6 +206,12 @@ export const channels = pgTable(
 );
 
 const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
+export const serverPictures = pgTable("server_pictures", {
+  serverId: uuid("server_id")
+    .primaryKey()
+    .references(() => servers.id, { onDelete: "cascade" }),
+  data: bytea("data").notNull(),
+});
 export const userAvatars = pgTable("user_avatars", {
   userId: uuid("user_id")
     .primaryKey()
@@ -360,11 +367,15 @@ export const messageAttachments = pgTable(
       { onDelete: "cascade" },
     ),
     data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("message_attachments_uploader_idx").on(table.uploaderId),
     index("message_attachments_message_idx").on(table.messageId),
     index("message_attachments_direct_idx").on(table.directMessageId),
+    index("message_attachments_created_idx").on(table.createdAt, table.id),
   ],
 );
 

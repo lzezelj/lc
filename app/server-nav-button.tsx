@@ -1,6 +1,19 @@
 "use client";
 import { useId, type MouseEvent } from "react";
+import { preload } from "react-dom";
 import { UnreadIndicator } from "./unread-indicator";
+import { Avatar } from "./avatar";
+
+export function preloadServerPictures(servers: { image?: string | null }[]) {
+  for (const server of servers) {
+    if (server.image)
+      preload(server.image, {
+        as: "image",
+        referrerPolicy: "no-referrer",
+        fetchPriority: "low",
+      });
+  }
+}
 
 export function ServerNavButton({
   server,
@@ -11,7 +24,7 @@ export function ServerNavButton({
   onClick,
   onContextMenu,
 }: {
-  server: { id: string; name: string };
+  server: { id: string; name: string; image?: string | null };
   active?: boolean;
   unread?: boolean;
   mentions?: number;
@@ -44,7 +57,12 @@ export function ServerNavButton({
         onClick={onClick}
         onContextMenu={onContextMenu}
       >
-        {server.name[0]?.toUpperCase()}
+        <Avatar
+          name={server.name}
+          image={server.image}
+          className="serverPicture"
+          showPlaceholder
+        />
         <UnreadIndicator unread={unread} mentions={mentions} server />
         {voiceUsers.length > 0 && (
           <span className="serverVoiceBadge" aria-hidden="true">

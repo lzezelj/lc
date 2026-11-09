@@ -10,9 +10,11 @@ import {
 export function SidebarResizer({
   onResize,
   onReset,
+  side = "channels",
 }: {
   onResize: (width: number) => void;
   onReset: () => void;
+  side?: "channels" | "members";
 }) {
   const drag = useRef<{ x: number; width: number } | null>(null);
   const handle = useRef<HTMLDivElement>(null);
@@ -33,13 +35,24 @@ export function SidebarResizer({
   }, []);
   const limits = (element: HTMLElement) => {
     const sidebar = element.parentElement!;
-    const members = sidebar.parentElement?.querySelector(".memberSidebar");
+    const other = sidebar.parentElement?.querySelector(
+      side === "channels" ? ".memberSidebar" : ".channelSidebar",
+    );
     const available =
       window.innerWidth -
-      sidebar.getBoundingClientRect().left -
-      (members?.getBoundingClientRect().width ?? 0) -
+      (side === "channels"
+        ? sidebar.getBoundingClientRect().left
+        : (sidebar.parentElement
+            ?.querySelector(".workspaceRail")
+            ?.getBoundingClientRect().width ?? 0)) -
+      (other?.getBoundingClientRect().width ?? 0) -
       240;
-    return { min: 240, max: Math.max(240, Math.min(480, available)) };
+    const min = side === "channels" ? 320 : 240;
+    const room =
+      side === "members" && window.innerWidth <= 920
+        ? window.innerWidth * 0.85
+        : available;
+    return { min, max: Math.max(min, Math.min(480, room)) };
   };
   const resize = (element: HTMLElement, width: number) => {
     const { min, max } = limits(element);
@@ -56,12 +69,14 @@ export function SidebarResizer({
   return (
     <div
       ref={handle}
-      className="sidebarResizer"
+      className={`sidebarResizer ${side === "members" ? "memberSidebarResizer" : ""}`}
       role="separator"
-      aria-label="Resize channel list"
-      title="Drag to resize channels; double-click to reset"
+      aria-label={
+        side === "members" ? "Resize All users" : "Resize channel list"
+      }
+      title={`Drag to resize ${side === "members" ? "All users" : "channels"}; double-click to reset`}
       aria-orientation="vertical"
-      aria-valuemin={240}
+      aria-valuemin={side === "channels" ? 320 : 240}
       aria-valuemax={480}
       tabIndex={0}
       onPointerDown={(event) => {
@@ -79,7 +94,8 @@ export function SidebarResizer({
         if (drag.current)
           resize(
             event.currentTarget,
-            drag.current.width + event.clientX - drag.current.x,
+            drag.current.width +
+              (event.clientX - drag.current.x) * (side === "members" ? -1 : 1),
           );
       }}
       onPointerUp={finish}
@@ -97,12 +113,17 @@ export function SidebarResizer({
           event.preventDefault();
           resize(
             event.currentTarget,
-            current + (event.key === "ArrowLeft" ? -step : step),
+            current +
+              (event.key === "ArrowLeft" ? -step : step) *
+                (side === "members" ? -1 : 1),
           );
         }
         if (event.key === "Home" || event.key === "End") {
           event.preventDefault();
-          resize(event.currentTarget, event.key === "Home" ? 240 : 480);
+          resize(
+            event.currentTarget,
+            event.key === "Home" ? (side === "channels" ? 320 : 240) : 480,
+          );
         }
       }}
     />

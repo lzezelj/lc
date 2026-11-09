@@ -20,6 +20,8 @@ const participantAudioOnly = process.argv.includes("--participant-audio");
 const serverInvitationsOnly = process.argv.includes("--server-invitations");
 const chatToolsOnly = process.argv.includes("--chat-tools");
 const notificationsOnly = process.argv.includes("--notifications");
+const workspaceLayoutOnly = process.argv.includes("--workspace-layout");
+const videoAttachmentsOnly = process.argv.includes("--video-attachments");
 const workspaceControls =
   process.argv.includes("--workspace-controls") ||
   helpTourOnly ||
@@ -27,7 +29,9 @@ const workspaceControls =
   participantAudioOnly ||
   serverInvitationsOnly ||
   chatToolsOnly ||
-  notificationsOnly;
+  notificationsOnly ||
+  workspaceLayoutOnly ||
+  videoAttachmentsOnly;
 const mediaOptionsOnly =
   process.argv.includes("--media-options-only") || helpTourOnly;
 const supportedFlags = new Set([
@@ -43,6 +47,8 @@ const supportedFlags = new Set([
   "--server-invitations",
   "--chat-tools",
   "--notifications",
+  "--workspace-layout",
+  "--video-attachments",
 ]);
 if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
   throw new Error("Unsupported browser test option");
@@ -131,6 +137,19 @@ if (microphone) {
     )
     .replace(/^export /gm, "");
 }
+if (workspaceLayoutOnly) {
+  const { createServer } = await import("node:http");
+  noiseServer = createServer((request, response) => {
+    response.setHeader("Content-Type", "text/html");
+    response.end(
+      request.url === "/"
+        ? "<!doctype html><title>Workspace layout check</title>"
+        : '<!doctype html><a href="/"><span>Back to LC</span></a>',
+    );
+  });
+  await new Promise((resolve) => noiseServer.listen(0, "127.0.0.1", resolve));
+  noiseOrigin = `http://127.0.0.1:${noiseServer.address().port}`;
+}
 let navigationCode = "";
 if (navigation || workspaceControls) {
   await writeFile(
@@ -162,6 +181,7 @@ if (navigation || workspaceControls) {
           "microphone-processing",
           "device-selection",
           "call-tile-controls",
+          "camera-resolution",
         ]
       : []),
   ]) {
@@ -211,6 +231,7 @@ if (navigation || workspaceControls) {
       import React, {useState, useRef, useEffect} from 'react';
       import {Room, RoomEvent, Track, TrackEvent} from './group-navigation.mock.mjs';
       import {DeviceMenu} from './device-menu.js';
+      import {cameraResolutions, videoPublishEncoding} from './camera-resolution.js';
       import {applyRemoteAudioVolume, participantGain} from './remote-audio-volume.js';
       import {voiceBlocked} from './voice-policy.js';
       import {applyVoiceSubscriptions} from './voice-permissions.js';
@@ -245,6 +266,7 @@ if (navigation || workspaceControls) {
     );
     for (const name of [
       "settings-modal",
+      "legal-frame",
       "help-tour",
       "help-call-preview",
       "help-spotlight",
@@ -256,6 +278,7 @@ if (navigation || workspaceControls) {
       "settings-reveal",
       "server-invites",
       "pending-server-invitations",
+      "server-leave-confirmation",
       "channel-manager",
       "message-delete-action",
       "chat-history",
@@ -264,6 +287,7 @@ if (navigation || workspaceControls) {
       "soundboard",
       "sound-manager",
       "server-nav-button",
+      "status-avatar",
       "voice-participant-menu",
       "incoming-call-notice",
       "screen-audio",
@@ -720,7 +744,9 @@ try {
     participantAudioOnly ||
     serverInvitationsOnly ||
     chatToolsOnly ||
-    notificationsOnly
+    notificationsOnly ||
+    workspaceLayoutOnly ||
+    videoAttachmentsOnly
   ) {
     for (const mobile of [false, true]) {
       if (mobile) {
@@ -738,15 +764,19 @@ try {
       const checked = await call(
         "Runtime.evaluate",
         {
-          expression: serverInvitationsOnly
-            ? "window.verifyServerInvitations()"
-            : participantAudioOnly
-              ? "window.verifyParticipantAudio()"
-              : notificationsOnly
-                ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
-                : chatToolsOnly
-                  ? "window.verifyChatTools()"
-                  : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          expression: videoAttachmentsOnly
+            ? "window.verifyVideoAttachments()"
+            : workspaceLayoutOnly
+              ? "window.verifyWorkspaceLayout()"
+              : serverInvitationsOnly
+                ? "window.verifyServerInvitations()"
+                : participantAudioOnly
+                  ? "window.verifyParticipantAudio()"
+                  : notificationsOnly
+                    ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+                    : chatToolsOnly
+                      ? "window.verifyChatTools()"
+                      : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,
@@ -756,9 +786,98 @@ try {
       if (checked.exceptionDetails)
         throw new Error(JSON.stringify(checked.exceptionDetails));
       console.log(
-        `${serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
+        `${videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
         JSON.stringify(checked.result.value),
       );
+      if (workspaceLayoutOnly) {
+        for (const verification of ["verifyMicrophonePosition"]) {
+          console.log(
+            `Checking ${verification} (${mobile ? "mobile" : "desktop"})`,
+          );
+          const check = await call(
+            "Runtime.evaluate",
+            {
+              expression: `window.${verification}()`,
+              awaitPromise: true,
+              userGesture: true,
+              returnByValue: true,
+            },
+            sessionId,
+          );
+          if (check.exceptionDetails)
+            throw new Error(JSON.stringify(check.exceptionDetails));
+        }
+      }
+      if (workspaceLayoutOnly && !mobile) {
+        const measured = await call(
+          "Runtime.evaluate",
+          {
+            expression: `(() => { const panel = document.querySelector('.workspace > .memberSidebar'), handle = panel.querySelector('.memberSidebarResizer').getBoundingClientRect(); return { x: handle.left + handle.width / 2, y: handle.top + 80, width: panel.getBoundingClientRect().width }; })()`,
+            returnByValue: true,
+          },
+          sessionId,
+        );
+        const point = measured.result.value;
+        await call(
+          "Input.dispatchMouseEvent",
+          { type: "mouseMoved", x: point.x, y: point.y },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mousePressed",
+            x: point.x,
+            y: point.y,
+            button: "left",
+            clickCount: 1,
+          },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseMoved",
+            x: point.x - 40,
+            y: point.y,
+            buttons: 1,
+            button: "left",
+          },
+          sessionId,
+        );
+        await call(
+          "Input.dispatchMouseEvent",
+          {
+            type: "mouseReleased",
+            x: point.x - 40,
+            y: point.y,
+            button: "left",
+            clickCount: 1,
+          },
+          sessionId,
+        );
+        await call(
+          "Runtime.evaluate",
+          {
+            expression: "new Promise(resolve => setTimeout(resolve, 30))",
+            awaitPromise: true,
+          },
+          sessionId,
+        );
+        const resized = await call(
+          "Runtime.evaluate",
+          {
+            expression:
+              "document.querySelector('.workspace > .memberSidebar').getBoundingClientRect().width",
+            returnByValue: true,
+          },
+          sessionId,
+        );
+        assert.ok(
+          resized.result.value >= point.width + 30,
+          `Pointer dragging grows All users leftwards (before ${point.width}, after ${resized.result.value})`,
+        );
+      }
     }
   } else if (workspaceControls) {
     await call(

@@ -151,6 +151,12 @@ export default function PrivacyPage() {
         <section>
           <h2>8. Retention</h2>
           <p>
+            Attachments share a 2 GiB storage limit. When a new upload needs
+            space, the oldest attachments more than 30 days old may be deleted
+            automatically. Their messages remain with an expired attachment
+            label. Files do not expire solely because they reach 30 days.
+          </p>
+          <p>
             Demo invitations expire after four hours. Expiry or revocation
             prevents further access, but related account and invitation records
             may remain until they are manually deleted. Messages, servers,

@@ -104,6 +104,7 @@ const orm = {
         : () => true,
 };
 const reader = await moduleAt("../server/message-attachments.ts", {
+  "./notify-user": { notifyUser: async () => {} },
   "node:crypto": { randomUUID },
   "drizzle-orm": orm,
   "../db": { db: {} },

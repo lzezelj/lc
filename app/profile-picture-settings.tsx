@@ -55,12 +55,14 @@ function ProfileCropEditor({
   error,
   onSave,
   onClose,
+  kind = "profile",
 }: {
   file: File;
   busy: boolean;
   error: string;
   onSave: (crop: ProfileCrop) => void;
   onClose: () => void;
+  kind?: "profile" | "server";
 }) {
   const [image, setImage] = useState<HTMLImageElement | null>(null),
     [loadError, setLoadError] = useState("");
@@ -113,9 +115,9 @@ function ProfileCropEditor({
   }, [image, crop]);
   return (
     <SettingsModal
-      title="Crop profile picture"
+      title={`Crop ${kind} picture`}
       closeLabel="Close picture editor"
-      className="profileCropModal"
+      className={`profileCropModal ${kind === "server" ? "serverPictureSettings" : ""}`}
       onClose={() => {
         if (!busy) onClose();
       }}
@@ -177,9 +179,11 @@ function ProfileCropEditor({
             ref={preview}
             width="256"
             height="256"
-            aria-label="New profile picture preview"
+            aria-label={`New ${kind} picture preview`}
           />
-          <small>Profile preview</small>
+          <small>
+            {kind === "server" ? "Server preview" : "Profile preview"}
+          </small>
         </div>
       </div>
       {!image && !loadError && <small role="status">Loading picture…</small>}
@@ -231,10 +235,14 @@ export function ProfilePictureSettings({
   image,
   onSaved,
   name = "You",
+  endpoint = "/api/users/me/avatar",
+  kind = "profile",
 }: {
   image?: string | null;
   onSaved: (image: string | null) => Promise<void>;
   name?: string;
+  endpoint?: string;
+  kind?: "profile" | "server";
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [selected, setSelected] = useState<File | null>(null);
@@ -248,7 +256,7 @@ export function ProfilePictureSettings({
     setNotice("");
     try {
       const body = file ? await prepareProfilePicture(file, crop) : undefined;
-      const response = await fetch("/api/users/me/avatar", {
+      const response = await fetch(endpoint, {
         method: file ? "PUT" : "DELETE",
         ...(body ? { headers: { "Content-Type": "image/png" }, body } : {}),
       });
@@ -259,7 +267,8 @@ export function ProfilePictureSettings({
         );
       await onSaved(result.image);
       setSelected(null);
-      setNotice(file ? "Profile picture changed." : "Profile picture removed.");
+      const label = kind === "server" ? "Server picture" : "Profile picture";
+      setNotice(file ? `${label} changed.` : `${label} removed.`);
     } catch (error) {
       setError(
         error instanceof Error
@@ -272,10 +281,12 @@ export function ProfilePictureSettings({
     }
   }
   return (
-    <div className="profilePictureSettings">
-      <h4>Profile picture</h4>
+    <div
+      className={`profilePictureSettings ${kind === "server" ? "serverPictureSettings" : ""}`}
+    >
+      <h4>{kind === "server" ? "Server picture" : "Profile picture"}</h4>
       <div className="profilePictureRow">
-        <Avatar name={name} image={image} />
+        <Avatar name={name} image={image} showPlaceholder={kind === "server"} />
         <div className="profilePictureOptions">
           <div className="modalActions">
             <button
@@ -302,7 +313,7 @@ export function ProfilePictureSettings({
         type="file"
         hidden
         accept="image/png,image/jpeg,image/webp"
-        aria-label="Choose profile picture"
+        aria-label={`Choose ${kind} picture`}
         onChange={(event) => {
           const file = event.target.files?.[0];
           setError("");
@@ -327,6 +338,7 @@ export function ProfilePictureSettings({
       {error && <small role="alert">{error}</small>}
       {selected && (
         <ProfileCropEditor
+          kind={kind}
           file={selected}
           busy={busy}
           error={error}

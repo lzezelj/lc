@@ -387,7 +387,9 @@ export function SoundManager({
               {visible.map((sound) => (
                 <div className="soundManagerRow" key={sound.id}>
                   <span>
-                    {sound.name}
+                    <span className="soundName" title={sound.name}>
+                      {sound.name}
+                    </span>
                     {sound.durationMs ? (
                       <small>
                         {(sound.durationMs / 1000).toFixed(1)} seconds

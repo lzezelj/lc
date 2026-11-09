@@ -165,6 +165,7 @@ test("PostgreSQL mentions/read state persist across sessions; settings and API a
       0,
     );
     const reader = await load("../server/message-attachments.ts", {
+      "./notify-user": { notifyUser: async () => {} },
       "node:crypto": { randomUUID },
       "drizzle-orm": orm,
       "../db": { db: database },
