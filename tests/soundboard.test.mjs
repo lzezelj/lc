@@ -251,6 +251,8 @@ test("server join sound changes require membership and a sound from the same ser
   }
   const current = await fixture();
   assert.equal((await current.save(clipId)).status, 200);
+  const moderator = await fixture({ role: "mod" });
+  assert.equal((await moderator.save(clipId)).status, 200);
   assert.deepEqual(JSON.parse(JSON.stringify(current.predicates[1])), [
     ["sound.id", clipId],
     ["sound.server", serverId],
@@ -474,6 +476,7 @@ async function customRoute({
   existing = true,
 } = {}) {
   const members = { userId: "userId", serverId: "memberServerId" };
+  const servers = { id: "server.id" };
   const sounds = Object.fromEntries(
     ["id", "name", "serverId", "audio", "durationMs", "createdAt"].map(
       (key) => [key, `sound.${key}`],
@@ -489,30 +492,32 @@ async function customRoute({
         from(table) {
           let predicate;
           const rows = () =>
-            table === members
-              ? memberReads++ === 0
-                ? role
-                  ? [{ role }]
-                  : []
-                : lockedRole
-                  ? [{ role: lockedRole }]
-                  : []
-              : fields?.value
-                ? [{ value: total }]
-                : fields?.audio
-                  ? existing
-                    ? [{ audio: Buffer.from(catalog.soundWave("chime-v1")) }]
+            table === servers
+              ? [{ id: serverId }]
+              : table === members
+                ? memberReads++ === 0
+                  ? role
+                    ? [{ role }]
                     : []
-                  : existing
-                    ? [
-                        {
-                          id: clipId,
-                          name: "Custom",
-                          serverId,
-                          durationMs: 600,
-                        },
-                      ]
-                    : [];
+                  : lockedRole
+                    ? [{ role: lockedRole }]
+                    : []
+                : fields?.value
+                  ? [{ value: total }]
+                  : fields?.audio
+                    ? existing
+                      ? [{ audio: Buffer.from(catalog.soundWave("chime-v1")) }]
+                      : []
+                    : existing
+                      ? [
+                          {
+                            id: clipId,
+                            name: "Custom",
+                            serverId,
+                            durationMs: 600,
+                          },
+                        ]
+                      : [];
           const query = {
             where(value) {
               predicate = value;
@@ -578,6 +583,7 @@ async function customRoute({
       "../../../../../db/schema": {
         serverMembers: members,
         serverSounds: sounds,
+        servers,
       },
       "../../../../../server/sound-upload": uploads,
       "../../../../../server/notify-server": { notifyServer: async () => {} },
@@ -757,6 +763,41 @@ test("custom mutations require server ownership, rate limits, and an ownership r
         assert.equal(response.headers.get("retry-after"), "12");
     }
   }
+});
+
+test("moderators may upload but cannot remove sounds; demotion revokes uploads before persistence", async () => {
+  const mod = await customRoute({ role: "mod" });
+  assert.equal((await mod.route.POST(uploadRequest(), params)).status, 201);
+  assert.deepEqual(mod.locks[0], ["update", ["server.id", serverId]]);
+  assert.equal(
+    mod.locks.length,
+    2,
+    "The shared server lock precedes the uploader membership lock",
+  );
+  const denied = await customRoute({ role: "mod" });
+  assert.equal(
+    (
+      await denied.route.DELETE(
+        new Request(`https://lc.test/soundboard?clip=${clipId}`, {
+          method: "DELETE",
+        }),
+        params,
+      )
+    ).status,
+    403,
+  );
+  assert.equal(denied.writes.length, 0);
+  const demoted = await customRoute({ role: "mod", lockedRole: "member" });
+  assert.equal((await demoted.route.POST(uploadRequest(), params)).status, 403);
+  assert.equal(demoted.writes.length, 0);
+  const full = await customRoute({ role: "mod", total: 20 });
+  assert.equal((await full.route.POST(uploadRequest(), params)).status, 409);
+  const metadata = await customRoute({ role: "mod" });
+  const permissions = await (
+    await metadata.route.GET(new Request("https://lc.test/soundboard"), params)
+  ).json();
+  assert.equal(permissions.canUpload, true);
+  assert.equal(permissions.canManage, false);
 });
 
 test("uploads persist validated bytes and metadata; deletion and audio reads are scoped to the server", async () => {

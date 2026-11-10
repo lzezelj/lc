@@ -4296,7 +4296,61 @@ async function playSoundPreview(audio, label) {
   }
 }
 
+async function verifyModeratorControls() {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const changes = [];
+  function Members() {
+    const [members, setMembers] = useState([
+      { id: "owner", name: "Owner", role: "owner" },
+      { id: "member", name: "Member", role: "member", canBeModerator: true },
+      { id: "demo", name: "Demo", role: "member", canBeModerator: false },
+    ]);
+    return h(SettingsMembers, {
+      members,
+      onRoleChange: async (member, role) => {
+        changes.push([member.id, role]);
+        setMembers((current) =>
+          current.map((item) =>
+            item.id === member.id ? { ...item, role } : item,
+          ),
+        );
+      },
+    });
+  }
+  try {
+    flushSync(() => root.render(h(Members)));
+    const promote = [...host.querySelectorAll("button")].filter(
+      (button) => button.textContent === "Promote to moderator",
+    );
+    check(
+      promote.length === 1,
+      "Only an eligible non-owner has the moderator promotion action",
+    );
+    promote[0].click();
+    await wait();
+    const demote = [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === "Demote to member",
+    );
+    check(
+      demote && changes[0][1] === "mod",
+      "Owners can promote members to moderator",
+    );
+    demote.click();
+    await wait();
+    check(
+      changes[1][1] === "member",
+      "Owners can demote moderators back to members",
+    );
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+}
+
 async function verifySoundboard() {
+  await verifyModeratorControls();
   const originalFetch = window.fetch;
   let publications = 0,
     previewTrack,
@@ -4317,6 +4371,7 @@ async function verifySoundboard() {
     removals = 0;
   const joinSoundChanges = [];
   let canManageSounds = true;
+  let canUploadSounds = true;
   window.fetch = async (url, options = {}) => {
     if (String(url).startsWith("/api/servers/call-server/join-sound?"))
       return Response.json({ joinSoundId: "celebrate-v1" });
@@ -4378,6 +4433,7 @@ async function verifySoundboard() {
       ? new Response(soundWave("celebrate-v1"))
       : Response.json({
           canManage: canManageSounds,
+          canUpload: canUploadSounds,
           sounds: soundList,
         });
   };
@@ -4991,6 +5047,30 @@ async function verifySoundboard() {
         "Managing sounds must preserve the call's audio owner",
       );
       canManageSounds = false;
+      managerRoot.render(
+        h(SoundManager, { key: "moderator", serverId: "call-server" }),
+      );
+      await wait();
+      const moderatorSettings = document.querySelector(".soundManager");
+      check(
+        [...moderatorSettings.querySelectorAll("button")].some(
+          (button) => button.textContent === "Add custom sound",
+        ) && !moderatorSettings.querySelector('[aria-label^="Remove "]'),
+        "Moderators can upload sounds without owner removal actions",
+      );
+      canUploadSounds = false;
+      window.dispatchEvent(
+        new CustomEvent("lc-soundboard-updated", {
+          detail: { serverId: "call-server" },
+        }),
+      );
+      await wait();
+      check(
+        ![...moderatorSettings.querySelectorAll("button")].some(
+          (button) => button.textContent === "Add custom sound",
+        ),
+        "Role refresh removes upload controls after demotion",
+      );
       managerRoot.render(
         h(
           SettingsModal,

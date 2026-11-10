@@ -15,6 +15,43 @@ import { attachmentRange } from "../server/attachment-range.ts";
 
 const { Client } = pg;
 
+test("moderator migration extends only server roles and preserves ordinary account roles", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  const temporarySchema = `lc_mod_test_${randomUUID().replaceAll("-", "")}`;
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE SCHEMA "${temporarySchema}"`);
+    await client.query(`SET LOCAL search_path TO "${temporarySchema}"`);
+    await client.query("CREATE TYPE server_role AS ENUM ('owner', 'member')");
+    await client.query(
+      "CREATE TYPE user_role AS ENUM ('owner', 'member', 'demo')",
+    );
+    await client.query(
+      await readFile(
+        new URL("../db/migrations/0029_server_moderators.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    for (const [type, expected] of [
+      ["server_role", ["owner", "member", "mod"]],
+      ["user_role", ["owner", "member", "demo"]],
+    ]) {
+      const { rows } = await client.query(
+        "SELECT enumlabel FROM pg_enum WHERE enumtypid = $1::regtype ORDER BY enumsortorder",
+        [type],
+      );
+      assert.deepEqual(
+        rows.map((row) => row.enumlabel),
+        expected,
+      );
+    }
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
 test("video attachment migration permits 25 MiB, serves authorized PostgreSQL byte ranges and cleans up deletions", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();

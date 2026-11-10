@@ -183,6 +183,13 @@ soundboard checks, including a longer source trimmed before preview/upload,
 unsupported audio feedback and preview cleanup. Browser codec availability still
 determines which compressed input formats can be decoded.
 
+Moderator coverage checks upload-only soundboard capabilities, revocation during
+upload, shared server quota lock order, owner-only promotion/demotion and removal,
+ownership transfer to moderators, and separation from global/demo account roles.
+The database suite validates migration `0029_server_moderators` in a temporary
+schema. The soundboard browser mode covers promotion/demotion controls and an
+open sound manager losing its upload permission after a role refresh.
+
 Attachment tests also cover filename cleanup, per-account quota transaction
 ordering/failure, and private
 download membership/friendship/participant checks. The muted standard workspace

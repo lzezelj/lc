@@ -22,4 +22,3 @@ Polls
 Server activity log
 
 Short term
-Write the name of the

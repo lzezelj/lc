@@ -11,6 +11,10 @@ const source = await readFile(
   new URL("../app/api/servers/[serverId]/ownership/route.ts", import.meta.url),
   "utf8",
 );
+const moderatorSource = await readFile(
+  new URL("../app/api/servers/[serverId]/members/route.ts", import.meta.url),
+  "utf8",
+);
 function fixture({
   authenticated = true,
   owner = true,
@@ -20,9 +24,11 @@ function fixture({
   expired = false,
   count = 0,
   limited = false,
+  actorRole,
+  targetRole = "member",
 } = {}) {
   const tables = Object.fromEntries(
-    ["users", "servers", "serverMembers"].map((name) => [
+    ["users", "servers", "serverMembers", "channels"].map((name) => [
       name,
       new Proxy(
         { name },
@@ -31,6 +37,7 @@ function fixture({
     ]),
   );
   const rows = {
+    channels: [],
     users: [
       { id: actor, role: "member" },
       {
@@ -48,13 +55,17 @@ function fixture({
       })),
     ],
     serverMembers: [
-      { serverId, userId: actor, role: owner ? "owner" : "member" },
+      {
+        serverId,
+        userId: actor,
+        role: actorRole ?? (owner ? "owner" : "member"),
+      },
       ...(member
         ? [
             {
               serverId,
               userId: target,
-              role: "member",
+              role: targetRole,
               voiceMuted: true,
               voiceDeafened: true,
             },
@@ -107,11 +118,54 @@ function fixture({
       return {
         set(values) {
           return {
-            async where(predicate) {
-              mutations.push(table.name);
-              rows[table.name].forEach((row) => {
-                if (matches(predicate, row)) Object.assign(row, values);
-              });
+            where(predicate) {
+              const apply = () => {
+                mutations.push(table.name);
+                const matching = rows[table.name].filter((row) =>
+                  matches(predicate, row),
+                );
+                matching.forEach((row) => Object.assign(row, values));
+                return matching;
+              };
+              return {
+                then(resolve, reject) {
+                  return Promise.resolve().then(apply).then(resolve, reject);
+                },
+                async returning(fields) {
+                  return apply().map((row) =>
+                    Object.fromEntries(
+                      Object.entries(fields).map(([key, column]) => [
+                        key,
+                        row[column],
+                      ]),
+                    ),
+                  );
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+    delete(table) {
+      return {
+        where(predicate) {
+          return {
+            async returning(fields) {
+              const matching = rows[table.name].filter((row) =>
+                matches(predicate, row),
+              );
+              rows[table.name] = rows[table.name].filter(
+                (row) => !matches(predicate, row),
+              );
+              return matching.map((row) =>
+                Object.fromEntries(
+                  Object.entries(fields).map(([key, column]) => [
+                    key,
+                    row[column],
+                  ]),
+                ),
+              );
             },
           };
         },
@@ -136,6 +190,11 @@ function fixture({
       notifyServer: async (id) => notifications.push(id),
     },
     "../../../../../server/notify-user": { notifyUser: async () => {} },
+    "../../../../../server/disconnect-user": {
+      disconnectUserEverywhere: async () => {},
+    },
+    "../../../../../user-handle": {},
+    "../../../../../server/server-invitations": {},
     "../../../../../server/voice-moderation": {
       applyGroupModeration: async () => {},
     },
@@ -159,11 +218,41 @@ function fixture({
       },
     },
   );
+  const moderatorExports = {};
+  vm.runInNewContext(
+    ts.transpile(moderatorSource, {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    {
+      exports: moderatorExports,
+      require: (name) => {
+        assert.ok(name in dependencies, name);
+        return dependencies[name];
+      },
+    },
+  );
   return {
     rows,
     mutations,
     locks,
     notifications,
+    removeMember: () =>
+      moderatorExports.DELETE(
+        new Request("https://lc.test/api", {
+          method: "DELETE",
+          body: JSON.stringify({ userId: target }),
+        }),
+        { params: Promise.resolve({ serverId }) },
+      ),
+    changeRole: (body = { userId: target, role: "mod" }, scope = serverId) =>
+      moderatorExports.PATCH(
+        new Request("https://lc.test/api", {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        }),
+        { params: Promise.resolve({ serverId: scope }) },
+      ),
     transfer: (body = { userId: target, confirm: true }) =>
       exports.POST(
         new Request("https://lc.test/api", {
@@ -203,6 +292,77 @@ test("ownership transfer changes the server record and exactly one owner members
     state.locks.slice(0, 2).map(([, predicate]) => predicate.args[1]),
     [actor, target],
   );
+});
+
+test("server owners promote and demote moderators without changing global roles or voice flags", async () => {
+  const state = fixture();
+  assert.equal((await state.changeRole()).status, 200);
+  assert.equal(state.rows.serverMembers[1].role, "mod");
+  assert.equal(state.rows.users[1].role, "member");
+  assert.equal(state.rows.serverMembers[1].voiceMuted, true);
+  assert.equal(state.rows.serverMembers[0].role, "owner");
+  assert.deepEqual(state.notifications, [serverId]);
+  assert.deepEqual(
+    state.locks.slice(0, 3).map(([table]) => table),
+    ["users", "users", "servers"],
+  );
+  assert.equal(
+    (await state.changeRole({ userId: target, role: "member" })).status,
+    200,
+  );
+  assert.equal(state.rows.serverMembers[1].role, "member");
+});
+
+test("moderator changes reject non-owners, demos, inactive or foreign members and ownership escalation", async () => {
+  for (const [options, body, status] of [
+    [{ authenticated: false }, undefined, 401],
+    [{ actorRole: "mod" }, undefined, 403],
+    [{ actorRole: "member" }, undefined, 403],
+    [{ owner: false }, undefined, 403],
+    [{ member: false }, undefined, 400],
+    [{ role: "demo" }, undefined, 400],
+    [{ disabled: true }, undefined, 400],
+    [{ expired: true }, undefined, 400],
+    [{ targetRole: "owner" }, undefined, 400],
+    [{ limited: true }, undefined, 429],
+    [{}, { userId: actor, role: "mod" }, 400],
+    [{}, { userId: target, role: "owner" }, 400],
+    [{}, { userId: "invalid", role: "mod" }, 400],
+  ]) {
+    const state = fixture(options);
+    assert.equal((await state.changeRole(body)).status, status);
+    assert.deepEqual(state.mutations, []);
+    assert.deepEqual(state.notifications, []);
+  }
+  const foreign = fixture();
+  assert.equal(
+    (
+      await foreign.changeRole(
+        undefined,
+        "44444444-4444-4444-8444-444444444444",
+      )
+    ).status,
+    403,
+  );
+  assert.deepEqual(foreign.mutations, []);
+});
+
+test("a moderator can receive server ownership under the existing owner-only transfer rules", async () => {
+  const state = fixture({ targetRole: "mod" });
+  assert.equal((await state.transfer()).status, 200);
+  assert.equal(state.rows.serverMembers[1].role, "owner");
+});
+
+test("owners can remove moderators while moderators cannot remove other members", async () => {
+  const state = fixture({ targetRole: "mod" });
+  assert.equal((await state.removeMember()).status, 200);
+  assert.equal(
+    state.rows.serverMembers.some((row) => row.userId === target),
+    false,
+  );
+  const denied = fixture({ actorRole: "mod" });
+  assert.equal((await denied.removeMember()).status, 403);
+  assert.equal(denied.rows.serverMembers.length, 2);
 });
 test("ownership transfer rejects unauthenticated, non-owner, self and unconfirmed requests", async () => {
   for (const [options, body, status] of [

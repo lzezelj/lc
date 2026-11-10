@@ -108,7 +108,7 @@ export async function POST(
     if (
       !target ||
       !member ||
-      member.role !== "member" ||
+      !["member", "mod"].includes(member.role) ||
       target.role === "demo" ||
       target.disabledAt ||
       (target.expiresAt && target.expiresAt.getTime() <= Date.now())

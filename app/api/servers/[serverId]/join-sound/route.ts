@@ -99,7 +99,7 @@ export async function PATCH(
         ),
       )
       .for("update");
-    if (!member || !["owner", "member"].includes(member.role))
+    if (!member || !["owner", "member", "mod"].includes(member.role))
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     for (const soundId of new Set(Object.values(changes))) {
       if (soundId === null) continue;

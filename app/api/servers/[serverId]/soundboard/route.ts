@@ -2,7 +2,7 @@ import { and, asc, count, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
-import { serverMembers, serverSounds } from "../../../../../db/schema";
+import { serverMembers, serverSounds, servers } from "../../../../../db/schema";
 import {
   maxServerSounds,
   readSoundBody,
@@ -80,12 +80,13 @@ export async function GET(
         ).map((sound) => ({ ...sound, custom: true })),
       ],
       canManage: member.role === "owner",
+      canUpload: member.role === "owner" || member.role === "mod",
     },
     { headers },
   );
 }
 
-async function authorizeMutation(serverId: string) {
+async function authorizeMutation(serverId: string, allowModerator = false) {
   const session = await auth();
   if (!session)
     return {
@@ -104,7 +105,7 @@ async function authorizeMutation(serverId: string) {
         eq(serverMembers.serverId, serverId),
       ),
     );
-  if (member?.role !== "owner")
+  if (member?.role !== "owner" && !(allowModerator && member?.role === "mod"))
     return {
       error: NextResponse.json({ error: "Forbidden" }, { status: 403 }),
     };
@@ -130,7 +131,7 @@ export async function POST(
   { params }: { params: Promise<{ serverId: string }> },
 ) {
   const { serverId } = await params;
-  const access = await authorizeMutation(serverId);
+  const access = await authorizeMutation(serverId, true);
   if (access.error) return access.error;
   const name = new URL(request.url).searchParams.get("name")?.trim();
   if (!name || name.length > 60)
@@ -163,7 +164,14 @@ export async function POST(
       { status: 400 },
     );
   return db.transaction(async (tx) => {
-    // Serialize uploads for this server and recheck ownership after body parsing.
+    // All uploaders share this lock; individual member locks cannot protect the quota.
+    const [server] = await tx
+      .select({ id: servers.id })
+      .from(servers)
+      .where(eq(servers.id, serverId))
+      .for("update");
+    if (!server)
+      return NextResponse.json({ error: "Server not found" }, { status: 404 });
     const [owner] = await tx
       .select()
       .from(serverMembers)
@@ -174,7 +182,7 @@ export async function POST(
         ),
       )
       .for("update");
-    if (owner?.role !== "owner")
+    if (owner?.role !== "owner" && owner?.role !== "mod")
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     const [total] = await tx
       .select({ value: count() })
@@ -212,6 +220,13 @@ export async function DELETE(
       { status: 400 },
     );
   const response = await db.transaction(async (tx) => {
+    const [server] = await tx
+      .select({ id: servers.id })
+      .from(servers)
+      .where(eq(servers.id, serverId))
+      .for("update");
+    if (!server)
+      return NextResponse.json({ error: "Server not found" }, { status: 404 });
     const [owner] = await tx
       .select()
       .from(serverMembers)

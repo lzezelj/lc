@@ -631,13 +631,15 @@ Each server starts with an empty soundboard. Metadata and uploaded WAV audio are
 `/api/servers/{serverId}/soundboard`, with a `clip` query for audio. Both reads
 validate the current Auth.js session and PostgreSQL server membership. Responses
 are private/no-store; there are no public clip paths or built-in sounds.
-Server owners open a shared Add custom sound dialog from the call dropup or the
+Server owners and moderators open a shared Add custom sound dialog from the call dropup or the
 Soundboard section of server settings. Removal is available in server settings,
 not on call tiles. POST accepts a raw WAV body and name query; DELETE accepts
-a custom clip ID. Both enforce current server ownership, limit changes to 20 per
-user per minute and recheck ownership under a membership-row lock before writing.
-The same lock serializes concurrent uploads so the 20-custom-clip server limit
-cannot be exceeded. Members can read metadata and audio but cannot manage clips.
+a custom clip ID. Uploads permit current owner/mod memberships; removal remains
+owner-only. Both limit changes to 20 per user per minute, lock the shared server
+row before the actor membership, and recheck authorization before writing. The
+shared server lock serializes uploads by different moderators so the
+20-custom-clip server limit cannot be exceeded. Metadata exposes separate
+`canUpload` and `canManage` capabilities. Members can read metadata and audio.
 
 Custom audio and metadata live in PostgreSQL `server_sounds`, with server-delete
 cascades, a server index and constraints on name, byte length and duration. WAV
@@ -722,7 +724,7 @@ to announce to. LiveKit publishes after joining the room through the named
 audio into the microphone. Leaving/call changes cancel pending metadata/decode
 and release publications. Normal generated leave tones and friend-call sounds
 remain. Custom leave announcements are removed because the departing sender's
-transport is being closed. Upload/removal remain owner-only and soundboard clips
+transport is being closed. Upload permits owners/moderators, removal remains owner-only, and soundboard clips
 cannot be selected across server boundaries.
 
 Every published play, including a cache hit, requests
@@ -986,6 +988,17 @@ the user from the authenticated session and verify the relevant server or
 channel membership before reading or modifying data. Server creators receive a
 server-owner membership and may administer only those servers; the global owner
 retains demo-account administration.
+Migration `0029_server_moderators` adds `mod` to the per-server membership enum,
+without changing global account roles. Owners promote/demote existing active
+non-demo members through Members settings and PATCH `/api/servers/{id}/members`.
+Role changes lock users in stable order, then the server and memberships; they
+recheck the current owner and never modify the owner's membership. Moderators
+gain sound upload only; other administration and sound deletion stay owner-only.
+They retain ordinary join-sound, leave and channel access. Owners can remove
+moderators and transfer ownership to them under the existing eligibility rules.
+After commit, server updates refresh member roles and trigger soundboard capability
+reloads in open settings/call panels. Focus also rechecks those capabilities;
+backend mutation checks remain authoritative during stale UI or in-flight uploads.
 The server owner can transfer ownership to an existing active non-demo member
 through Members settings, with explicit confirmation. The transfer locks both
 accounts in stable order and the server, verifies the current owner's membership

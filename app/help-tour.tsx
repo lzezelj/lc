@@ -97,7 +97,7 @@ export const helpSteps = [
   {
     title: "Camera, screen sharing and sounds",
     location: "Active call controls",
-    text: "The camera and Share screen controls enable video; their options choose quality. Soundboard opens above the call controls for server calls. Click a sound to play it for everyone, or its preview icon to hear it yourself. Soundboard and screen audio have separate volume controls. Only server owners can add or remove server sounds.",
+    text: "The camera and Share screen controls enable video; their options choose quality. Soundboard opens above the call controls for server calls. Click a sound to play it for everyone, or its preview icon to hear it yourself. Soundboard and screen audio have separate volume controls. Server owners and moderators can add sounds; only owners can remove them.",
   },
   {
     title: "Settings and server management",

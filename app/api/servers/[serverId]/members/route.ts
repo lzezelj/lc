@@ -6,6 +6,7 @@ import {
   channels,
   friendships,
   serverMembers,
+  servers,
   users,
 } from "../../../../../db/schema";
 import { disconnectUserEverywhere } from "../../../../../server/disconnect-user";
@@ -13,6 +14,134 @@ import { normalizeUserHandle } from "../../../../../user-handle";
 import { createServerInvitations } from "../../../../../server/server-invitations";
 import { notifyUser } from "../../../../../server/notify-user";
 import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
+import { notifyServer } from "../../../../../server/notify-server";
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ serverId: string }> },
+) {
+  const session = await auth();
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { serverId } = await params;
+  const body = (await request.json().catch(() => null)) as {
+    userId?: string;
+    role?: string;
+  } | null;
+  const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+  if (
+    !uuid.test(serverId) ||
+    typeof body?.userId !== "string" ||
+    !uuid.test(body.userId) ||
+    body.userId === session.user.id ||
+    (body.role !== "member" && body.role !== "mod")
+  )
+    return NextResponse.json(
+      { error: "Choose another member and a member or moderator role." },
+      { status: 400 },
+    );
+  if (
+    !checkRateLimit(
+      `server-mutation:${session.user.id}`,
+      rateLimits.serverMutation,
+    ).allowed
+  )
+    return NextResponse.json(
+      { error: "Too many server changes. Try again shortly." },
+      { status: 429 },
+    );
+  const targetId = body.userId;
+  const nextRole = body.role;
+  const result = await db.transaction(async (tx) => {
+    // Coordinate with account deletion, server leave and ownership transfer.
+    let target:
+      | Pick<
+          typeof users.$inferSelect,
+          "id" | "role" | "disabledAt" | "expiresAt"
+        >
+      | undefined;
+    for (const userId of [session.user.id, targetId].sort()) {
+      const [user] = await tx
+        .select({
+          id: users.id,
+          role: users.role,
+          disabledAt: users.disabledAt,
+          expiresAt: users.expiresAt,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .for("update");
+      if (userId === targetId) target = user;
+    }
+    const [server] = await tx
+      .select({ createdBy: servers.createdBy })
+      .from(servers)
+      .where(eq(servers.id, serverId))
+      .for("update");
+    const [owner] = await tx
+      .select({ role: serverMembers.role })
+      .from(serverMembers)
+      .where(
+        and(
+          eq(serverMembers.serverId, serverId),
+          eq(serverMembers.userId, session.user.id),
+        ),
+      )
+      .for("update");
+    if (
+      !server ||
+      server.createdBy !== session.user.id ||
+      owner?.role !== "owner"
+    )
+      return {
+        error: "Only the current server owner can change moderator roles.",
+        status: 403,
+      };
+    const [member] = await tx
+      .select({ role: serverMembers.role })
+      .from(serverMembers)
+      .where(
+        and(
+          eq(serverMembers.serverId, serverId),
+          eq(serverMembers.userId, targetId),
+        ),
+      )
+      .for("update");
+    if (
+      !member ||
+      member.role === "owner" ||
+      !target ||
+      target.role === "demo" ||
+      target.disabledAt ||
+      (target.expiresAt && target.expiresAt.getTime() <= Date.now())
+    )
+      return {
+        error: "Choose an active, non-demo member of this server.",
+        status: 400,
+      };
+    const [updated] = await tx
+      .update(serverMembers)
+      .set({ role: nextRole })
+      .where(
+        and(
+          eq(serverMembers.serverId, serverId),
+          eq(serverMembers.userId, targetId),
+          eq(serverMembers.role, member.role),
+        ),
+      )
+      .returning({ userId: serverMembers.userId, role: serverMembers.role });
+    return updated
+      ? { ...updated, status: 200 }
+      : { error: "The member changed. Refresh and try again.", status: 409 };
+  });
+  if ("error" in result)
+    return NextResponse.json(
+      { error: result.error },
+      { status: result.status },
+    );
+  await notifyServer(serverId);
+  return NextResponse.json({ id: result.userId, role: result.role });
+}
 
 export async function GET(
   _request: Request,
@@ -67,6 +196,7 @@ export async function GET(
       handle: users.handle,
       image: users.image,
       role: serverMembers.role,
+      accountRole: users.role,
       voiceMuted: serverMembers.voiceMuted,
       voiceDeafened: serverMembers.voiceDeafened,
     })
@@ -80,7 +210,12 @@ export async function GET(
       ),
     );
 
-  return NextResponse.json(members);
+  return NextResponse.json(
+    members.map(({ accountRole, ...member }) => ({
+      ...member,
+      canBeModerator: accountRole !== "demo",
+    })),
+  );
 }
 
 export async function DELETE(
@@ -128,7 +263,7 @@ export async function DELETE(
       and(
         eq(serverMembers.serverId, serverId),
         eq(serverMembers.userId, body.userId),
-        eq(serverMembers.role, "member"),
+        eq(serverMembers.role, target.role),
       ),
     )
     .returning({ userId: serverMembers.userId });

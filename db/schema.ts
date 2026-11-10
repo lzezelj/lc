@@ -23,7 +23,7 @@ export const friendshipStatus = pgEnum("friendship_status", [
   "pending",
   "accepted",
 ]);
-export const serverRole = pgEnum("server_role", ["owner", "member"]);
+export const serverRole = pgEnum("server_role", ["owner", "member", "mod"]);
 export const channelType = pgEnum("channel_type", [
   "text",
   "voice_direct",

@@ -3,7 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsModal } from "./settings-modal";
 import { applyCallOutput } from "./audio-output";
-import { loadSoundAudio, type Sound } from "./soundboard-library";
+import {
+  loadSoundAudio,
+  useSoundboardRefresh,
+  type Sound,
+} from "./soundboard-library";
 import {
   decodeSoundFile,
   adjustSoundTrim,
@@ -598,6 +602,8 @@ export function SoundManager({
 }) {
   const [sounds, setSounds] = useState<Sound[]>([]);
   const [canManage, setCanManage] = useState(false);
+  const [canUpload, setCanUpload] = useState(false);
+  const permissionVersion = useSoundboardRefresh(serverId);
   const [loading, setLoading] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [preview, setPreview] = useState<Sound | null>(null);
@@ -641,12 +647,15 @@ export function SoundManager({
         return response.json() as Promise<{
           sounds: Sound[];
           canManage: boolean;
+          canUpload?: boolean;
         }>;
       })
       .then((result) => {
         if (!abort.signal.aborted) {
           setSounds(result.sounds);
           setCanManage(result.canManage);
+          setCanUpload(result.canUpload ?? result.canManage);
+          if (!(result.canUpload ?? result.canManage)) setUploadOpen(false);
           setLoading(false);
         }
       })
@@ -657,7 +666,7 @@ export function SoundManager({
         }
       });
     return () => abort.abort();
-  }, [serverId]);
+  }, [serverId, permissionVersion]);
   async function remove(sound: Sound) {
     if (removing || savingJoinSound) return;
     setRemoving(sound.id);
@@ -724,7 +733,7 @@ export function SoundManager({
       )}
       {!joinSoundOnly && (
         <>
-          {canManage && (
+          {canUpload && (
             <button
               className="primary"
               type="button"
@@ -801,7 +810,7 @@ export function SoundManager({
           <LocalSoundPreview key={sound.id} sound={sound} output={output} />
         ))}
       {error && <p role="alert">{error}</p>}
-      {uploadOpen && canManage && !joinSoundOnly && (
+      {uploadOpen && canUpload && !joinSoundOnly && (
         <SoundUploadDialog
           serverId={serverId}
           output={output}

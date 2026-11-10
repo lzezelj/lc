@@ -200,7 +200,7 @@ type Server = {
   voiceDeafened?: boolean;
   id: string;
   name: string;
-  role?: "owner" | "member";
+  role?: "owner" | "member" | "mod";
   joinSoundId?: string | null;
 };
 type Friend = {
@@ -222,13 +222,14 @@ type Channel = {
   serverName?: string;
 };
 type Member = {
+  canBeModerator?: boolean;
   voiceMuted?: boolean;
   voiceDeafened?: boolean;
   id: string;
   name: string;
   handle?: string | null;
   image: string | null;
-  role: "owner" | "member";
+  role: "owner" | "member" | "mod";
 };
 type DemoAccount = {
   id: string;
@@ -2667,6 +2668,11 @@ export default function Home() {
           return;
         }
         if (message.type === "server-updated" && message.serverId) {
+          window.dispatchEvent(
+            new CustomEvent("lc-soundboard-updated", {
+              detail: { serverId: message.serverId },
+            }),
+          );
           conversationCache.current.clear();
           serverViewCache.current.delete(currentUserId, message.serverId);
           invalidateSignalingToken();
@@ -4794,6 +4800,9 @@ export default function Home() {
   const isSelectedServerOwner = members.some(
     (member) => member.id === session?.user.id && member.role === "owner",
   );
+  const isSelectedServerModerator = members.some(
+    (member) => member.id === session?.user.id && member.role === "mod",
+  );
   const directRemoteName =
     voicePresence[activeVoiceChannelId]?.find(
       (participant) => participant.userId !== session?.user.id,
@@ -5459,7 +5468,7 @@ export default function Home() {
     <SoundManager
       key={selectedServerId}
       serverId={selectedServerId}
-      joinSoundOnly={!isSelectedServerOwner}
+      joinSoundOnly={!isSelectedServerOwner && !isSelectedServerModerator}
       joinSoundId={
         servers.find((server) => server.id === selectedServerId)?.joinSoundId ??
         null
@@ -5496,6 +5505,7 @@ export default function Home() {
                     ?.name}
             </p>
             <SettingsNavigation
+              canUploadSounds={!accountMenuOpen && isSelectedServerModerator}
               account={accountMenuOpen}
               owner={
                 accountMenuOpen
@@ -5783,6 +5793,30 @@ export default function Home() {
             {serverSettingsSection === "members" && (
               <SettingsMembers
                 members={members}
+                onRoleChange={async (member, role) => {
+                  const response = await fetch(
+                    `/api/servers/${selectedServerId}/members`,
+                    {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ userId: member.id, role }),
+                    },
+                  );
+                  const result = await response.json();
+                  if (!response.ok)
+                    throw new Error(
+                      result.error ?? "The member's role could not be changed.",
+                    );
+                  if (selectedServerIdRef.current !== selectedServerId) return;
+                  setMembers((current) =>
+                    current.map((item) =>
+                      item.id === member.id ? { ...item, role } : item,
+                    ),
+                  );
+                  setNoticeMessage(
+                    `${member.name} is now ${role === "mod" ? "a moderator" : "a member"}.`,
+                  );
+                }}
                 onTransfer={async (member) => {
                   const response = await fetch(
                     `/api/servers/${selectedServerId}/ownership`,

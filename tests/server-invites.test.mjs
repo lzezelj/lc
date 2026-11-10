@@ -217,6 +217,7 @@ async function fixture({
     "../../../../../server/disconnect-user": {
       disconnectUserEverywhere: async () => {},
     },
+    "../../../../../server/notify-server": { notifyServer: async () => {} },
     "../../../../../user-handle": {
       normalizeUserHandle: (value) => value.trim().toLowerCase(),
     },

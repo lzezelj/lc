@@ -1435,6 +1435,9 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .settingsMemberRow > small { color: var(--muted); }
 .settingsMemberRow:has(.transferOwnershipButton) { grid-template-columns: 34px minmax(0, 1fr) auto auto; }
 .transferOwnershipButton { padding: 7px 10px; border: 1px solid #657793; border-radius: 6px; background: #29384e; color: var(--ink); font-size: 12px; }
+.settingsMemberActions { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.settingsMemberActions:empty { display: none; }
+@media (max-width: 650px) { .settingsMemberActions { grid-column: 2 / -1; align-items: flex-start; } }
 .ownershipConfirmation { grid-column: 1 / -1; }
 @media (max-width: 650px) { .settingsMemberRow:has(.transferOwnershipButton) { grid-template-columns: 34px minmax(0, 1fr) auto; } .settingsMemberRow > .transferOwnershipButton { grid-column: 2 / -1; justify-self: start; } }
 .settingsMemberRow .inviteAvatar { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #35466d; }

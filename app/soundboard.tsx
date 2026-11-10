@@ -10,7 +10,11 @@ import {
   type PublishSound,
 } from "./soundboard-audio";
 
-import { loadSoundAudio, type Sound } from "./soundboard-library";
+import {
+  loadSoundAudio,
+  useSoundboardRefresh,
+  type Sound,
+} from "./soundboard-library";
 import { SoundPreviewIcon, SoundUploadDialog } from "./sound-manager";
 import { ServerJoinSound } from "./server-join-sound";
 
@@ -215,7 +219,8 @@ export function SoundboardButton({
   const [error, setError] = useState("");
   const [playing, setPlaying] = useState(false);
   const [search, setSearch] = useState("");
-  const [canManage, setCanManage] = useState(false);
+  const [canUpload, setCanUpload] = useState(false);
+  const permissionVersion = useSoundboardRefresh(serverId);
   const [uploadOpen, setUploadOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
@@ -253,12 +258,14 @@ export function SoundboardButton({
         return response.json() as Promise<{
           sounds: Sound[];
           canManage: boolean;
+          canUpload?: boolean;
         }>;
       })
       .then((items) => {
         if (!abort.signal.aborted) {
           setSounds(items.sounds);
-          setCanManage(items.canManage);
+          setCanUpload(items.canUpload ?? items.canManage);
+          if (!(items.canUpload ?? items.canManage)) setUploadOpen(false);
           setError("");
           setLoadedFor(serverId);
         }
@@ -267,12 +274,12 @@ export function SoundboardButton({
         if (!abort.signal.aborted) {
           setError(error.message);
           setSounds([]);
-          setCanManage(false);
+          setCanUpload(false);
           setLoadedFor(serverId);
         }
       });
     return () => abort.abort();
-  }, [board.open, serverId]);
+  }, [board.open, serverId, permissionVersion]);
   async function play(sound: Sound, audition = false) {
     if (sound.serverId !== serverId) return;
     setPlaying(true);
@@ -375,9 +382,9 @@ export function SoundboardButton({
           {!loading && !error && sounds.length === 0 && (
             <p className="soundboardEmpty">
               No sounds yet.{" "}
-              {canManage
+              {canUpload
                 ? "Add your first custom sound below."
-                : "Ask the server owner to add sounds."}
+                : "Ask the server owner or a moderator to add sounds."}
             </p>
           )}
           {!loading &&
@@ -386,7 +393,7 @@ export function SoundboardButton({
             visibleSounds.length === 0 && (
               <p className="soundboardEmpty">No sounds match your search.</p>
             )}
-          {!loading && canManage && (
+          {!loading && canUpload && (
             <button
               type="button"
               className="soundboardAdd"
@@ -437,7 +444,7 @@ export function SoundboardButton({
           {error && <p role="alert">{error}</p>}
         </section>
       )}
-      {uploadOpen && serverId && (
+      {uploadOpen && canUpload && serverId && (
         <SoundUploadDialog
           key={serverId}
           serverId={serverId}

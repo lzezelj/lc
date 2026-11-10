@@ -5,11 +5,13 @@ export function SettingsNavigation({
   selected,
   onSelect,
   owner = false,
+  canUploadSounds = false,
 }: {
   account: boolean;
   selected: string;
   onSelect: (section: string) => void;
   owner?: boolean;
+  canUploadSounds?: boolean;
 }) {
   const groups = account
     ? [
@@ -37,7 +39,12 @@ export function SettingsNavigation({
       ? [
           {
             label: "Server",
-            items: [["join-sound", "Voice channel sounds"]],
+            items: [
+              [
+                "join-sound",
+                canUploadSounds ? "Soundboard" : "Voice channel sounds",
+              ],
+            ],
           },
         ]
       : [
