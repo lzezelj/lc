@@ -22,6 +22,8 @@ const chatToolsOnly = process.argv.includes("--chat-tools");
 const notificationsOnly = process.argv.includes("--notifications");
 const workspaceLayoutOnly = process.argv.includes("--workspace-layout");
 const videoAttachmentsOnly = process.argv.includes("--video-attachments");
+const soundboardOnly = process.argv.includes("--soundboard");
+const panelAnimationsOnly = process.argv.includes("--panel-animations");
 const workspaceControls =
   process.argv.includes("--workspace-controls") ||
   helpTourOnly ||
@@ -31,7 +33,9 @@ const workspaceControls =
   chatToolsOnly ||
   notificationsOnly ||
   workspaceLayoutOnly ||
-  videoAttachmentsOnly;
+  videoAttachmentsOnly ||
+  soundboardOnly ||
+  panelAnimationsOnly;
 const mediaOptionsOnly =
   process.argv.includes("--media-options-only") || helpTourOnly;
 const supportedFlags = new Set([
@@ -49,6 +53,8 @@ const supportedFlags = new Set([
   "--notifications",
   "--workspace-layout",
   "--video-attachments",
+  "--soundboard",
+  "--panel-animations",
 ]);
 if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
   throw new Error("Unsupported browser test option");
@@ -371,6 +377,7 @@ if (navigation || workspaceControls) {
     ...(workspaceControls
       ? [
           "soundboard-audio",
+          "sound-trim",
           "soundboard-library",
           "server-join-sound",
           "call-sounds",
@@ -454,6 +461,9 @@ const browser = spawn(
     "--mute-audio",
     "--autoplay-policy=no-user-gesture-required",
     "--disable-gpu",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
     "--no-first-run",
     "--remote-debugging-port=0",
     `--user-data-dir=${directory}`,
@@ -746,7 +756,9 @@ try {
     chatToolsOnly ||
     notificationsOnly ||
     workspaceLayoutOnly ||
-    videoAttachmentsOnly
+    videoAttachmentsOnly ||
+    soundboardOnly ||
+    panelAnimationsOnly
   ) {
     for (const mobile of [false, true]) {
       if (mobile) {
@@ -764,19 +776,23 @@ try {
       const checked = await call(
         "Runtime.evaluate",
         {
-          expression: videoAttachmentsOnly
-            ? "window.verifyVideoAttachments()"
-            : workspaceLayoutOnly
-              ? "window.verifyWorkspaceLayout()"
-              : serverInvitationsOnly
-                ? "window.verifyServerInvitations()"
-                : participantAudioOnly
-                  ? "window.verifyParticipantAudio()"
-                  : notificationsOnly
-                    ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
-                    : chatToolsOnly
-                      ? "window.verifyChatTools()"
-                      : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          expression: panelAnimationsOnly
+            ? "window.verifyPanelAnimations()"
+            : soundboardOnly
+              ? "window.verifySoundboard()"
+              : videoAttachmentsOnly
+                ? "window.verifyVideoAttachments()"
+                : workspaceLayoutOnly
+                  ? "window.verifyWorkspaceLayout()"
+                  : serverInvitationsOnly
+                    ? "window.verifyServerInvitations()"
+                    : participantAudioOnly
+                      ? "window.verifyParticipantAudio()"
+                      : notificationsOnly
+                        ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+                        : chatToolsOnly
+                          ? "window.verifyChatTools()"
+                          : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,
@@ -786,7 +802,7 @@ try {
       if (checked.exceptionDetails)
         throw new Error(JSON.stringify(checked.exceptionDetails));
       console.log(
-        `${videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
+        `${panelAnimationsOnly ? "Panel animations" : soundboardOnly ? "Soundboard" : videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
         JSON.stringify(checked.result.value),
       );
       if (workspaceLayoutOnly) {

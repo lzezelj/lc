@@ -38,7 +38,12 @@ button {
   cursor: pointer;
 }
 
+@property --rail-width { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --channel-width { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --member-width { syntax: "<length>"; inherits: true; initial-value: 0px; }
+
 .workspace {
+  --panel-duration: 200ms;
   --rail-width: 72px;
   --sidebar-width: max(320px, var(--preferred-sidebar-width, 380px));
   --channel-width: var(--sidebar-width);
@@ -58,18 +63,21 @@ button {
   min-height: 0;
   overflow: hidden;
   background: #1b2030;
+  transition: --rail-width var(--panel-duration) ease, --channel-width var(--panel-duration) ease, --member-width var(--panel-duration) ease;
 }
+.workspace:has(.sidebarResizer:is(:focus, [data-dragging])) { transition: none; }
+.workspace > :is(.workspaceRail, .channelSidebar, .memberSidebar) { opacity: 1; visibility: visible; transition: opacity var(--panel-duration) ease, visibility 0s var(--panel-hide-delay, 0ms), translate var(--panel-duration) ease; }
 
 .workspace > .workspaceRail { grid-column: 1; grid-row: 1; overflow: hidden; }
 .workspace > .channelSidebar { grid-column: 2; grid-row: 1; }
 .workspace > .room { grid-column: 3; grid-row: 1; }
 .workspace > .memberSidebar { grid-column: 4; grid-row: 1; }
 .workspace.serverListToggled { --rail-width: 0px; }
-.workspace.serverListToggled > .workspaceRail { display: none; }
+.workspace.serverListToggled > .workspaceRail { opacity: 0; visibility: hidden; pointer-events: none; --panel-hide-delay: var(--panel-duration); }
 .workspace.channelsHidden { --channel-width: 0px; }
-.workspace.channelsHidden > .channelSidebar { display: none; }
+.workspace.channelsHidden > .channelSidebar { opacity: 0; visibility: hidden; pointer-events: none; overflow: clip; --panel-hide-delay: var(--panel-duration); }
 .workspace.userListToggled { --member-width: 0px; }
-.workspace.userListToggled > .memberSidebar { display: none; }
+.workspace.userListToggled > .memberSidebar { opacity: 0; visibility: hidden; pointer-events: none; overflow: clip; --panel-hide-delay: var(--panel-duration); }
 .panelControls { display: contents; }
 .panelControls > button { position: fixed; top: 12px; z-index: 45; }
 .panelControls > button:nth-child(1) { left: max(8px, calc((var(--rail-width) - 32px) / 2)); }
@@ -928,8 +936,34 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .soundUploadForm, .soundUploadForm label, .soundManager { display: grid; gap: 10px; }
 .soundUploadForm p, .soundboardEmpty { margin: 0; color: var(--muted); font-size: 12px; }
 .soundUploadForm input { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; color: inherit; background: #101725; border: 1px solid #384359; border-radius: 5px; }
+.soundUploadForm input[type="file"] { padding: 6px; color: var(--muted); font-size: 12px; }
+.soundUploadForm input::file-selector-button { margin-right: 10px; padding: 9px 12px; border: 1px solid #51688b; border-radius: 6px; background: #283d5c; color: var(--ink); font: inherit; cursor: pointer; }
+.soundUploadForm input:disabled::file-selector-button { opacity: .5; cursor: not-allowed; }
+.soundUploadForm input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .soundLocalPreview { min-width: 0; }
-.soundLocalPreview audio { display: block; width: 100%; }
+.soundTrim { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
+.soundTrimNumbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.soundTrimBoundary { min-width: 0; }
+.soundUploadForm .soundPreviewToggle { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.soundUploadForm .soundPreviewToggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.soundTrimTrack { position: relative; height: 88px; margin: 28px 16px 0; border: 1px solid #384359; border-radius: 8px; background: #0d1422; touch-action: none; user-select: none; }
+.soundTrimTrack svg { display: block; width: 100%; height: 100%; fill: #6b83ab; pointer-events: none; }
+.soundTrimTrack .soundTrimSelection { position: absolute; top: 0; height: 100%; min-width: 1px; padding: 0; border: 1px solid #78a4ff; border-radius: 3px; background: transparent; cursor: grab; touch-action: none; }
+.soundTrimTrack .soundTrimSelection:active { cursor: grabbing; }
+.soundTrimTrack button.soundTrimSelection:is(:hover, :focus-visible, :active) { background: transparent; border-color: #78a4ff; }
+.soundTrimGrip { position: absolute; bottom: calc(100% + 6px); left: 50%; width: 28px; margin-left: -14px; border: 1px solid #78a4ff; border-radius: 4px; background: #283d5c; color: var(--ink); line-height: 20px; }
+.soundTrimTrack .soundTrimHandle { position: absolute; top: -4px; z-index: 1; width: 16px; height: calc(100% + 8px); padding: 0; border: 1px solid #b4ccff; border-radius: 5px; background: #355487; cursor: ew-resize; touch-action: none; }
+.soundTrimTrack button.soundTrimHandle:is(:hover, :focus-visible, :active) { background: #355487; }
+.soundTrimTrack[data-dragging] button.soundTrimHandle { border-color: transparent; background: transparent; }
+.soundTrimTrack .soundTrimHandle.start { margin-left: -16px; }
+.soundTrimEdge { position: absolute; top: -1px; bottom: -1px; width: 1px; background: #c4d8ff; pointer-events: none; visibility: hidden; }
+.soundTrimTrack[data-dragging] .soundTrimEdge { visibility: visible; }
+.soundTrimHandle.start .soundTrimEdge { right: 0; }
+.soundTrimHandle.end .soundTrimEdge { left: 0; }
+.soundTrimTrack button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; z-index: 2; }
+.soundTrimTimes { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.soundLocalPreview audio { display: block; width: 100%; min-height: 44px; border: 1px solid #384359; border-radius: 12px; background: #202a3b; color-scheme: dark; }
+.soundLocalPreview audio::-webkit-media-controls-panel { background: #202a3b; }
 .soundManagerList { display: grid; gap: 8px; max-height: 360px; overflow-y: auto; }
 .soundManagerRow { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
 .soundManagerRow > button { flex-shrink: 0; }
@@ -2831,12 +2865,13 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
     --member-width: 0px;
   }
 
-  .memberSidebar {
-    display: none;
-  }
-  .workspace.userListToggled > .memberSidebar {
+  .workspace > .memberSidebar {
     display: flex; position: fixed; right: 0; top: 0; bottom: 0;
     width: min(var(--preferred-member-width, 340px), 85vw); z-index: 50; box-shadow: -12px 0 30px #0008;
+    opacity: 0; visibility: hidden; pointer-events: none; translate: 24px 0; --panel-hide-delay: var(--panel-duration);
+  }
+  .workspace.userListToggled > .memberSidebar {
+    opacity: 1; visibility: visible; pointer-events: auto; overflow: visible; translate: 0 0; --panel-hide-delay: 0ms;
   }
   .closeUserList { display: inline-flex; }
   .memberSidebarHeader { display: flex; align-items: center; gap: 8px; }
@@ -2854,12 +2889,12 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
     --sidebar-width: min(max(320px, var(--preferred-sidebar-width, 320px)), 56vw);
     --voice-dock-height: 0px;
   }
-  .workspace > .workspaceRail { display: none; }
+  .workspace > .workspaceRail { opacity: 0; visibility: hidden; pointer-events: none; --panel-hide-delay: var(--panel-duration); }
   .sidebarResizer { display: none; }
   .workspace:not(.serverListToggled) .workspaceName { padding-left: 52px; }
   .workspace.serverListToggled .workspaceName { padding-left: 16px; }
   .workspace.serverListToggled { --rail-width: 58px; }
-  .workspace.serverListToggled > .workspaceRail { display: flex; }
+  .workspace.serverListToggled > .workspaceRail { opacity: 1; visibility: visible; pointer-events: auto; --panel-hide-delay: 0ms; }
 
   .voiceDock {
     left: var(--rail-width);
@@ -2891,7 +2926,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 /* Shared by existing and future buttons; individual controls keep their colors. */
-:root button, :root .attachmentDownload {
+:root button, :root .attachmentDownload, :root input::file-selector-button {
   transition: translate var(--button-hover-duration) ease,
     filter var(--button-hover-duration) ease,
     background-color var(--button-hover-duration) ease,
@@ -2900,13 +2935,16 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 :root button:not(:disabled):is(:hover, :focus-visible),
 :root .attachmentDownload:is(:hover, :focus-visible),
+:root input:not(:disabled)::file-selector-button:hover,
 :root button.soundboardPlaceholder:is(:hover, :focus-visible) {
   translate: 0 -2px;
   filter: brightness(1.12);
 }
 @media (prefers-reduced-motion: reduce) {
+  .workspace { --panel-duration: 0ms; }
   :root { --button-hover-duration: 0ms; }
   :root button:not(:disabled):is(:hover, :focus-visible),
   :root .attachmentDownload:is(:hover, :focus-visible),
+  :root input:not(:disabled)::file-selector-button:hover,
   :root button.soundboardPlaceholder:is(:hover, :focus-visible) { translate: none; }
 }

@@ -53,7 +53,7 @@ export function validateSoundWave(audio: Uint8Array) {
   )
     return null;
   const durationMs = Math.ceil((dataSize / format.align / format.rate) * 1000);
-  return durationMs > 0 && durationMs <= 10000 ? { durationMs } : null;
+  return durationMs > 0 && durationMs <= 10010 ? { durationMs } : null;
 }
 
 export async function readSoundBody(request: Request) {

@@ -197,6 +197,13 @@
       "when": 1793923200009,
       "tag": "0027_attachment_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793923200010,
+      "tag": "0028_sound_duration_margin",
+      "breakpoints": true
     }
   ]
 }

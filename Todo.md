@@ -11,5 +11,3 @@ Monitoring and structured logs
 Check if anything new has been added that should go in help and introduction
 Pinning messages
 Add music
-Look up video sending (Video preview doesnt work, deleting a video throws a error)
-Soundboard sound preview and trimming the file?

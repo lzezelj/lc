@@ -641,7 +641,7 @@ cannot be exceeded. Members can read metadata and audio but cannot manage clips.
 
 Custom audio and metadata live in PostgreSQL `server_sounds`, with server-delete
 cascades, a server index and constraints on name, byte length and duration. WAV
-uploads are limited to 2 MiB and ten seconds of 16-bit PCM mono/stereo at
+uploads are limited to 2 MiB and 10.01 seconds of 16-bit PCM mono/stereo at
 8–48 kHz. The API bounds the streamed request even without Content-Length and
 validates the RIFF format, chunk sizes, sample alignment and duration independently
 of the extension, MIME label or client. Metadata queries never select audio bytes;
@@ -649,7 +649,29 @@ clip bytes are fetched only on demand through the same membership-protected rout
 Immutable random clip IDs are cache versions. This bounded first implementation
 keeps audio in existing database backups without adding filesystem volumes or
 object storage. It stores up to 40 MiB of custom audio per server. Compressed
-formats, conversion, trimming and clip renaming are not implemented yet.
+formats are accepted only as local upload sources; stored clips remain PCM WAV.
+Clip renaming and editing already stored clips are not implemented.
+
+The shared upload dialog trims new sounds locally. Source files may use any audio
+format supported by the browser decoder (including MP3), up to 25 MiB and five
+minutes, mono or stereo. `app/sound-trim.ts` decodes with an offline 48 kHz audio
+context, checks duration after decoding, and encodes the chosen sample-aligned
+range as 16-bit PCM WAV. Decoding temporarily holds the full source in browser
+memory; the duration limit is checked after decoding, so encoded size alone does
+not bound peak decoder memory. A waveform track has draggable start/end handles
+and a draggable selected region, with keyboard support and precise number inputs.
+All controls keep a nonempty range within the source and clamp the UI selection
+to ten seconds, with start/end values displayed to two decimal places. Migration
+`0028_sound_duration_margin` raises the database duration constraint to 10010 ms;
+API validation also accepts 10.01 seconds, leaving a small rounding margin.
+The enabled-by-default Preview after moving start option restarts the selected
+clip after pointer release, keyboard release or committing a number input when
+the start changed. It does not autoplay on intermediate drag updates or file load.
+Preview plays the exact resulting WAV using the existing local
+output/deafen controls. Only that WAV is uploaded; the original source stays
+local. Replacing a file or closing the dialog ignores stale decode results.
+The existing raw-body API, independent server validation, authorization, quotas,
+immutable clip IDs and PostgreSQL storage remain authoritative and unchanged.
 
 The browser loads metadata when opening the board and audio only when selected.
 A server-and-version-keyed memory LRU holds at most 24 clips and 4 MiB of encoded
@@ -1315,6 +1337,12 @@ the existing history reload. Deletions are rate limited per authenticated user.
 Both workspaces have controls to toggle the server rail, channel/conversation
 sidebar, and user/profile sidebar. These controls remain visible on desktop and
 mobile. The server cog sits to the right of the hide-channels control.
+Panel toggles animate their registered CSS width properties and opacity over
+200 ms, so the grid and fixed controls move together. The mobile user/profile
+drawer slides and fades. Hidden panels remain mounted, become noninteractive,
+and finish hiding after the transition; media ownership does not change.
+Sidebar resizing bypasses width transitions, and reduced-motion mode removes
+panel animation delays.
 Server owners have an Invite to server shortcut between these buttons, opening
 Invite friends settings. Invite friends lists accepted friends alphabetically
 with local search; Invite people follows it and requires at least three search

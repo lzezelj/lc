@@ -5,6 +5,7 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 ## Working style
 
 - Explain what you are changing and why, especially WebRTC, LiveKit, signaling, authentication, database, and deployment decisions.
+- When an implementation request leaves architectural questions unresolved, ask the user and wait for their answers before making the dependent architectural decisions. Investigate existing code and documentation first; continue independent work while waiting.
 - Preserve existing functionality and unrelated user changes.
 - Use `apply_patch` for manual file edits.
 - After editing code, run `npm.cmd run format`.
@@ -30,4 +31,17 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 
 ## Architecture
 
-Read `ARCHITECTURE.md` before making architectural changes.
+Read this `AGENTS.md` directly; a summary does not replace applicable project instructions.
+
+Before architectural changes, obtain task-specific context from `ARCHITECTURE.md`.
+For substantial feature work, prefer a read-only architecture sub-agent with a fresh
+context: give it the task and ask it to read `ARCHITECTURE.md` and relevant source
+files. Its briefing should include relevant constraints, components and data flows,
+file/section references, testing requirements, and uncertainties or conflicting
+documentation. Keep the briefing concise and do not include secrets.
+
+The implementing agent may use this briefing instead of reading the whole
+architecture document. Read referenced sections directly when details are unclear
+or consequential, verify assumptions against current source, and still update
+`ARCHITECTURE.md` when required. If sub-agents are unavailable or the task is small,
+read the relevant architecture sections directly.

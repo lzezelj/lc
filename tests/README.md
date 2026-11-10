@@ -164,11 +164,23 @@ checks for legal-document Back links, portaled device-menu visibility, the wider
 channel-sidebar minimum, All users keyboard/pointer resizing, soundboard ellipses
 and preserved call playback. It serves only local test HTML for iframe checks.
 
+`node tests/direct-webrtc.browser.mjs --panel-animations` verifies server/channel/
+user and Friends message/profile panel show/hide transitions, mobile drawers,
+mounted media elements, immediate resizing, and mobile reduced-motion behavior.
+
 `message-attachments.test.mjs` covers bounded multipart parsing, file signatures,
 video container/type limits, private byte-range responses and invalid ranges.
 `node tests/direct-webrtc.browser.mjs --video-attachments` records a tiny silent
 canvas clip locally and checks desktop/mobile video drafts, playback, preview
-windows, download controls and cleanup; all browser audio remains muted.
+windows, download controls and deletion/expiry cleanup under React Strict Mode;
+all browser audio remains muted.
+
+`npm.cmd run test:soundboard` also checks sample-accurate mono/stereo WAV trimming,
+invalid ranges and local decoding limits/errors. Run
+`node tests/direct-webrtc.browser.mjs --soundboard` for muted desktop/mobile
+soundboard checks, including a longer source trimmed before preview/upload,
+unsupported audio feedback and preview cleanup. Browser codec availability still
+determines which compressed input formats can be decoded.
 
 Attachment tests also cover filename cleanup, per-account quota transaction
 ordering/failure, and private

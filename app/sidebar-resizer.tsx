@@ -82,6 +82,7 @@ export function SidebarResizer({
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.preventDefault();
+        event.currentTarget.focus({ preventScroll: true });
         drag.current = {
           x: event.clientX,
           width:
@@ -106,6 +107,7 @@ export function SidebarResizer({
       }}
       onDoubleClick={onReset}
       onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+        event.currentTarget.focus({ preventScroll: true });
         const current =
           event.currentTarget.parentElement!.getBoundingClientRect().width;
         const step = event.shiftKey ? 40 : 10;

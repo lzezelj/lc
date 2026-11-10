@@ -36,6 +36,112 @@ const { SoundCache, SoundPlayer, SoundCooldown } = await moduleAt(
 );
 const catalog = await moduleAt("./sound-wave.ts");
 const uploads = await moduleAt("../server/sound-upload.ts");
+const trimming = await moduleAt("../app/sound-trim.ts");
+
+test("trim controls keep extreme, crossed and moved selections playable below the API limit", () => {
+  for (const duration of [
+    0.005,
+    0.2,
+    9.99,
+    10,
+    10.001,
+    480001 / 48000,
+    12,
+    300,
+  ]) {
+    let start = 0,
+      end = Math.min(duration, trimming.soundTrimLimitSeconds);
+    for (const boundary of ["start", "end", "selection"]) {
+      for (const value of [-100, 0, duration / 2, duration, duration + 100]) {
+        ({ start, end } = trimming.adjustSoundTrim(
+          duration,
+          start,
+          end,
+          boundary,
+          value,
+        ));
+        assert.ok(start >= 0 && end <= duration + 1e-9 && end > start);
+        assert.ok(end - start <= 10 + 1e-9);
+        const bytes = trimming.trimSoundWave(
+          {
+            sampleRate: 48000,
+            numberOfChannels: 1,
+            length: Math.round(duration * 48000),
+            getChannelData: () =>
+              new Float32Array(Math.round(duration * 48000)),
+          },
+          start,
+          end,
+        );
+        assert.ok(uploads.validateSoundWave(bytes));
+      }
+    }
+  }
+});
+
+test("sound trimming preserves selected PCM frames and stereo channel order in valid WAVs", () => {
+  for (const channels of [1, 2]) {
+    const rate = 8000;
+    const source = {
+      sampleRate: rate,
+      numberOfChannels: channels,
+      length: 12 * rate,
+      getChannelData: (channel) =>
+        Float32Array.from({ length: 12 * rate }, (_, i) =>
+          i < rate ? 0 : channel === 0 ? 0.5 : -0.5,
+        ),
+    };
+    const bytes = trimming.trimSoundWave(source, 1, 11);
+    assert.equal(uploads.validateSoundWave(bytes).durationMs, 10000);
+    assert.equal(bytes.length, 44 + 10 * rate * channels * 2);
+    const view = new DataView(bytes.buffer);
+    assert.equal(view.getInt16(44, true), 16384);
+    if (channels === 2) assert.equal(view.getInt16(46, true), -16384);
+    for (const [start, end] of [
+      [-1, 1],
+      [0, 11],
+      [3, 2],
+      [1, 1],
+      [11, 13],
+      [NaN, 2],
+      [0, Infinity],
+      [0, 0.000001],
+    ])
+      assert.throws(() => trimming.trimSoundWave(source, start, end));
+  }
+});
+
+test("local sound decoding bounds source size, duration and channels and handles unsupported audio", async () => {
+  let result = { length: 48000, duration: 1, numberOfChannels: 2 };
+  let calls = 0;
+  const decoder = await moduleAt(
+    "../app/sound-trim.ts",
+    {},
+    {
+      OfflineAudioContext: class {
+        constructor(channels, length, rate) {
+          assert.equal(rate, 48000);
+        }
+        async decodeAudioData() {
+          calls++;
+          if (result instanceof Error) throw result;
+          return result;
+        }
+      },
+    },
+  );
+  const file = { size: 10, arrayBuffer: async () => new ArrayBuffer(10) };
+  for (const size of [0, trimming.maxSoundSourceBytes + 1])
+    await assert.rejects(decoder.decodeSoundFile({ ...file, size }), /25 MiB/);
+  assert.equal(calls, 0);
+  assert.equal(await decoder.decodeSoundFile(file), result);
+  result = { length: 1, duration: 301, numberOfChannels: 2 };
+  await assert.rejects(decoder.decodeSoundFile(file), /5 minutes/);
+  result = { length: 1, duration: 1, numberOfChannels: 6 };
+  await assert.rejects(decoder.decodeSoundFile(file), /mono or stereo/);
+  result = new Error("decode failed");
+  await assert.rejects(decoder.decodeSoundFile(file), /could not be decoded/);
+});
 const serverId = "11111111-1111-4111-8111-111111111111";
 const clipId = "22222222-2222-4222-8222-222222222222";
 
@@ -520,6 +626,16 @@ test("ten seconds of 48 kHz stereo PCM fits within the 2 MiB upload boundary", (
   assert.equal(audio.length, 1920044);
   assert.ok(audio.length < uploads.maxSoundBytes);
   assert.equal(uploads.validateSoundWave(audio).durationMs, 10000);
+  for (const frames of [480480, 480481]) {
+    const margin = new Uint8Array(44 + frames * 4);
+    margin.set(audio.subarray(0, 44));
+    const marginView = new DataView(margin.buffer);
+    marginView.setUint32(4, margin.length - 8, true);
+    marginView.setUint32(40, margin.length - 44, true);
+    if (frames === 480480)
+      assert.equal(uploads.validateSoundWave(margin).durationMs, 10010);
+    else assert.equal(uploads.validateSoundWave(margin), null);
+  }
 });
 
 test("client cooldown rejects rapid attempts without extending the one-second deadline", () => {

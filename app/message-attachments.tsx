@@ -98,12 +98,13 @@ function VideoPlayer({ src, name }: { src: string; name: string }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     const element = player.current;
+    if (element) element.src = src;
     return () => {
       element?.pause();
       element?.removeAttribute("src");
       element?.load();
     };
-  }, []);
+  }, [src]);
   return (
     <>
       <video

@@ -158,8 +158,10 @@ window.verifyVideoAttachments = async () => {
       "Video decodes in the browser",
     );
   };
+  const render = (content) =>
+    flushSync(() => root.render(h(React.StrictMode, null, content)));
   try {
-    flushSync(() => root.render(h(Composer)));
+    render(h(Composer));
     const picker = host.querySelector('input[type="file"]');
     check(
       picker.accept.includes("video/mp4") &&
@@ -204,8 +206,12 @@ window.verifyVideoAttachments = async () => {
     const metadata = [
       { id: "video-test", name: file.name, type: file.type, size: file.size },
     ];
-    flushSync(() => root.render(h(MessageAttachments, { files: metadata })));
+    render(h(MessageAttachments, { files: metadata }));
     const inline = host.querySelector("video");
+    check(
+      inline.getAttribute("src") === "/api/attachments/video-test",
+      "Effect replay preserves the sent video's source",
+    );
     inline.src = url;
     check(
       inline.controls && !inline.autoplay && inline.preload === "metadata",
@@ -234,12 +240,32 @@ window.verifyVideoAttachments = async () => {
         "/api/attachments/video-test?download=1",
       "Video download uses the authorized attachment endpoint",
     );
-    flushSync(() =>
-      root.render(
-        h(MessageAttachments, {
-          files: metadata.map((file) => ({ ...file, expired: true })),
-        }),
-      ),
+    render(
+      h(MessageAttachments, {
+        files: metadata,
+        deleted: true,
+      }),
+    );
+    check(
+      !document.querySelector(".attachmentPreviewModal") &&
+        !host.querySelector("video") &&
+        inline.paused &&
+        preview.paused &&
+        !inline.getAttribute("src") &&
+        !preview.getAttribute("src"),
+      "Deleting a video message stops and releases both players",
+    );
+    render(h(MessageAttachments, { files: metadata }));
+    host.querySelector('[aria-label="Preview clip.webm"]').click();
+    await wait();
+    preview = document.querySelector(".attachmentPreviewModal video");
+    preview.src = url;
+    await loaded(preview);
+    await preview.play();
+    render(
+      h(MessageAttachments, {
+        files: metadata.map((file) => ({ ...file, expired: true })),
+      }),
     );
     check(
       !document.querySelector(".attachmentPreviewModal") &&
@@ -258,6 +284,7 @@ window.verifyVideoAttachments = async () => {
       playback: true,
       previewWindow: true,
       cleanup: true,
+      deletionCleanup: true,
       noAutoplay: true,
       download: true,
     };
@@ -265,6 +292,106 @@ window.verifyVideoAttachments = async () => {
     root.unmount();
     host.remove();
     URL.revokeObjectURL(url);
+  }
+};
+
+window.verifyPanelAnimations = async () => {
+  await verifyPanelToggleStates();
+  const workspace = document.createElement("div");
+  workspace.className = "workspace";
+  workspace.style.cssText = "position:fixed;inset:0;z-index:1000";
+  workspace.innerHTML =
+    '<aside class="workspaceRail"></aside><aside class="channelSidebar"></aside><section class="room"><audio></audio></section><aside class="memberSidebar"></aside>';
+  document.body.append(workspace);
+  const media = workspace.querySelector("audio");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 240));
+  try {
+    await settle();
+    for (const friends of [false, true]) {
+      workspace.classList.toggle("friendsScreen", friends);
+      for (const [toggle, selector, property, defaultOpen] of [
+        [
+          "serverListToggled",
+          ".workspaceRail",
+          "--rail-width",
+          innerWidth > 650,
+        ],
+        ["channelsHidden", ".channelSidebar", "--channel-width", true],
+        [
+          "userListToggled",
+          ".memberSidebar",
+          "--member-width",
+          innerWidth > 920,
+        ],
+      ]) {
+        const panel = workspace.querySelector(selector);
+        for (const toggled of [true, false]) {
+          const before = parseFloat(
+            getComputedStyle(workspace).getPropertyValue(property),
+          );
+          workspace.classList.toggle(toggle, toggled);
+          const open = toggled ? !defaultOpen : defaultOpen;
+          await new Promise((resolve) =>
+            setTimeout(resolve, reduced ? 20 : 70),
+          );
+          if (!reduced && (selector !== ".memberSidebar" || innerWidth > 920)) {
+            const during = parseFloat(
+              getComputedStyle(workspace).getPropertyValue(property),
+            );
+            check(
+              during > 0 && Math.abs(during - before) > 0.1,
+              "Panel widths interpolate during toggles",
+            );
+          }
+          await settle();
+          check(
+            getComputedStyle(panel).visibility ===
+              (open ? "visible" : "hidden"),
+            "Panel visibility follows desktop/mobile toggle state",
+          );
+          check(
+            getComputedStyle(panel).display !== "none",
+            "Panel content remains mounted through both animation directions",
+          );
+          if (!open)
+            check(
+              getComputedStyle(panel).pointerEvents === "none",
+              "Hidden panels do not intercept clicks",
+            );
+          check(
+            workspace.querySelector("audio") === media,
+            "Panel toggles retain the media element",
+          );
+        }
+      }
+    }
+    const resizer = document.createElement("div");
+    resizer.className = "sidebarResizer";
+    resizer.tabIndex = 0;
+    workspace.querySelector(".channelSidebar").append(resizer);
+    if (innerWidth > 650) {
+      resizer.focus();
+      check(
+        getComputedStyle(workspace).transitionDuration === "0s",
+        "Sidebar resizing bypasses panel width animations",
+      );
+    }
+    if (reduced)
+      check(
+        getComputedStyle(workspace)
+          .getPropertyValue("--panel-duration")
+          .trim() === "0ms",
+        "Reduced motion disables panel delays",
+      );
+    return {
+      bothDirections: true,
+      friendsAndServers: true,
+      mountedMedia: true,
+      reducedMotion: reduced,
+    };
+  } finally {
+    workspace.remove();
   }
 };
 
@@ -4172,7 +4299,14 @@ async function verifySoundboard() {
     if (options.method === "POST") {
       check(
         options.body instanceof File && options.body.size > 44,
-        "Custom uploads must send the chosen file",
+        "Custom uploads must send the selected WAV clip",
+      );
+      const uploadedBytes = await options.body.arrayBuffer();
+      const uploadedView = new DataView(uploadedBytes);
+      check(
+        uploadedView.getUint32(24, true) === 48000 &&
+          uploadedView.getUint32(40, true) === 48000 * 2 * 0.2,
+        "Only the selected 0.2 seconds are converted to WAV and uploaded",
       );
       uploads++;
       const uploaded = {
@@ -4434,15 +4568,192 @@ async function verifySoundboard() {
     );
     check(uploadDialog, "Adding a sound must open a separate modal");
     const fileInput = uploadDialog.querySelector('[aria-label="Sound file"]');
+    const invalidSelection = new DataTransfer();
+    invalidSelection.items.add(
+      new File(["invalid audio"], "broken.mp3", { type: "audio/mpeg" }),
+    );
+    fileInput.files = invalidSelection.files;
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    for (
+      let i = 0;
+      i < 50 && !uploadDialog.querySelector('[role="alert"]');
+      i++
+    )
+      await wait();
+    check(
+      uploadDialog.textContent.includes("could not be decoded") &&
+        uploadDialog.querySelector('button[type="submit"]').disabled,
+      "Unsupported audio has a visible error and cannot upload",
+    );
+    const recordingContext = new AudioContext();
+    const recordingOutput = recordingContext.createMediaStreamDestination();
+    const oscillator = recordingContext.createOscillator();
+    oscillator.connect(recordingOutput);
+    const recorder = new MediaRecorder(recordingOutput.stream, {
+      mimeType: "audio/webm;codecs=opus",
+    });
+    const chunks = [];
+    recorder.ondataavailable = (event) => chunks.push(event.data);
+    try {
+      await recordingContext.resume();
+      oscillator.start();
+      recorder.start();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => {
+        recorder.onstop = resolve;
+        recorder.stop();
+      });
+    } finally {
+      oscillator.stop();
+      recordingOutput.stream.getTracks().forEach((track) => track.stop());
+      await recordingContext.close();
+    }
+    const compressedSelection = new DataTransfer();
+    compressedSelection.items.add(
+      new File(chunks, "recording.webm", { type: "audio/webm" }),
+    );
+    fileInput.files = compressedSelection.files;
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    for (let i = 0; i < 50 && !uploadDialog.querySelector(".soundTrim"); i++)
+      await wait();
+    check(
+      uploadDialog.querySelector(".soundTrim"),
+      "Compressed audio decodes for trimming",
+    );
+    await playSoundPreview(
+      uploadDialog.querySelector("audio"),
+      "Converted compressed sound",
+    );
+    check(
+      uploads === 0 && publications === 1,
+      "Compressed audio preview stays local before upload",
+    );
+    const original = soundWave("celebrate-v1");
+    const longWave = new Uint8Array(44 + 12 * 24000 * 2);
+    longWave.set(original.subarray(0, 44));
+    new DataView(longWave.buffer).setUint32(4, longWave.length - 8, true);
+    new DataView(longWave.buffer).setUint32(40, longWave.length - 44, true);
+    for (let i = 44; i < longWave.length; i++)
+      longWave[i] = original[44 + ((i - 44) % (original.length - 44))];
     const selection = new DataTransfer();
     selection.items.add(
-      new File([soundWave("celebrate-v1")], "Uploaded.wav", {
+      new File([longWave], "Uploaded.wav", {
         type: "audio/wav",
       }),
     );
     fileInput.files = selection.files;
     fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    for (let i = 0; i < 50 && !uploadDialog.querySelector(".soundTrim"); i++)
+      await wait();
+    check(
+      uploadDialog.querySelector(".soundTrim"),
+      "Audio loads for local trimming",
+    );
+    const trimStart = uploadDialog.querySelector(
+      '[aria-label="Trim start seconds"]',
+    );
+    const trimEnd = uploadDialog.querySelector(
+      '[aria-label="Trim end seconds"]',
+    );
+    check(
+      Number(trimEnd.max) === 12,
+      "Long sources are available for selection",
+    );
+    const endHandle = uploadDialog.querySelector(
+      '[aria-label="Trim end position"]',
+    );
+    check(
+      endHandle?.getAttribute("role") === "slider" &&
+        uploadDialog.querySelector(".soundTrimTrack svg rect"),
+      "Trim handles are on the waveform track",
+    );
+    for (const key of ["End", "Home", "End"]) {
+      endHandle.focus();
+      endHandle.dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+      await wait();
+      check(
+        uploadDialog.querySelector("audio") &&
+          !uploadDialog.querySelector('button[type="submit"]').disabled,
+        "Extreme trim positions keep the preview and upload available",
+      );
+      check(
+        Number(trimEnd.value) - Number(trimStart.value) <= 10.000001,
+        "Selection stays at or below ten seconds",
+      );
+      endHandle.dispatchEvent(
+        new KeyboardEvent("keyup", { key, bubbles: true }),
+      );
+      await wait();
+    }
+    const selectedHandle = uploadDialog.querySelector(
+      '[aria-label="Move selected clip"]',
+    );
+    selectedHandle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Home",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     await wait();
+    check(
+      Number(trimStart.value) === 0,
+      "The selected clip moves directly on the track",
+    );
+    const previewToggle = uploadDialog.querySelector(
+      ".soundPreviewToggle input",
+    );
+    check(
+      previewToggle.checked &&
+        trimStart.value === "0.00" &&
+        trimEnd.value === "10.00",
+      "Preview on finish is enabled by default and times display two decimals",
+    );
+    check(
+      uploadDialog.querySelector("audio").paused,
+      "Moving a trim handle does not autoplay while moving",
+    );
+    selectedHandle.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "Home", bubbles: true }),
+    );
+    for (let i = 0; i < 50 && uploadDialog.querySelector("audio").paused; i++)
+      await wait();
+    check(
+      !uploadDialog.querySelector("audio").paused,
+      "Finishing a start change previews the selected clip",
+    );
+    previewToggle.click();
+    await wait();
+    selectedHandle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "End",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await wait();
+    selectedHandle.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "End", bubbles: true }),
+    );
+    await wait();
+    check(
+      uploadDialog.querySelector("audio").paused,
+      "Disabling the option prevents automatic preview",
+    );
+    inputValue.call(trimStart, "11");
+    trimStart.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    inputValue.call(trimEnd, "11.2");
+    trimEnd.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    const selectedPreview = uploadDialog.querySelector("audio");
+    await playSoundPreview(selectedPreview, "Trimmed sound");
+    check(
+      Math.abs(selectedPreview.duration - 0.2) < 0.01 && publications === 1,
+      "Trim preview plays only the selection without publishing",
+    );
     uploadDialog.querySelector('button[type="submit"]').click();
     await wait();
     check(

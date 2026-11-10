@@ -158,7 +158,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          "Use a valid 16-bit PCM WAV, mono or stereo, 8–48 kHz, up to 10 seconds",
+          "Use a valid 16-bit PCM WAV, mono or stereo, 8–48 kHz, up to 10.01 seconds",
       },
       { status: 400 },
     );

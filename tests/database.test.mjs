@@ -1782,6 +1782,19 @@ test("custom sound migration enforces storage bounds and cascades without touchi
       "INSERT INTO server_sounds (server_id, name, audio, duration_ms) VALUES ($1, 'Ten seconds', $2, 10000)",
       [server, Buffer.alloc(1920044)],
     );
+    await client.query(
+      await readFile(
+        new URL(
+          "../db/migrations/0028_sound_duration_margin.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    await client.query(
+      "INSERT INTO server_sounds (server_id, name, audio, duration_ms) VALUES ($1, 'Duration margin', $2, 10010)",
+      [server, Buffer.alloc(1921964)],
+    );
     assert.equal(
       (
         await client.query(
@@ -1795,7 +1808,7 @@ test("custom sound migration enforces storage bounds and cascades without touchi
     for (const [name, bytes, duration] of [
       [" ", audio, 600],
       ["Clip", Buffer.alloc(2097153), 600],
-      ["Clip", audio, 10001],
+      ["Clip", audio, 10011],
     ]) {
       await client.query("SAVEPOINT invalid_sound");
       await assert.rejects(
