@@ -1169,12 +1169,13 @@ and DMs, then atomically inserts the message, JSON metadata and private bytea
 payloads in PostgreSQL. Concurrent uploads serialize quota checks. No separate
 upload step leaves orphaned files. Only metadata travels through message history,
 bounded memory caches and signaling. `MessageAttachments` measures available row
-width and renders at most two uncropped lazy image tiles, reserving one tile for the
+width and renders at most two uncropped image/video thumbnails, reserving one tile for the
 remaining-image count when necessary. That tile opens a square, three-column
-gallery viewport showing three rows with vertical scrolling for further pictures.
-Photos omit filename/download controls. The overflow placeholder suppresses
+gallery viewport showing three rows with vertical scrolling for further media.
+Images and videos share the same thumbnail controls and omit file-details rows.
+Videos show a play badge and open a player modal. The overflow placeholder suppresses
 context menus and cannot be downloaded. Right-click on an actual image opens an explicit Download
-picture menu using the authenticated download endpoint. Its portal mounts inside
+picture/video menu using the authenticated download endpoint. Its portal mounts inside
 the active dialog when needed so native modal inertness does not block it;
 Escape closes just the menu. PDFs retain their details/download row.
 Clicking an image
@@ -1223,14 +1224,19 @@ counts attachment payloads, not the entire database, WAL, indexes, or backups;
 deleting rows makes database space reusable rather than immediately shrinking
 the PostgreSQL files on disk.
 
-Video drafts use local Blob previews without uploading. Sent videos use native
-controls, metadata-only preload and explicit Play; a larger in-app player and
-download are available. Opening that player pauses inline playback. Closing,
+Video drafts use local Blob previews without uploading. Sent videos use muted,
+paused thumbnails with metadata-only preload, sized like pictures. Clicking opens
+an in-app player with native controls, loading/error feedback and a right-click
+download menu matching image previews. Closing,
 removing or deleting a preview stops playback and releases its source. Video GETs
 support single HTTP byte ranges with 206/416 responses after authorization, and
 PostgreSQL substring queries return only requested bytes to the application.
 Responses retain private/no-store and nosniff headers. Videos are not routed
 through WebRTC/LiveKit or recorded from live calls.
+
+Channel/DM delete confirmations show message text and attachment filenames so
+attachment-only messages have a meaningful preview. Account message management
+also returns attachment metadata and uses the same deletion preview formatter.
 
 Attachment regressions cover parser limits/signatures, quota transaction order
 and failure, private-download permissions, and isolated migration cleanup. The

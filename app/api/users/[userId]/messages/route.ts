@@ -42,6 +42,7 @@ export async function GET(
       .select({
         id: messages.id,
         text: messages.content,
+        attachments: messages.attachments,
         createdAt: messages.createdAt,
         channelName: channels.name,
         serverName: servers.name,

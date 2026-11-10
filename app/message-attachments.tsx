@@ -93,9 +93,20 @@ export function ImagePreview({
   );
 }
 
-function VideoPlayer({ src, name }: { src: string; name: string }) {
+function VideoPlayer({
+  src,
+  name,
+  thumbnail = false,
+  onContextMenu,
+}: {
+  src: string;
+  name: string;
+  thumbnail?: boolean;
+  onContextMenu?: (event: React.MouseEvent<HTMLVideoElement>) => void;
+}) {
   const player = useRef<HTMLVideoElement>(null);
   const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
     const element = player.current;
     if (element) element.src = src;
@@ -107,17 +118,21 @@ function VideoPlayer({ src, name }: { src: string; name: string }) {
   }, [src]);
   return (
     <>
+      {!thumbnail && loading && !failed && <p role="status">Loading video…</p>}
       <video
         ref={player}
         src={src}
-        className="attachmentVideo"
-        controls
+        className={thumbnail ? "attachmentVideoThumbnail" : "attachmentVideo"}
+        controls={!thumbnail}
+        muted={thumbnail}
         preload="metadata"
         playsInline
         aria-label={`Video: ${name}`}
         onError={() => setFailed(true)}
+        onLoadedMetadata={() => setLoading(false)}
+        onContextMenu={onContextMenu}
       />
-      {failed && (
+      {failed && !thumbnail && (
         <p className="attachmentVideoError" role="alert">
           This video could not be played. Its codec may not be supported by your
           browser, or access may have changed.
@@ -131,10 +146,12 @@ export function VideoPreview({
   src,
   name,
   onClose,
+  onContextMenu,
 }: {
   src: string;
   name: string;
   onClose: () => void;
+  onContextMenu?: (event: React.MouseEvent<HTMLVideoElement>) => void;
 }) {
   return (
     <SettingsModal
@@ -144,7 +161,12 @@ export function VideoPreview({
       onClose={onClose}
     >
       <div className="attachmentPreviewStage">
-        <VideoPlayer key={src} src={src} name={name} />
+        <VideoPlayer
+          key={src}
+          src={src}
+          name={name}
+          onContextMenu={onContextMenu}
+        />
       </div>
     </SettingsModal>
   );
@@ -198,9 +220,15 @@ export function MessageAttachments({
     };
   }, [downloadMenu]);
   const row = useRef<HTMLDivElement>(null);
-  const images =
-    files?.filter((file) => !file.expired && file.type.startsWith("image/")) ??
-    [];
+  const media =
+    files?.filter(
+      (file) =>
+        !file.expired &&
+        (file.type.startsWith("image/") || file.type.startsWith("video/")),
+    ) ?? [];
+  const mediaLabel = media.some((file) => file.type.startsWith("video/"))
+    ? "attachments"
+    : "pictures";
   useLayoutEffect(() => {
     const element = row.current;
     if (!element) return;
@@ -212,7 +240,7 @@ export function MessageAttachments({
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [deleted, images.length]);
+  }, [deleted, media.length]);
   if (deleted || !files?.length) return null;
   const preview = files.find(
     (file) =>
@@ -225,9 +253,9 @@ export function MessageAttachments({
       file.type.startsWith("video/"),
   );
   const visible =
-    images.length > Math.min(2, capacity)
+    media.length > Math.min(2, capacity)
       ? Math.min(2, Math.max(0, capacity - 1))
-      : images.length;
+      : media.length;
   function openDownloadMenu(event: React.MouseEvent, file: MessageAttachment) {
     event.preventDefault();
     event.stopPropagation();
@@ -247,10 +275,16 @@ export function MessageAttachments({
         className={`attachmentThumbnail ${overflow ? "attachmentOverflow" : ""}`}
         aria-label={
           overflow
-            ? `View all ${images.length} pictures (${overflow} more)`
+            ? `View all ${media.length} ${mediaLabel} (${overflow} more)`
             : `Preview ${file.name}`
         }
-        onClick={() => (overflow ? setGallery(true) : setPreviewId(file.id))}
+        onClick={() =>
+          overflow
+            ? setGallery(true)
+            : file.type.startsWith("video/")
+              ? setVideoPreviewId(file.id)
+              : setPreviewId(file.id)
+        }
         onContextMenu={(event) => {
           if (overflow) {
             event.preventDefault();
@@ -259,12 +293,27 @@ export function MessageAttachments({
           } else openDownloadMenu(event, file);
         }}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={`/api/attachments/${file.id}`}
-          alt={file.name}
-          loading="lazy"
-        />
+        {file.type.startsWith("video/") ? (
+          <>
+            <VideoPlayer
+              src={`/api/attachments/${file.id}`}
+              name={file.name}
+              thumbnail
+            />
+            {!overflow && (
+              <span className="attachmentVideoPlay" aria-hidden="true">
+                ▶
+              </span>
+            )}
+          </>
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/api/attachments/${file.id}`}
+            alt={file.name}
+            loading="lazy"
+          />
+        )}
         {overflow > 0 && <span>+{overflow}</span>}
       </button>
     );
@@ -279,42 +328,11 @@ export function MessageAttachments({
               <span title={file.name}>{file.name}</span> · Attachment expired
             </p>
           ))}
-        {files
-          .filter((file) => !file.expired && file.type.startsWith("video/"))
-          .map((file) => (
-            <div
-              className="messageAttachment messageVideoAttachment"
-              key={file.id}
-            >
-              <VideoPlayer
-                src={`/api/attachments/${file.id}`}
-                name={file.name}
-              />
-              <div className="attachmentFileRow">
-                <FileDetails file={file} />
-                <button
-                  type="button"
-                  className="attachmentOpenVideo"
-                  aria-label={`Preview ${file.name}`}
-                  onClick={(event) => {
-                    event.currentTarget
-                      .closest(".messageVideoAttachment")
-                      ?.querySelector("video")
-                      ?.pause();
-                    setVideoPreviewId(file.id);
-                  }}
-                >
-                  Open video
-                </button>
-                <DownloadAttachment file={file} />
-              </div>
-            </div>
-          ))}
-        {images.length > 0 && (
+        {media.length > 0 && (
           <div className="attachmentImageRow" ref={row}>
-            {images.slice(0, visible).map((file) => thumbnail(file))}
-            {visible < images.length &&
-              thumbnail(images[visible], images.length - visible)}
+            {media.slice(0, visible).map((file) => thumbnail(file))}
+            {visible < media.length &&
+              thumbnail(media[visible], media.length - visible)}
           </div>
         )}
         {files
@@ -347,16 +365,18 @@ export function MessageAttachments({
             </div>
           ))}
       </div>
-      {gallery && images.length > 0 && (
+      {gallery && media.length > 0 && (
         <SettingsModal
-          title="Pictures"
-          closeLabel="Close pictures"
+          title={mediaLabel === "pictures" ? "Pictures" : "Attachments"}
+          closeLabel={
+            mediaLabel === "pictures" ? "Close pictures" : "Close attachments"
+          }
           className="attachmentGalleryModal"
           onClose={() => setGallery(false)}
         >
           <div className="attachmentGalleryViewport">
             <div className="attachmentGalleryGrid">
-              {images.map((file) => thumbnail(file))}
+              {media.map((file) => thumbnail(file))}
             </div>
           </div>
         </SettingsModal>
@@ -376,6 +396,7 @@ export function MessageAttachments({
           src={`/api/attachments/${videoPreview.id}`}
           name={videoPreview.name}
           onClose={() => setVideoPreviewId(null)}
+          onContextMenu={(event) => openDownloadMenu(event, videoPreview)}
         />
       )}
       {downloadMenu &&
@@ -387,7 +408,11 @@ export function MessageAttachments({
             ref={menu}
             className="messageContextMenu imageDownloadMenu"
             role="menu"
-            aria-label="Picture actions"
+            aria-label={
+              downloadMenu.file.type.startsWith("video/")
+                ? "Video actions"
+                : "Picture actions"
+            }
             style={{ left: downloadMenu.x, top: downloadMenu.y }}
             onContextMenu={(event) => {
               event.preventDefault();
@@ -400,7 +425,9 @@ export function MessageAttachments({
               download={downloadMenu.file.name}
               onClick={() => setDownloadMenu(null)}
             >
-              Download picture
+              {downloadMenu.file.type.startsWith("video/")
+                ? "Download video"
+                : "Download picture"}
             </a>
           </div>,
           downloadMenu.parent,

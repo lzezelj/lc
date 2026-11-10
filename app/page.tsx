@@ -75,7 +75,10 @@ import {
   readHistoryWindow,
   reconcileRecoveredHistory,
 } from "./history-recovery";
-import type { MessageAttachment } from "./attachment-types";
+import {
+  messageDeletionPreview,
+  type MessageAttachment,
+} from "./attachment-types";
 import { ServerInvites } from "./server-invites";
 import { ServerLeaveConfirmation } from "./server-leave-confirmation";
 import { useServerInvitations } from "./use-server-invitations";
@@ -238,6 +241,7 @@ type AccountMessage = {
   serverId: string;
   id: string;
   text: string;
+  attachments?: MessageAttachment[];
   createdAt: string;
   channelName: string;
   serverName: string;
@@ -5296,13 +5300,16 @@ export default function Home() {
                   className="messageDeleteButton"
                   type="button"
                   onClick={() =>
-                    requestMessageDeletion(message.id, message.text)
+                    requestMessageDeletion(
+                      message.id,
+                      messageDeletionPreview(message),
+                    )
                   }
                 >
                   Delete
                 </button>
               </div>
-              <p>{message.text}</p>
+              <p>{messageDeletionPreview(message)}</p>
               {accountMenuOpen && deleteMessageCandidate?.id === message.id && (
                 <div className="settingsDangerZone">
                   <p>Delete this message?</p>
@@ -6049,7 +6056,7 @@ export default function Home() {
             }
           />
           <span>
-            Delete completely
+            Delete permanently
             <small>
               Permanently removes the message from both histories. This cannot
               be undone.
@@ -6276,7 +6283,7 @@ export default function Home() {
           onClick={() =>
             requestMessageDeletion(
               messageMenu.message.id,
-              messageMenu.message.text,
+              messageDeletionPreview(messageMenu.message),
               messageMenu.conversationUserId,
               messageMenu.message.deleted,
             )
@@ -6807,7 +6814,7 @@ export default function Home() {
                   }
                 />
                 <span>
-                  Delete completely
+                  Delete permanently
                   <small>
                     Permanently removes the database row and disconnects replies
                     from this message. This cannot be undone.

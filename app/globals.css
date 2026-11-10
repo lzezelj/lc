@@ -1892,11 +1892,9 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .pendingImage { display: block; flex: 0 0 64px; width: 64px; height: 64px; object-fit: contain; border-radius: 6px 0 0 6px; background: #111724; }
 .pendingVideo { display: block; width: 64px; height: 64px; object-fit: contain; background: #111724; }
 .attachmentVideo { display: block; width: 100%; max-height: 320px; border-radius: 8px; object-fit: contain; background: #080b11; }
-.messageVideoAttachment { width: min(480px, 100%); }
 .attachmentVideoError { color: var(--muted); font-size: 12px; }
 .attachmentExpired { max-width: 100%; margin: 4px 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .attachmentPreviewStage .attachmentVideo { height: min(64dvh, 680px); max-height: none; }
-.attachmentOpenVideo { flex-shrink: 0; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: #252b3b; color: var(--ink); }
 .pendingAttachments span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 8px; font-size: 12px; }
 .chat .pendingAttachments button { padding: 4px 8px; background: transparent; }
 .chat .pendingAttachments .pendingImageButton { flex: 0 0 64px; width: 64px; height: 64px; padding: 0; border: 0; border-radius: 6px 0 0 6px; overflow: hidden; }
@@ -1912,7 +1910,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .attachmentDownload:hover { background: #2b3b59; border-color: #5975a5; }
 .attachmentDownload:focus-visible, .attachmentThumbnail:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
 .attachmentThumbnail { position: relative; display: block; width: 100%; padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #101520; cursor: zoom-in; }
-.attachmentThumbnail img { display: block; width: 100%; height: 180px; object-fit: contain; border-radius: 0; }
+.attachmentThumbnail img, .attachmentThumbnail .attachmentVideoThumbnail { display: block; width: 100%; height: 180px; object-fit: contain; border-radius: 0; pointer-events: none; }
+.attachmentVideoPlay { position: absolute; inset: 0; display: grid; place-items: center; color: white; font-size: 28px; text-shadow: 0 2px 8px #000; pointer-events: none; }
 .attachmentPreviewModal { width: min(1040px, calc(100vw - 32px)); padding: 20px; }
 .attachmentPreviewModal > header { margin-bottom: 16px; }
 .attachmentPreviewModal h2 { font-size: 18px; }
@@ -1966,7 +1965,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .attachmentGalleryViewport { width: min(680px, calc(100vw - 92px), calc(100dvh - 160px)); aspect-ratio: 1; overflow-y: auto; overscroll-behavior: contain; }
 .attachmentGalleryGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .attachmentGalleryGrid .attachmentThumbnail { aspect-ratio: 1; width: 100%; }
-.attachmentGalleryGrid .attachmentThumbnail img { height: 100%; }
+.attachmentGalleryGrid .attachmentThumbnail img, .attachmentGalleryGrid .attachmentVideoThumbnail { height: 100%; }
 .userAvatar { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%; overflow: hidden; background: #345780; color: #fff; font-size: 14px; font-weight: 600; vertical-align: middle; }
 .userAvatar img { width: 100%; height: 100%; object-fit: cover; }
 .userAvatar.avatarWithPlaceholder { display: inline-grid; place-items: center; }
@@ -2446,6 +2445,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 .deletionConfirmation blockquote {
+  white-space: pre-wrap;
   max-height: 100px;
   margin: 0;
   padding: 10px 12px;

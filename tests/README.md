@@ -172,7 +172,8 @@ mounted media elements, immediate resizing, and mobile reduced-motion behavior.
 video container/type limits, private byte-range responses and invalid ranges.
 `node tests/direct-webrtc.browser.mjs --video-attachments` records a tiny silent
 canvas clip locally and checks desktop/mobile video drafts, playback, preview
-windows, download controls and deletion/expiry cleanup under React Strict Mode;
+windows, picture-style video thumbnails, mixed galleries, context-menu downloads
+and deletion/expiry cleanup under React Strict Mode;
 all browser audio remains muted.
 
 `npm.cmd run test:soundboard` also checks sample-accurate mono/stereo WAV trimming,

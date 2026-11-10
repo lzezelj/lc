@@ -214,16 +214,20 @@ window.verifyVideoAttachments = async () => {
     );
     inline.src = url;
     check(
-      inline.controls && !inline.autoplay && inline.preload === "metadata",
-      "Sent clips use explicit playback and metadata preload",
+      !inline.controls &&
+        inline.muted &&
+        !inline.autoplay &&
+        inline.preload === "metadata" &&
+        inline.closest(".attachmentThumbnail") &&
+        !host.querySelector(".attachmentFileRow"),
+      "Sent videos use the same thumbnail layout as pictures without inline controls or file details",
     );
     await loaded(inline);
-    await inline.play();
     const open = host.querySelector('[aria-label="Preview clip.webm"]');
     open.focus();
     open.click();
     await wait();
-    check(inline.paused, "Opening the larger player pauses the inline player");
+    check(inline.paused, "The thumbnail remains paused when its preview opens");
     dialog = document.querySelector(".attachmentPreviewModal[open]");
     preview = dialog.querySelector("video");
     preview.src = url;
@@ -235,10 +239,19 @@ window.verifyVideoAttachments = async () => {
           dialog.getBoundingClientRect().width,
       "Video window stays inside desktop/mobile viewport",
     );
+    preview.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 100,
+        clientY: 100,
+      }),
+    );
+    await wait();
     check(
-      host.querySelector(".attachmentDownload").getAttribute("href") ===
+      dialog.querySelector(".imageDownloadMenu a").getAttribute("href") ===
         "/api/attachments/video-test?download=1",
-      "Video download uses the authorized attachment endpoint",
+      "Video preview shares the picture download menu and authorized attachment endpoint",
     );
     render(
       h(MessageAttachments, {
@@ -278,6 +291,36 @@ window.verifyVideoAttachments = async () => {
         !host.querySelector(".attachmentDownload") &&
         !host.querySelector("video"),
       "Expired attachments retain a label without playback or download",
+    );
+    const mixed = [
+      { id: "photo-test", name: "photo.png", type: "image/png", size: 1 },
+      ...metadata,
+      { ...metadata[0], id: "second-video", name: "second.webm" },
+    ];
+    render(h(MessageAttachments, { key: "mixed", files: mixed }));
+    await wait();
+    host.querySelector(".attachmentOverflow").click();
+    await wait();
+    const gallery = document.querySelector(".attachmentGalleryModal");
+    check(
+      gallery.querySelectorAll(".attachmentThumbnail img").length === 1 &&
+        gallery.querySelectorAll(".attachmentVideoThumbnail").length === 2,
+      "Pictures and videos share the same overflow gallery",
+    );
+    gallery.querySelector('[aria-label="Preview clip.webm"]').click();
+    await wait();
+    check(
+      document.querySelector(".attachmentPreviewModal video")?.controls,
+      "A gallery video opens the full player",
+    );
+    render(
+      h(MessageAttachments, { key: "mixed", files: mixed, deleted: true }),
+    );
+    check(
+      !document.querySelector(
+        ".attachmentGalleryModal, .attachmentPreviewModal",
+      ),
+      "Deleting mixed media closes the gallery and player",
     );
     return {
       stagedVideo: true,

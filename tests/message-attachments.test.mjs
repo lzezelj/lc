@@ -7,6 +7,37 @@ import ts from "typescript";
 import * as limits from "../app/attachment-types.ts";
 import { attachmentRange } from "../server/attachment-range.ts";
 
+test("delete confirmations identify attachment-only messages and retain captions and all filenames", () => {
+  const photo = {
+    id: "photo",
+    name: "holiday.png",
+    type: "image/png",
+    size: 1,
+  };
+  const video = {
+    id: "video",
+    name: "holiday.mp4",
+    type: "video/mp4",
+    size: 1,
+  };
+  assert.equal(
+    limits.messageDeletionPreview({ text: "", attachments: [photo] }),
+    "holiday.png",
+  );
+  assert.equal(
+    limits.messageDeletionPreview({ text: "  ", attachments: [video] }),
+    "holiday.mp4",
+  );
+  assert.equal(
+    limits.messageDeletionPreview({
+      text: "Our trip",
+      attachments: [photo, video],
+    }),
+    "Our trip\nholiday.png\nholiday.mp4",
+  );
+  assert.equal(limits.messageDeletionPreview({ text: "Hello" }), "Hello");
+});
+
 async function moduleAt(path, deps) {
   const exports = {};
   vm.runInNewContext(
