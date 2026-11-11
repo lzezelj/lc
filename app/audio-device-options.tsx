@@ -13,6 +13,7 @@ export function AudioDeviceOptions({
   onMicrophoneVolumeChange,
   onOutputVolumeChange,
   mode = "both",
+  controls = "all",
 }: {
   outputs: MediaDeviceOption[];
   outputId: string;
@@ -23,10 +24,11 @@ export function AudioDeviceOptions({
   onMicrophoneVolumeChange: (value: number) => void;
   onOutputVolumeChange: (value: number) => void;
   mode?: "input" | "output" | "both";
+  controls?: "all" | "devices" | "levels";
 }) {
   return (
     <div className="audioDeviceOptions">
-      {mode !== "input" && (
+      {mode !== "input" && controls !== "levels" && (
         <DeviceSelection
           label="Headphones / speakers"
           devices={outputs}
@@ -40,7 +42,7 @@ export function AudioDeviceOptions({
           }
         />
       )}
-      {mode !== "output" && (
+      {mode !== "output" && controls !== "devices" && (
         <label>
           Microphone volume: {microphoneVolume}%
           <input
@@ -54,7 +56,7 @@ export function AudioDeviceOptions({
           />
         </label>
       )}
-      {mode !== "input" && (
+      {mode !== "input" && controls !== "devices" && (
         <label>
           Output volume: {outputVolume}%
           <input

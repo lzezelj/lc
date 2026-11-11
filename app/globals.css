@@ -972,7 +972,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .soundboardVolume { display: flex; align-items: center; gap: 8px; }
 .soundboardVolume label { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; font-size: 11px; }
 .soundboardVolume input { min-width: 0; width: 100%; accent-color: #83aef2; }
-.soundboardVolume .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (hover: none) { .soundboardClipActions { opacity: 1; pointer-events: auto; } }
 .workspace .voiceDock > .deviceControl { position: fixed; bottom: var(--audio-controls-bottom); z-index: 19; }
 .workspace .voiceDock > .deviceControl:first-of-type { left: calc(var(--rail-width) + var(--sidebar-width) - 188px); width: 60px; height: 40px; }
@@ -1333,6 +1333,15 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .videoCard:fullscreen > :not(video):not(.streamInfo):not(.streamVolume) { display: none !important; }
 .videoCard:fullscreen > .streamInfo { top: 12px; right: 12px; left: auto; }
 .videoCard:fullscreen .streamSummary { display: none; }
+.fullscreenExit { display: none; }
+.cameraMirrorControl, .videoCard:fullscreen .fullscreenExit { align-items: center; justify-content: center; padding: 7px 12px; border: 1px solid #71829d; border-radius: 6px; background: #23344f; color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
+.cameraMirrorControl[aria-pressed="true"] { background: #345780; border-color: #91b5ed; }
+.videoCard:fullscreen > .streamInfo { display: flex; align-items: center; gap: 12px; }
+.friendRow > .statusAvatar { display: inline-flex; flex: 0 0 36px; width: 36px; height: 36px; }
+.friendRow .statusAvatar > .userAvatar { flex: 0 0 36px; width: 36px; height: 36px; }
+.friendRow > .friendConversationLink { text-align: left; }
+.soundboardIndicator { color: #d3a2ff; font-weight: 800; }
+.videoCard:fullscreen .fullscreenExit { display: inline-flex; }
 .videoCard:fullscreen .streamInfoTrigger { display: inline-flex; align-items: center; justify-content: center; }
 .videoCard:fullscreen .streamInfo:hover .streamInfoTooltip,
 .videoCard:fullscreen .streamInfo:focus-within .streamInfoTooltip { display: grid; gap: 4px; }
@@ -1591,6 +1600,33 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .audioDeviceOptions > details > label, .audioDeviceOptions > details > small { margin: 10px; }
 .settingsDeviceChoices > label { margin: 10px; }
 .deviceSelection { min-width: 0; padding: 8px; }
+.deviceToggleSettings > button { display: flex; width: 100%; box-sizing: border-box; text-align: left; justify-content: flex-start; }
+.reorderDragHandle { display: inline-flex; align-items: center; justify-content: center; width: 24px; min-height: 28px; padding: 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: grab; touch-action: none; flex-shrink: 0; }
+.reorderDragHandle:active { cursor: grabbing; }
+.reorderDragHandle:disabled { opacity: .35; cursor: default; }
+.reorderDragHandle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[data-reorder-list] { position: relative; transition: translate 160ms ease; }
+.serverScroller, .channelSidebar nav, .channelManager { overflow-anchor: none; }
+[data-reorder-list][style*="--reorder-offset"] { translate: 0 var(--reorder-offset); }
+.serverButtonWrap[style*="--reorder-offset"] .serverTooltip, .serverButtonWrap[data-reorder-settling] .serverTooltip { display: none; }
+[data-reorder-dragging] { z-index: 4; filter: drop-shadow(0 5px 8px #0006); transition: none; }
+[data-reorder-drop]::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: #7da7ff; pointer-events: none; z-index: 3; }
+[data-reorder-drop="before"]::after { top: 0; }
+[data-reorder-drop="after"]::after { bottom: 0; }
+.serverButtonWrap > [data-reorder-icon] { touch-action: none; }
+.channelRow > .reorderDragHandle, .voiceChannel > .reorderDragHandle { position: absolute; right: 10px; top: 4px; z-index: 1; opacity: 0; pointer-events: none; }
+.channelRow:hover > .reorderDragHandle, .voiceChannel:hover > .reorderDragHandle, .channelRow:focus-within > .reorderDragHandle, .voiceChannel:focus-within > .reorderDragHandle, [data-reorder-dragging] > .reorderDragHandle { opacity: 1; pointer-events: auto; }
+.channelRow:hover > .channel, .voiceChannel:hover > .channel { background: #252b3b; color: #fff; }
+.managedChannel .reorderDragHandle { opacity: 0; pointer-events: none; }
+.managedChannel:hover .reorderDragHandle, .managedChannel:focus-within .reorderDragHandle, .managedChannel[data-reorder-dragging] .reorderDragHandle { opacity: 1; pointer-events: auto; }
+.channelRow:hover > .reorderDragHandle:disabled, .voiceChannel:hover > .reorderDragHandle:disabled, .managedChannel:hover .reorderDragHandle:disabled { opacity: .35; }
+.channelRow:has(> .reorderDragHandle) > .channel, .voiceChannel:has(> .reorderDragHandle) > .channel { padding-right: 44px; }
+.voiceChannel:has(> .reorderDragHandle):has(> .openCallView) > .channel { padding-right: 82px; }
+.voiceChannel:has(> .reorderDragHandle) > .openCallView { right: 42px; }
+@media (hover: none) { .channelRow > .reorderDragHandle, .voiceChannel > .reorderDragHandle, .managedChannel .reorderDragHandle { opacity: 1; pointer-events: auto; } }
+@media (prefers-reduced-motion: reduce) { [data-reorder-list] { transition: none; } }
+.reorderError { color: #f5a5a5; font-size: 12px; overflow-wrap: anywhere; }
+.deviceDropdown > .rnnoiseToggle { margin: 8px; }
 .deviceSelection > label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
 .deviceSelection select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: #171d2b; color: var(--ink); font: inherit; }
 .deviceSelection .deviceSelectionNote { display: block; margin-top: 8px; font-size: 11px; color: var(--muted); }
@@ -2543,6 +2579,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 .serverPicture.userAvatar { border-radius: 10px; flex-shrink: 0; }
+.pendingServerInvitations .serverPicture.userAvatar { flex: 0 0 36px; width: 36px; height: 36px; gap: 0; }
+.pendingServerInvitations .serverPicture > .avatarInitial { display: block; }
 .workspaceButton:has(> .serverPicture) { padding: 0; }
 .workspaceButton > .serverPicture { width: 100%; height: 100%; border-radius: inherit; background: transparent; color: inherit; font: inherit; }
 .serverPictureSettings .userAvatar, .serverPictureSettings .profileCropResult canvas { border-radius: 12px; }

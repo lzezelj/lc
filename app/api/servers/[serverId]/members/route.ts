@@ -272,9 +272,18 @@ export async function DELETE(
       { error: "The member's role changed. Refresh and try again." },
       { status: 409 },
     );
+  const [removedFrom] = await db
+    .select({ name: servers.name })
+    .from(servers)
+    .where(eq(servers.id, serverId));
   await disconnectUserEverywhere(
     body.userId,
     groupChannels.map((channel) => channel.id),
+    {
+      reason: "server-kicked",
+      serverId,
+      serverName: removedFrom?.name ?? "the server",
+    },
   );
   return NextResponse.json({ id: body.userId });
 }
@@ -428,7 +437,12 @@ export async function POST(
     );
   await Promise.allSettled(
     [session.user.id, ...result.invited].map((userId) =>
-      notifyUser(userId, { type: "server-invitations-changed" }),
+      notifyUser(userId, {
+        type: "server-invitations-changed",
+        ...(userId !== session.user.id
+          ? { notification: "server-invite", serverId }
+          : {}),
+      }),
     ),
   );
   return NextResponse.json(

@@ -6,6 +6,7 @@ import {
   type ParticipantAudio,
 } from "./participant-audio";
 import type { VoicePolicy } from "./voice-policy";
+import { takeVoiceToggle } from "./voice-toggle-cooldown";
 
 export function VoiceParticipantMenu({
   x,
@@ -19,6 +20,8 @@ export function VoiceParticipantMenu({
   onAudioChange,
   serverPolicy,
   onServerChange,
+  showVoiceActions = true,
+  children,
 }: {
   x: number;
   y: number;
@@ -31,6 +34,8 @@ export function VoiceParticipantMenu({
   onAudioChange?: (patch: Partial<ParticipantAudio>) => void;
   serverPolicy?: VoicePolicy;
   onServerChange?: (patch: VoicePolicy) => Promise<void>;
+  showVoiceActions?: boolean;
+  children?: React.ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const [moving, setMoving] = useState(false);
@@ -38,6 +43,7 @@ export function VoiceParticipantMenu({
     [error, setError] = useState("");
   async function moderate(patch: VoicePolicy) {
     if (!onServerChange || saving) return;
+    if (!takeVoiceToggle()) return;
     setSaving(true);
     setError("");
     try {
@@ -123,73 +129,80 @@ export function VoiceParticipantMenu({
               {error && <small role="alert">{error}</small>}
             </div>
           )}
-          <button
-            className="danger"
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              onClose();
-              onKick();
-            }}
-          >
-            Kick
-          </button>
-          <div
-            className={`voiceMoveItem ${openLeft ? "openLeft" : ""}`}
-            onPointerEnter={() => setMoving(true)}
-            onPointerLeave={() => setMoving(false)}
-            onFocus={() => setMoving(true)}
-            onBlur={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node))
-                setMoving(false);
-            }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              aria-haspopup="menu"
-              aria-expanded={moving}
-              disabled={!channels.length}
-              onClick={() => setMoving(true)}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowRight") {
-                  setMoving(true);
-                  requestAnimationFrame(() =>
-                    root.current
-                      ?.querySelector<HTMLButtonElement>(
-                        ".voiceMoveMenu button",
-                      )
-                      ?.focus(),
-                  );
-                }
-              }}
-            >
-              Move <span aria-hidden="true">›</span>
-            </button>
-            {moving && channels.length > 0 && (
-              <div
-                className="messageContextMenu voiceMoveMenu"
-                role="menu"
-                aria-label="Move to voice channel"
+          {showVoiceActions && (
+            <>
+              <button
+                className="danger"
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onClose();
+                  onKick();
+                }}
               >
-                {channels.map((channel) => (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    key={channel.id}
-                    onClick={() => {
-                      onClose();
-                      onMove(channel.id);
-                    }}
+                Kick
+              </button>
+              <div
+                className={`voiceMoveItem ${openLeft ? "openLeft" : ""}`}
+                onPointerEnter={() => setMoving(true)}
+                onPointerLeave={() => setMoving(false)}
+                onFocus={() => setMoving(true)}
+                onBlur={(event) => {
+                  if (
+                    !event.currentTarget.contains(event.relatedTarget as Node)
+                  )
+                    setMoving(false);
+                }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={moving}
+                  disabled={!channels.length}
+                  onClick={() => setMoving(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === "ArrowRight") {
+                      setMoving(true);
+                      requestAnimationFrame(() =>
+                        root.current
+                          ?.querySelector<HTMLButtonElement>(
+                            ".voiceMoveMenu button",
+                          )
+                          ?.focus(),
+                      );
+                    }
+                  }}
+                >
+                  Move <span aria-hidden="true">›</span>
+                </button>
+                {moving && channels.length > 0 && (
+                  <div
+                    className="messageContextMenu voiceMoveMenu"
+                    role="menu"
+                    aria-label="Move to voice channel"
                   >
-                    {channel.name}
-                  </button>
-                ))}
+                    {channels.map((channel) => (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        key={channel.id}
+                        onClick={() => {
+                          onClose();
+                          onMove(channel.id);
+                        }}
+                      >
+                        {channel.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </>
       )}
+      {children}
     </div>
   );
 }

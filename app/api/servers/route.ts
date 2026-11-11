@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, gt, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { db } from "../../../db";
@@ -21,6 +21,7 @@ export async function GET() {
       id: servers.id,
       name: servers.name,
       image: servers.image,
+      afkChannelId: servers.afkChannelId,
       role: serverMembers.role,
       joinSoundId: serverMembers.joinSoundId,
       voiceMuted: serverMembers.voiceMuted,
@@ -35,6 +36,11 @@ export async function GET() {
         isNull(users.disabledAt),
         or(isNull(users.expiresAt), gt(users.expiresAt, new Date())),
       ),
+    )
+    .orderBy(
+      asc(serverMembers.position),
+      asc(serverMembers.joinedAt),
+      asc(servers.id),
     );
   return NextResponse.json(result);
 }
@@ -62,7 +68,17 @@ export async function POST(request: Request) {
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
       },
     );
-  const body = (await request.json()) as { name?: string };
+  const body = (await request.json().catch(() => null)) as {
+    name?: string;
+    createAfk?: boolean;
+  } | null;
+  if (!body || typeof body.name !== "string")
+    return NextResponse.json(
+      { error: "Server name is required" },
+      { status: 400 },
+    );
+  if (body.createAfk !== undefined && typeof body.createAfk !== "boolean")
+    return NextResponse.json({ error: "Invalid AFK option" }, { status: 400 });
   const name = body.name?.trim();
   if (!name || name.length > 60)
     return NextResponse.json(
@@ -94,7 +110,19 @@ export async function POST(request: Request) {
       { id: textChannelId, serverId, name: "general", type: "text" },
       { serverId, name: "Lounge", type: "voice_direct" },
     ]);
-    return true;
+    let afkChannelId: string | null = null;
+    if (body.createAfk) {
+      const [afk] = await tx
+        .insert(channels)
+        .values({ serverId, name: "AFK", type: "voice_group" })
+        .returning({ id: channels.id });
+      await tx
+        .update(servers)
+        .set({ afkChannelId: afk.id })
+        .where(eq(servers.id, serverId));
+      afkChannelId = afk.id;
+    }
+    return { afkChannelId };
   });
   if (!created)
     return NextResponse.json(
@@ -102,7 +130,13 @@ export async function POST(request: Request) {
       { status: 403 },
     );
   return NextResponse.json(
-    { id: serverId, name, role: "owner", firstChannelId: textChannelId },
+    {
+      id: serverId,
+      name,
+      role: "owner",
+      firstChannelId: textChannelId,
+      afkChannelId: created.afkChannelId,
+    },
     { status: 201 },
   );
 }
@@ -111,7 +145,88 @@ export async function PATCH(request: Request) {
   const session = await auth();
   if (!session || session.user.role === "demo")
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  const body = (await request.json()) as { serverId?: string; name?: string };
+  const body = (await request.json().catch(() => null)) as {
+    serverId?: string;
+    name?: string;
+    afkChannelId?: string | null;
+    createAfk?: boolean;
+  } | null;
+  if (!body)
+    return NextResponse.json(
+      { error: "Invalid server settings" },
+      { status: 400 },
+    );
+  if (body.createAfk !== undefined && typeof body.createAfk !== "boolean")
+    return NextResponse.json({ error: "Invalid AFK option" }, { status: 400 });
+  if (Object.hasOwn(body, "afkChannelId") || body.createAfk === true) {
+    const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+    if (
+      typeof body.serverId !== "string" ||
+      !uuid.test(body.serverId) ||
+      (body.afkChannelId !== null &&
+        body.afkChannelId !== undefined &&
+        (typeof body.afkChannelId !== "string" ||
+          !uuid.test(body.afkChannelId)))
+    )
+      return NextResponse.json(
+        { error: "Invalid AFK channel" },
+        { status: 400 },
+      );
+    const limit = checkRateLimit(
+      `server-mutation:${session.user.id}`,
+      rateLimits.serverMutation,
+    );
+    if (!limit.allowed)
+      return NextResponse.json(
+        { error: "Too many server changes. Try again shortly." },
+        {
+          status: 429,
+          headers: { "Retry-After": String(limit.retryAfterSeconds) },
+        },
+      );
+    const result = await db.transaction(async (tx) => {
+      const [owner] = await tx
+        .select({ id: servers.id })
+        .from(servers)
+        .where(
+          and(
+            eq(servers.id, body.serverId!),
+            eq(servers.createdBy, session.user.id),
+          ),
+        )
+        .for("update");
+      if (!owner) return null;
+      let afkChannelId = body.afkChannelId ?? null;
+      if (body.createAfk) {
+        const [channel] = await tx
+          .insert(channels)
+          .values({ serverId: owner.id, name: "AFK", type: "voice_group" })
+          .returning({ id: channels.id });
+        afkChannelId = channel.id;
+      } else if (afkChannelId) {
+        const [channel] = await tx
+          .select({ type: channels.type })
+          .from(channels)
+          .where(
+            and(eq(channels.id, afkChannelId), eq(channels.serverId, owner.id)),
+          )
+          .for("update");
+        if (!channel || channel.type !== "voice_group") return null;
+      }
+      await tx
+        .update(servers)
+        .set({ afkChannelId })
+        .where(eq(servers.id, owner.id));
+      return { id: owner.id, afkChannelId };
+    });
+    if (!result)
+      return NextResponse.json(
+        { error: "Server or AFK group channel not found" },
+        { status: 403 },
+      );
+    await notifyServer(result.id);
+    return NextResponse.json(result);
+  }
   const name = body.name?.trim();
   if (!body.serverId || !name || name.length > 60)
     return NextResponse.json(

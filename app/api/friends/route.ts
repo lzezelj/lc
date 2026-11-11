@@ -143,7 +143,11 @@ export async function POST(request: Request) {
     await db
       .insert(friendships)
       .values({ requesterId: session.user.id, recipientId: target.id });
-    await notifyUser(target.id, { type: "friendship-changed" });
+    await notifyUser(target.id, {
+      type: "friendship-changed",
+      notification: "friend-request",
+      fromUserId: session.user.id,
+    });
     return NextResponse.json({ id: target.id }, { status: 201 });
   }
   if (!body.userId || !body.action)
@@ -189,7 +193,11 @@ export async function POST(request: Request) {
         { error: "Friend request not found" },
         { status: 404 },
       );
-    await notifyUser(body.userId, { type: "friendship-changed" });
+    await notifyUser(body.userId, {
+      type: "friendship-changed",
+      notification: "friend-accepted",
+      fromUserId: session.user.id,
+    });
     return NextResponse.json({ id: body.userId, status: "accepted" });
   }
   if (body.action === "decline") {

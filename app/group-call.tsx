@@ -16,6 +16,9 @@ import { DeviceMenu, MediaDeviceOption } from "./device-menu";
 import { StreamInfo, fullscreenVideoTile } from "./stream-info";
 import { StreamVolume } from "./stream-volume";
 import { SoundboardButton, useSoundboard } from "./soundboard";
+import { takeVoiceToggle } from "./voice-toggle-cooldown";
+import { CameraMirrorControl } from "./camera-mirror";
+import { CameraMirrorProcessor } from "./camera-processing";
 import {
   applyRemoteAudioVolume,
   participantGain,
@@ -119,6 +122,8 @@ type GroupCallProps = {
   onCameraChange: (deviceId: string) => void;
   onConnectionChange: (present: boolean) => void;
   onMediaStateChange: (state: {
+    microphoneSpeaking?: boolean;
+    soundboard?: boolean;
     muted: boolean;
     camera: boolean;
     screen: boolean;
@@ -277,7 +282,20 @@ export function GroupCall({
   const ownServerPolicy = serverPolicy ?? roomPolicies[currentUserId ?? ""];
   const deafened = clientDeafened || Boolean(ownServerPolicy?.voiceDeafened);
   const forcedMuted = voiceBlocked(ownServerPolicy);
+  const [userMuted, setMuted] = useState(initialMuted);
+  const muted = userMuted || deafened || forcedMuted;
   const soundboard = useSoundboard(channelId, {
+    onPlayingChange: (playing) => {
+      soundPlaying.current = playing;
+      if (roomRef.current)
+        onMediaStateChange({
+          muted: mutedRef.current,
+          camera: !cameraOffRef.current,
+          screen: screenSharing,
+          speaking: localSpeaking.current,
+        });
+    },
+    microphoneMuted: muted,
     serverId,
     outputVolume: outputVolume * 100,
     outputId,
@@ -297,8 +315,6 @@ export function GroupCall({
   const [joined, setJoined] = useState(false);
   const [joinAttempted, setJoinAttempted] = useState(false);
   const [joining, setJoining] = useState(false);
-  const [userMuted, setMuted] = useState(initialMuted);
-  const muted = userMuted || deafened || forcedMuted;
   const [cameraOff, setCameraOff] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
   const [screenShareOptionsOpen, setScreenShareOptionsOpen] = useState(false);
@@ -390,6 +406,7 @@ export function GroupCall({
   const speakingReleaseTimer = useRef<number | null>(null);
   const localSpeaking = useRef(false);
   const soundSpeaking = useRef(false);
+  const soundPlaying = useRef(false);
   const onConnectionChangeRef = useRef(onConnectionChange);
   const audioCallbacks = useRef({
     onError,
@@ -403,6 +420,8 @@ export function GroupCall({
     reportMediaState({
       ...state,
       speaking: state.speaking || soundSpeaking.current,
+      soundboard: soundPlaying.current,
+      microphoneSpeaking: state.speaking,
     });
   }
   useEffect(() => {
@@ -1037,6 +1056,7 @@ export function GroupCall({
     if (deafened || forcedMuted) return;
     const room = roomRef.current;
     if (!room) return;
+    if (!takeVoiceToggle()) return;
     const previousMuted = mutedRef.current;
     const nextMuted = !previousMuted;
     mutedRef.current = nextMuted;
@@ -1090,6 +1110,7 @@ export function GroupCall({
       await room.localParticipant.setCameraEnabled(
         cameraOff,
         {
+          processor: new CameraMirrorProcessor(),
           ...(cameraId ? { deviceId: cameraId } : {}),
           resolution: {
             ...cameraResolutions[cameraResolution],
@@ -1506,14 +1527,17 @@ export function GroupCall({
         <DeviceMenu
           kind="camera"
           extraOptions={
-            onCameraResolutionChange ? (
-              <CameraResolutionSelection
-                resolution={cameraResolution}
-                onChange={onCameraResolutionChange}
-                frameRate={cameraFrameRate}
-                onFrameRateChange={onCameraFrameRateChange}
-              />
-            ) : undefined
+            <>
+              {onCameraResolutionChange ? (
+                <CameraResolutionSelection
+                  resolution={cameraResolution}
+                  onChange={onCameraResolutionChange}
+                  frameRate={cameraFrameRate}
+                  onFrameRateChange={onCameraFrameRateChange}
+                />
+              ) : undefined}
+              <CameraMirrorControl />
+            </>
           }
           unavailable={!joined || joining}
           disabled={cameraOff}

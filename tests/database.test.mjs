@@ -12,8 +12,411 @@ import * as schema from "../db/schema.ts";
 import * as attachmentTypes from "../app/attachment-types.ts";
 import * as emojiCatalog from "../app/emoji-catalog.ts";
 import { attachmentRange } from "../server/attachment-range.ts";
+import { moveRelative } from "../lib/list-order.ts";
 
 const { Client } = pg;
+
+test("channel moves are owner-only within Text/Voice; server order is private to the signed-in account and new items append", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const [owner, member, mod, first, second, third] = Array.from(
+      { length: 6 },
+      () => randomUUID(),
+    );
+    await database.insert(schema.users).values([
+      { id: owner, name: "Owner" },
+      { id: member, name: "Member" },
+      { id: mod, name: "Moderator" },
+    ]);
+    await database.insert(schema.servers).values([
+      { id: first, name: "First", createdBy: owner },
+      { id: second, name: "Second", createdBy: owner },
+      { id: third, name: "Private", createdBy: owner },
+    ]);
+    await database.insert(schema.serverMembers).values([
+      { userId: owner, serverId: first, role: "owner", position: 0 },
+      { userId: owner, serverId: second, role: "owner", position: 1 },
+      { userId: member, serverId: first, position: 0 },
+      { userId: member, serverId: second, position: 1 },
+      { userId: mod, serverId: first, role: "mod" },
+    ]);
+    const [a, b, c, voiceA, voiceB, foreign] = await database
+      .insert(schema.channels)
+      .values([
+        { serverId: first, name: "Text A", type: "text", position: 0 },
+        { serverId: first, name: "Text B", type: "text", position: 1 },
+        { serverId: first, name: "Text C", type: "text", position: 2 },
+        { serverId: first, name: "Voice A", type: "voice_direct", position: 0 },
+        { serverId: first, name: "Voice B", type: "voice_group", position: 1 },
+        { serverId: third, name: "Foreign", type: "text" },
+      ])
+      .returning();
+    let actor = owner,
+      allowed = true;
+    const events = [];
+    const databaseProxy = new Proxy(database, {
+      get(target, key) {
+        if (key === "transaction") return (run) => run(database);
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const load = async (path, prefix) => {
+      const exports = {};
+      const dependencies = {
+        "drizzle-orm": orm,
+        "next/server": { NextResponse: { json: Response.json } },
+        "node:crypto": { randomUUID },
+        [`${prefix}auth`]: {
+          auth: async () =>
+            actor ? { user: { id: actor, role: "member" } } : null,
+        },
+        [`${prefix}db`]: { db: databaseProxy },
+        [`${prefix}db/schema`]: schema,
+        [`${prefix}server/notify-user`]: {
+          notifyUser: async (userId, event) => events.push({ userId, event }),
+        },
+        [`${prefix}server/rate-limit`]: {
+          rateLimits: { serverMutation: {} },
+          checkRateLimit: () => ({ allowed, retryAfterSeconds: 2 }),
+        },
+        [`${prefix}server/notify-server`]: {},
+        [`${prefix}server/remove-channel-media`]: {},
+        [`${prefix}server/disconnect-user`]: {},
+        "../../../../../../lib/list-order": { moveRelative },
+        "../../../../lib/list-order": { moveRelative },
+      };
+      vm.runInNewContext(
+        ts.transpile(await readFile(new URL(path, import.meta.url), "utf8"), {
+          module: ts.ModuleKind.CommonJS,
+          target: ts.ScriptTarget.ES2022,
+        }),
+        {
+          exports,
+          Response,
+          require: (name) => {
+            assert.ok(name in dependencies, name);
+            return dependencies[name];
+          },
+        },
+      );
+      return exports;
+    };
+    const channelOrder = await load(
+      "../app/api/servers/[serverId]/channels/order/route.ts",
+      "../../../../../../",
+    );
+    const serverOrder = await load(
+      "../app/api/servers/order/route.ts",
+      "../../../../",
+    );
+    const serverList = await load("../app/api/servers/route.ts", "../../../");
+    const channelList = await load(
+      "../app/api/servers/[serverId]/channels/route.ts",
+      "../../../../../",
+    );
+    const request = (body) =>
+      new Request("http://local/order", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    const context = { params: Promise.resolve({ serverId: first }) };
+    const moveChannel = (channelId, targetId = a.id, placement = "before") =>
+      channelOrder.POST(request({ channelId, targetId, placement }), context);
+    const channels = async () =>
+      await (
+        await channelList.GET(new Request("http://local/channels"), context)
+      ).json();
+    const servers = async () =>
+      (await (await serverList.GET()).json()).map((row) => row.id);
+    actor = null;
+    assert.equal((await moveChannel(a.id)).status, 401);
+    actor = member;
+    assert.equal((await moveChannel(a.id)).status, 403);
+    actor = mod;
+    assert.equal((await moveChannel(a.id)).status, 403);
+    actor = owner;
+    assert.equal((await moveChannel(foreign.id)).status, 404);
+    assert.equal((await moveChannel(a.id, b.id, "sideways")).status, 400);
+    assert.equal((await moveChannel(a.id, voiceA.id)).status, 400);
+    assert.equal((await moveChannel(a.id, foreign.id)).status, 404);
+    assert.equal(events.length, 0);
+    assert.equal((await moveChannel(c.id, a.id)).status, 200);
+    let rows = await channels();
+    assert.deepEqual(
+      rows.filter((row) => row.type === "text").map((row) => row.id),
+      [c.id, a.id, b.id],
+    );
+    assert.deepEqual(
+      rows.filter((row) => row.type !== "text").map((row) => row.id),
+      [voiceA.id, voiceB.id],
+    );
+    assert.equal(
+      (await moveChannel(voiceA.id, voiceB.id, "after")).status,
+      200,
+    );
+    rows = await channels();
+    assert.deepEqual(
+      rows.filter((row) => row.type !== "text").map((row) => row.id),
+      [voiceB.id, voiceA.id],
+    );
+    assert.equal((await moveChannel(a.id)).status, 200); // First in Text stays first.
+    assert.deepEqual(
+      [...new Set(events.map((event) => event.userId))].sort(),
+      [owner, member, mod].sort(),
+    );
+    assert.ok(
+      events.every(
+        ({ event }) =>
+          event.type === "channel-order-updated" && event.serverId === first,
+      ),
+    );
+    const [added] = await database
+      .insert(schema.channels)
+      .values({ serverId: first, name: "New text", type: "text" })
+      .returning();
+    assert.equal(
+      (await channels()).filter((row) => row.type === "text").at(-1).id,
+      added.id,
+    );
+    actor = member;
+    events.length = 0;
+    assert.equal(
+      (
+        await serverOrder.POST(
+          request({
+            serverId: second,
+            targetId: first,
+            placement: "before",
+            userId: owner,
+          }),
+        )
+      ).status,
+      200,
+    );
+    assert.deepEqual(await servers(), [second, first]);
+    assert.ok(
+      events.every(
+        ({ userId, event }) =>
+          userId === member && event.type === "server-order-updated",
+      ),
+    );
+    actor = owner;
+    assert.deepEqual(await servers(), [first, second]);
+    actor = member;
+    assert.equal(
+      (
+        await serverOrder.POST(
+          request({ serverId: third, targetId: first, placement: "before" }),
+        )
+      ).status,
+      403,
+    );
+    await database
+      .insert(schema.serverMembers)
+      .values({ userId: member, serverId: third });
+    assert.deepEqual(await servers(), [second, first, third]);
+    allowed = false;
+    assert.equal(
+      (
+        await serverOrder.POST(
+          request({ serverId: first, targetId: second, placement: "before" }),
+        )
+      ).status,
+      429,
+    );
+    actor = owner;
+    assert.equal((await moveChannel(a.id)).status, 429);
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
+test("AFK channel references clear on channel deletion and do not prevent server cascades", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const owner = randomUUID(),
+      server = randomUUID(),
+      channel = randomUUID(),
+      replacement = randomUUID();
+    await client.query("INSERT INTO users(id,name) VALUES($1,'AFK owner')", [
+      owner,
+    ]);
+    await client.query(
+      "INSERT INTO servers(id,name,created_by) VALUES($1,'AFK test',$2)",
+      [server, owner],
+    );
+    await client.query(
+      "INSERT INTO channels(id,server_id,name,type) VALUES($1,$2,'AFK','voice_group')",
+      [channel, server],
+    );
+    await client.query("UPDATE servers SET afk_channel_id=$1 WHERE id=$2", [
+      channel,
+      server,
+    ]);
+    await client.query("DELETE FROM channels WHERE id=$1", [channel]);
+    assert.equal(
+      (
+        await client.query("SELECT afk_channel_id FROM servers WHERE id=$1", [
+          server,
+        ])
+      ).rows[0].afk_channel_id,
+      null,
+    );
+    await client.query(
+      "INSERT INTO channels(id,server_id,name,type) VALUES($1,$2,'AFK','voice_group')",
+      [replacement, server],
+    );
+    await client.query("UPDATE servers SET afk_channel_id=$1 WHERE id=$2", [
+      replacement,
+      server,
+    ]);
+    await client.query("DELETE FROM servers WHERE id=$1", [server]);
+    assert.equal(
+      (
+        await client.query("SELECT id FROM channels WHERE server_id=$1", [
+          server,
+        ])
+      ).rowCount,
+      0,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
+test("AFK creation returns the destination immediately; settings require the owner and a same-server group channel", async () => {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const owner = randomUUID(),
+      outsider = randomUUID(),
+      serverId = randomUUID(),
+      otherServer = randomUUID();
+    await database.insert(schema.users).values([
+      { id: owner, name: "Owner" },
+      { id: outsider, name: "Outsider" },
+    ]);
+    await database.insert(schema.servers).values([
+      { id: serverId, name: "AFK server", createdBy: owner },
+      { id: otherServer, name: "Other", createdBy: owner },
+    ]);
+    const [group, text, foreign] = await database
+      .insert(schema.channels)
+      .values([
+        { serverId, name: "Group", type: "voice_group" },
+        { serverId, name: "Text", type: "text" },
+        { serverId: otherServer, name: "Foreign", type: "voice_group" },
+      ])
+      .returning();
+    let actor = owner;
+    const events = [],
+      route = {};
+    const db = new Proxy(database, {
+      get(target, key) {
+        if (key === "transaction") return (run) => run(database);
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const dependencies = {
+      "node:crypto": { randomUUID },
+      "drizzle-orm": orm,
+      "next/server": { NextResponse: { json: Response.json } },
+      "../../../auth": {
+        auth: async () => ({ user: { id: actor, role: "member" } }),
+      },
+      "../../../db": { db },
+      "../../../db/schema": schema,
+      "../../../server/notify-server": {
+        notifyServer: async (id) => events.push(id),
+      },
+      "../../../server/disconnect-user": {},
+      "../../../server/rate-limit": {
+        rateLimits: { serverMutation: {} },
+        checkRateLimit: () => ({ allowed: true }),
+      },
+    };
+    vm.runInNewContext(
+      ts.transpile(
+        await readFile(
+          new URL("../app/api/servers/route.ts", import.meta.url),
+          "utf8",
+        ),
+        { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+      ),
+      { exports: route, Response, require: (name) => dependencies[name] },
+    );
+    const save = (options) =>
+      route.PATCH(
+        new Request("http://local/servers", {
+          method: "PATCH",
+          body: JSON.stringify({ serverId, ...options }),
+        }),
+      );
+    actor = outsider;
+    assert.equal((await save({ createAfk: true })).status, 403);
+    actor = owner;
+    for (const afkChannelId of [text.id, foreign.id, "invalid"])
+      assert.ok([400, 403].includes((await save({ afkChannelId })).status));
+    assert.equal(events.length, 0);
+    assert.equal((await save({ afkChannelId: group.id })).status, 200);
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.servers)
+          .where(orm.eq(schema.servers.id, serverId))
+      )[0].afkChannelId,
+      group.id,
+    );
+    const created = await (await save({ createAfk: true })).json();
+    const [destination] = await database
+      .select()
+      .from(schema.channels)
+      .where(orm.eq(schema.channels.id, created.afkChannelId));
+    assert.equal(destination.serverId, serverId);
+    assert.equal(destination.type, "voice_group");
+    assert.equal((await save({ afkChannelId: null })).status, 200);
+    assert.equal(events.length, 3);
+    const creation = await route.POST(
+      new Request("http://local/servers", {
+        method: "POST",
+        body: JSON.stringify({ name: "New AFK server", createAfk: true }),
+      }),
+    );
+    assert.equal(creation.status, 201);
+    const server = await creation.json();
+    assert.ok(server.afkChannelId);
+    const [newAfk] = await database
+      .select()
+      .from(schema.channels)
+      .where(orm.eq(schema.channels.id, server.afkChannelId));
+    assert.equal(newAfk.serverId, server.id);
+    assert.equal(newAfk.type, "voice_group");
+    assert.equal(
+      (
+        await database
+          .select()
+          .from(schema.servers)
+          .where(orm.eq(schema.servers.id, serverId))
+      )[0].afkChannelId,
+      null,
+    );
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
 
 test("moderator migration extends only server roles and preserves ordinary account roles", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
@@ -498,6 +901,13 @@ test("pending server invitations grant access only on recipient acceptance and i
     await issue();
     const [accepted] = await list();
     assert.equal((await act(accepted.id, "accept")).status, 200);
+    const confirmation = events.filter(({ event }) => event.notice);
+    assert.equal(confirmation.length, 1);
+    assert.equal(confirmation[0].id, owner);
+    assert.match(
+      confirmation[0].event.notice,
+      /accepted your invitation to Invitation test/,
+    );
     assert.equal((await channels()).status, 200);
     assert.deepEqual(await list(), []);
     assert.equal((await act(accepted.id, "accept")).status, 404);

@@ -388,6 +388,9 @@ async function fixture({
     },
     [`${prefix}server/notify-server`]: { notifyServer: async () => {} },
     [`${prefix}server/notify-user`]: { notifyUser: async () => {} },
+    [`${prefix}server/profile-pictures`]: {
+      profileAudience: async () => new Set([me]),
+    },
   };
   const exports = {};
   vm.runInNewContext(

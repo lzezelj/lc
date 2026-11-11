@@ -125,6 +125,22 @@ export function MessageComposer({
   onTyping?: (active: boolean) => void;
 }) {
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const restoreFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (busy) {
+      restoreFocus.current =
+        document.activeElement === textarea.current ||
+        !!textarea.current?.form?.contains(document.activeElement);
+    } else if (restoreFocus.current && !disabled) {
+      if (
+        document.activeElement === document.body ||
+        document.activeElement === textarea.current ||
+        textarea.current?.form?.contains(document.activeElement)
+      )
+        textarea.current?.focus();
+      restoreFocus.current = false;
+    }
+  }, [busy, disabled]);
   const picker = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<{ file: File; url: string } | null>(
@@ -408,9 +424,14 @@ export function MessageComposer({
           }
           placeholder={placeholder}
           aria-label={placeholder}
-          disabled={disabled || busy}
+          disabled={disabled}
+          readOnly={busy}
           maxLength={4000}
           onKeyDown={(event) => {
+            if (busy) {
+              if (event.key === "Enter") event.preventDefault();
+              return;
+            }
             if (mentionOpen && !event.nativeEvent.isComposing) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();

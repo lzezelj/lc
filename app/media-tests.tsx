@@ -14,6 +14,7 @@ import {
 import { microphoneProcessing, prepareVoiceActivity } from "./voice-activity";
 import { applyCallOutput } from "./audio-output";
 import { revealSettingsSection } from "./settings-reveal";
+import { useCameraMirror } from "./camera-mirror";
 
 export function MediaTests({
   microphoneId,
@@ -24,6 +25,7 @@ export function MediaTests({
   outputId = "",
   deafened = false,
   audioDevices,
+  audioLevels,
   cameraDevices,
 }: {
   microphoneId: string;
@@ -34,9 +36,11 @@ export function MediaTests({
   outputId?: string;
   deafened?: boolean;
   audioDevices?: ReactNode;
+  audioLevels?: ReactNode;
   cameraDevices?: ReactNode;
 }) {
   const [threshold, setThreshold] = useState(readVoiceThreshold);
+  const cameraMirrored = useCameraMirror();
   const [micTesting, setMicTesting] = useState(false);
   const [cameraTesting, setCameraTesting] = useState(false);
   const [level, setLevel] = useState(-80);
@@ -163,6 +167,7 @@ export function MediaTests({
         <h4>Audio</h4>
         {audioDevices}
         <MicrophoneModeSelector />
+        {audioLevels}
         <EchoCancellationToggle />
         <small>
           Echo cancellation reduces speaker sound returning through the
@@ -253,6 +258,7 @@ export function MediaTests({
           </button>
           {cameraTesting && (
             <video
+              style={{ transform: cameraMirrored ? "scaleX(-1)" : undefined }}
               className="settingsCameraPreview"
               onLoadedMetadata={() =>
                 revealSettingsSection(cameraSection.current)

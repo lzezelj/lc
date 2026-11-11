@@ -414,6 +414,35 @@ shared-server membership before returning private/no-store, PNG-only/nosniff
 bytes. A targeted `profile-updated` user event updates current friend/member
 metadata and invalidates server snapshots without clearing message history or
 restarting calls. Other tabs of the same account also refresh session metadata.
+Username changes use the same authorized profile audience and event, updating
+All users, friend selections and voice presence immediately. The signaling service
+updates connected account identities so subsequent presence packets retain the
+new name. Picture-only events preserve names and name-only events preserve pictures.
+
+Personal audio and owner-only server mute/deafen use the shared participant menu
+in both voice lists and All users. Microphone/deafen actions and equivalent menu
+toggles share a 750 ms browser cooldown before side effects. Server policy remains
+enforced by the existing authenticated owner-only API and SFU permissions.
+Camera mirroring is a saved browser preference shared across direct, group and
+settings previews. Camera device/resolution/frame-rate dropdowns are adjacent,
+with the Mirror camera toggle below them; all use sibling shared DeviceSelection
+wrappers so their controls have matching widths and horizontal edges. Microphone
+menus and audio settings likewise place device/processing dropdowns before volume
+and on/off controls. This changes layout without changing saved media preferences.
+A camera-only canvas processor mirrors the outgoing pixels
+for both native WebRTC and LiveKit, so receivers and local previews see the same
+orientation. The LiveKit capture processor follows SDK restart/destroy lifecycle;
+native capture owns both raw and processed tracks and releases both on stop.
+Resolution/FPS constraints target the raw camera, and rendering follows source
+frames with a maximum capture rate of 60 fps. Live toggles require no room rejoin
+or screen-track replacement. Screen capture never enters the processor. Canvas
+processing adds browser rendering work and can be throttled on suspended tabs.
+The shared fullscreen helper toggles exit on double-click, and every fullscreen
+tile exposes an Exit fullscreen button through its stream information overlay.
+The device permission prompt disappears once microphone and camera access are
+granted; denied/revoked permission remains actionable. Sending keeps the composer
+focused, and the existing Friends sidebar button becomes Back to Friends while
+a direct conversation is selected.
 
 ### Server pictures and pending invitations
 
@@ -421,6 +450,10 @@ Server settings → Overview lets the server owner upload, crop or remove a serv
 picture using the shared picture editor. The server rail and pending server
 invitations show that picture, falling back to the server initial. Pending friend
 requests and server invitations are grouped into Incoming and Outgoing sections.
+Successful recipient acceptance sends a named confirmation toast to the inviter
+through the existing post-commit invitation event, without notifying unrelated
+members with the inviter's confirmation text. Pending invitation avatars use a
+fixed-size server picture, preserving the image/placeholder overlay.
 Leaving a server requires confirmation before the existing membership-removal API
 is called; cancellation leaves membership and active calls intact.
 
@@ -598,6 +631,17 @@ production infrastructure is introduced. Exact count queries are appropriate for
 the private project; large histories/membership fan-out would need profiling and
 potential aggregation before scaling.
 
+Incoming friend requests/acceptances, server invitations/acceptances, direct
+messages, server messages/mentions and live kick notices can play a local
+synthesized notification cue. New social events carry explicit notification
+metadata so inbox refresh, decline, cancellation and reconnect snapshots stay
+silent. Message IDs deduplicate workspace/mention delivery. DND, deafen and the
+applicable persisted server/person notification mute suppress cues; message/mention
+preferences are checked separately. Cues use main output volume and a 350 ms
+browser-storage cooldown coalesces bursts and multiple tabs. They never enter
+published call tracks. Browser autoplay restrictions still require an initial
+user interaction to unlock local audio.
+
 Typing `@` in a server composer lists other active server members, filtered by
 display name or unique handle. Mouse, Arrow keys, Enter and Tab select a handle;
 Escape dismisses completion. Full display names can also be typed directly;
@@ -740,7 +784,10 @@ fetches and playback permits but does not stop an already playing clip or erase
 downloaded bytes/local previews from another browser.
 
 Each sender plays one clip at a time through a Web Audio destination independent
-of microphone capture, processing and mute. Direct WebRTC reserves a third audio
+of microphone capture and processing. Effective microphone mute (including deafen
+and server policy) stops the sender's active soundboard publication and blocks
+new public playback, including join sounds; private previews remain available.
+Direct WebRTC reserves a third audio
 transceiver (microphone, screen, soundboard) using the same silent-slot technique
 as screen audio. Microphone device replacement explicitly excludes both auxiliary
 senders. The persistent CallMediaProvider owns a separate soundboard audio element.
@@ -750,7 +797,8 @@ and mute apply to all incoming soundboard tracks, multiply main output gain and
 respect Deafen, independently of the media panel. The same settings apply to
 sender playback and previews through dedicated local audio elements owned by the
 call hook. They remain mounted independently of the dropup. Soundboard settings
-are session/call UI state. Zero-volume group tracks also disable their native
+persist in browser storage and synchronize across mounted call hooks, navigation,
+reconnects and tabs. Zero-volume group tracks also disable their native
 receiver track before attachment and when muted, preventing LiveKit's initial
 Web Audio gain fade from leaking part of a short clip. Nonzero volume reopens
 the same receiver without detaching playback. This also makes Deafen and hidden
@@ -760,8 +808,14 @@ Natural completion, replacement, leaving and call
 changes release the source and publication. Generation checks discard obsolete
 downloads/decodes and clean up late publication results. Signaling transports no
 soundboard payloads. The published sound's audio detector combines with microphone
-activity in the existing speaking presence, including when the microphone is
-muted; preview activity is excluded. Existing room membership/token checks and revocation govern
+activity in speaking presence and separately announces a `soundboard` media-state
+flag for a distinct musical-note indicator beside the participant's name.
+That flag follows the public clip's actual playback lifecycle rather than its
+audio threshold: it remains active through silent segments and clears on natural
+completion, replacement, mute, leave or publication failure. Preview activity is excluded.
+Successful catalog uploads/deletions broadcast a targeted `soundboard-updated`
+event after the transaction commits. Clients refresh open catalogs without
+resetting conversation caches or signaling authorization. Existing room membership/token checks and revocation govern
 media access. As with microphone audio, a modified client can publish arbitrary
 audio; the clip API protects stored catalog access, not the content of RTC media.
 
@@ -877,8 +931,26 @@ call popups. Unread state and incoming invitations are retained: a pending call
 shows a quiet inline Answer/Decline banner only inside that caller's DM, including
 while in Do not disturb. Outside DND that same inline banner replaces the popup
 when the matching DM is open. Invitations still expire after 20 seconds; changing
-status affects ringing/presentation without restarting the expiry. Away is
-manually selected rather than automatic.
+status affects ringing/presentation without restarting the expiry.
+Away can be selected manually or set automatically after ten minutes without
+keyboard, pointer, touch, wheel or microphone speech activity. Activity in any
+same-browser tab resets the shared account activity timestamp. Speech is checked
+throughout an active call, separately from soundboard playback. Automatic Away
+carries a separate signaling flag, synchronized across account sockets; activity
+restores only automatic Away to Online. Manual Away, DND and Invisible remain set.
+Automatic Away is not persisted as a manual preference on reconnect.
+
+Migration `0030_server_afk` adds an optional server AFK channel reference, cleared
+when the channel is deleted. Owners may create an AFK group voice channel during
+server creation, or create/select/disable one in Server settings > Channels.
+After fifteen minutes without the same activity, a connected browser requests a
+self-move through the existing voice handoff flow. The API validates current
+membership, source/destination server, and the configured AFK destination; ordinary
+members cannot move another account or self-move elsewhere through this exception.
+The signaling service checks the active source and performs the existing session
+handoff. Returning activity restores automatic status but does not move users out
+of AFK. Browser timers can be delayed when a tab or device is suspended; AFK is a
+cooperative browser feature, not a server-side inactivity enforcement mechanism.
 Explicit friend-call hangup also sends an authenticated `call-cancel` through
 the account's presence socket before recording the outcome clears its partner.
 The receiver has not joined the media room while ringing, so room-only `hangup`
@@ -1487,8 +1559,73 @@ messages survive. After commit, signaling and LiveKit connections are revoked,
 affected peers receive deletion/presence updates, and the client signs out.
 Existing JWTs fail the normal disabled-account check. This does not edit the
 deployment allowlist: a still-allowlisted person can later register a new account.
-The Channels section supports inline renaming and confirmed deletion as well as
-creation. Deletion verifies server ownership, scopes the SQL delete to that server,
+The Channels section supports inline renaming, confirmed deletion, creation and
+drag-and-drop ordering. Channel headings in the sidebar and handles in Channels
+settings allow owners to drag within Text or Voice. Server icons can be dragged
+to change personal order. Separate arrow and context-menu movement controls are
+not provided. Servers use their icon as the drag surface without grips; channel
+grips sit inside the row and appear on hover/focus (always available on touch).
+Both surfaces support mouse, pen, touch and keyboard (Space to pick up/drop,
+arrows to choose position, Escape to cancel; Enter still opens a server).
+Touch scrolling remains available outside drag surfaces. The dragged row follows
+the pointer while neighbors slide aside; layout animations settle committed or
+canceled moves without replacing rows or media. Reduced-motion preferences
+disable transitions. Drop previews remain until React commits the saved order;
+successful drops animate only the lifted row's landing, rather than replaying
+neighbors' earlier positions. Settlement batches transform removal and final
+measurements and preserves scroll positions. Background list refreshes do not
+replay animations from stale viewport
+coordinates. Focus restoration uses preventScroll. Drag offsets stay within the
+original section bounds, edge scrolling uses the original scroll range, and
+temporarily hidden server tooltips are removed from layout so transformed rows
+cannot grow scrollable overflow.
+Insertion markers and edge scrolling guide
+drops. Vertical drops above/below the list or its scroll viewport insert at the
+start/end of the source Text/Voice section (or personal server list), including
+off-screen items. Horizontal departures, permission/scope changes and remote
+reordering cancel the gesture. Following clicks are suppressed so
+dropping does not select a chat or join voice. Existing rows and voice
+participants remain mounted.
+Migration `0031_list_order` adds nullable integer positions to channels and
+server memberships. Existing channels receive deterministic positions within
+Text and Voice sections (direct/group voice share one section), using creation
+timestamp and ID as tie-breakers. Existing memberships are ranked per account by
+join timestamp and server ID. New rows retain null positions and sort last, so
+all channel and membership creation paths append automatically; no insert
+triggers or client-only ordering are required.
+
+POST `/api/servers/{serverId}/channels/order` verifies the owner inside a
+transaction, locks the server and channel rows, places the source before/after
+a validated destination only within
+the selected section and normalizes that section's positions. Moderators and
+ordinary members cannot change the shared channel order. Channel deletion uses
+the same parent-first lock order and rechecks ownership before deleting, avoiding
+lock inversions with ordering and AFK channel removal.
+
+Every user can reorder servers by dragging. POST `/api/servers/order`
+derives identity from the session, serializes that account's ordering with a
+non-key user row lock, validates membership and updates only that user's
+membership positions. Other members' server order is unaffected. The non-key
+lock allows foreign-key checks when memberships are concurrently added.
+Both move APIs accept source ID, targetId and placement (before/after), validate
+access to both IDs, enforce a per-account 60/minute limit, and treat self-drops
+as no-ops. Each drop is one atomic transaction, regardless of distance. Only
+ordering data is changed. The pure placement helper lives in `lib/list-order.ts`
+and is shared by the route bundles and drag preview. Channel move failures return
+JSON, and clients handle empty/non-JSON error responses with a readable retry
+message instead of surfacing a JSON parser exception.
+
+After commit, channel moves emit targeted `channel-order-updated` events to
+server members; personal moves emit `server-order-updated` only to that account's
+tabs/devices. Clients reload authoritative ordered lists, ignore obsolete
+responses, update cached channel snapshots and retain selected chats and active
+voice sessions. Focus/reconnect recovers missed ordering events. Access changes
+invalidate pending order refreshes. The active text subscription depends on
+selected channel identity/type rather than the metadata array, so an order-only
+refresh does not recreate that subscription. No conversation-cache reset or global
+signaling-token invalidation is needed for a move.
+
+Deletion verifies server ownership, scopes the SQL delete to that server,
 and cascades channel messages. An authenticated internal channel-deleted event
 revokes channel permissions on existing signaling sockets, clears presence and
 closes direct peers in that channel; group deletion also removes its LiveKit room.
@@ -1729,6 +1866,11 @@ or deleting an account follows one control path:
 
 This makes removal immediate for text signaling, direct WebRTC, presence, and
 group media rather than waiting for the browser to refresh.
+Server-member kicks additionally include the server ID/name and a `server-kicked`
+reason in the authenticated `access-changed` event before sockets close. The
+browser shows a specific kick notice, leaves revoked server content, invalidates
+in-flight history and suppresses obsolete protected-fetch errors. Generic access
+changes retain their previous meaning and are never labelled as kicks.
 
 ## Public and private network boundaries
 

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
-import { channels, serverMembers } from "../../../../../db/schema";
+import { channels, serverMembers, servers } from "../../../../../db/schema";
 import { checkRateLimit, rateLimits } from "../../../../../server/rate-limit";
 
 export async function POST(
@@ -17,6 +17,7 @@ export async function POST(
     userId?: string;
     channelId?: string;
     destinationId?: string;
+    afk?: boolean;
   } | null;
   const uuid =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -24,7 +25,7 @@ export async function POST(
     ![serverId, body?.userId, body?.channelId, body?.destinationId].every(
       (value) => typeof value === "string" && uuid.test(value),
     ) ||
-    body?.userId === session.user.id ||
+    (body?.userId === session.user.id && body?.afk !== true) ||
     body?.channelId === body?.destinationId
   )
     return NextResponse.json(
@@ -40,7 +41,16 @@ export async function POST(
         eq(serverMembers.userId, session.user.id),
       ),
     );
-  if (owner?.role !== "owner")
+  const selfAfk = body?.afk === true && body.userId === session.user.id;
+  if (selfAfk) {
+    const [server] = await db
+      .select({ afkChannelId: servers.afkChannelId })
+      .from(servers)
+      .where(eq(servers.id, serverId));
+    if (!owner || server?.afkChannelId !== body!.destinationId)
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  if (!selfAfk && owner?.role !== "owner")
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const limit = checkRateLimit(
     `voice-move:${session.user.id}`,

@@ -3,6 +3,7 @@ import { RoomServiceClient } from "livekit-server-sdk";
 export async function disconnectUserEverywhere(
   userId: string,
   groupChannelIds: string[],
+  removal?: { serverId: string; serverName: string; reason: "server-kicked" },
 ) {
   const signalingUrl =
     process.env.SIGNALING_INTERNAL_URL ?? "http://localhost:3001";
@@ -15,7 +16,7 @@ export async function disconnectUserEverywhere(
         Authorization: `Bearer ${internalSecret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ userId }),
+      body: JSON.stringify({ userId, ...removal }),
     }).catch(() => undefined);
   }
 

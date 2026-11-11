@@ -55,6 +55,7 @@ test("settings previews release captures on stop, device change, close, and late
   };
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
+    "./camera-mirror": { useCameraMirror: () => false },
     "./settings-reveal": { revealSettingsSection() {} },
     "./camera-resolution": {
       cameraCaptureConstraints: (deviceId) => ({

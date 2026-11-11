@@ -14,6 +14,9 @@ const toneFrequencies = {
   undeafen: [230, 310, 390],
   "camera-on": [620, 830],
   "camera-off": [830, 620],
+  message: [740, 990],
+  request: [587, 740, 880],
+  notification: [660, 790],
 };
 
 function getAudioContext() {
@@ -32,7 +35,7 @@ export function prepareVoiceSounds() {
   if (context) void context.resume();
 }
 
-export function playVoiceSound(type: keyof typeof toneFrequencies) {
+export function playVoiceSound(type: keyof typeof toneFrequencies, volume = 1) {
   const context = getAudioContext();
   if (!context) return;
 
@@ -47,10 +50,28 @@ export function playVoiceSound(type: keyof typeof toneFrequencies) {
     oscillator.type = "sine";
     oscillator.frequency.value = frequency;
     gain.gain.setValueAtTime(0.0001, toneStart);
-    gain.gain.exponentialRampToValueAtTime(0.12, toneStart + 0.012);
+    gain.gain.exponentialRampToValueAtTime(
+      Math.max(0.0001, 0.12 * volume),
+      toneStart + 0.012,
+    );
     gain.gain.exponentialRampToValueAtTime(0.0001, toneStart + 0.13);
     oscillator.connect(gain).connect(context.destination);
     oscillator.start(toneStart);
     oscillator.stop(toneStart + 0.14);
   });
+}
+
+export function playNotificationSound(
+  type: "message" | "request" | "notification",
+  volume: number,
+) {
+  if (volume <= 0) return;
+  const now = Date.now();
+  // Coalesce bursts and avoid a chime from every tab of the same browser.
+  try {
+    if (now - Number(localStorage.getItem("lc.notificationSoundAt")) < 350)
+      return;
+    localStorage.setItem("lc.notificationSoundAt", String(now));
+  } catch {}
+  playVoiceSound(type, Math.max(0, Math.min(1, volume / 100)));
 }

@@ -3,6 +3,7 @@ import { useId, type MouseEvent } from "react";
 import { preload } from "react-dom";
 import { UnreadIndicator } from "./unread-indicator";
 import { Avatar } from "./avatar";
+import type { DragReorder } from "./drag-reorder";
 
 export function preloadServerPictures(servers: { image?: string | null }[]) {
   for (const server of servers) {
@@ -23,6 +24,7 @@ export function ServerNavButton({
   voiceUsers,
   onClick,
   onContextMenu,
+  drag,
 }: {
   server: { id: string; name: string; image?: string | null };
   active?: boolean;
@@ -31,6 +33,7 @@ export function ServerNavButton({
   voiceUsers: { userId?: string; name: string }[];
   onClick: () => void;
   onContextMenu: (event: MouseEvent<HTMLButtonElement>) => void;
+  drag?: DragReorder;
 }) {
   const tooltip = useId();
   const position = (element: HTMLElement) => {
@@ -47,13 +50,15 @@ export function ServerNavButton({
   return (
     <div
       className="serverButtonWrap"
+      {...drag?.itemProps(server.id)}
       onPointerEnter={(event) => position(event.currentTarget)}
       onFocus={(event) => position(event.currentTarget)}
     >
       <button
+        {...drag?.iconProps(server.id)}
         className={`workspaceButton ${active ? "active" : ""}`}
         aria-label={`${server.name}${unread ? ", unread messages" : ""}${mentions ? `, ${mentions} unread mentions` : ""}${voiceUsers.length ? `, ${voiceUsers.length} in voice` : ""}`}
-        aria-describedby={tooltip}
+        aria-describedby={drag ? `${tooltip} ${drag.instructionsId}` : tooltip}
         onClick={onClick}
         onContextMenu={onContextMenu}
       >

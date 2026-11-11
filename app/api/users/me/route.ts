@@ -17,6 +17,7 @@ import { disconnectUserEverywhere } from "../../../../server/disconnect-user";
 import { notifyMessageRemovals } from "../../../../server/message-removals";
 import { notifyServer } from "../../../../server/notify-server";
 import { notifyUser } from "../../../../server/notify-user";
+import { profileAudience } from "../../../../server/profile-pictures";
 
 export async function PATCH(request: Request) {
   const session = await auth();
@@ -34,6 +35,15 @@ export async function PATCH(request: Request) {
     .set({ name, updatedAt: new Date() })
     .where(eq(users.id, session.user.id))
     .returning({ id: users.id, name: users.name });
+  await Promise.allSettled(
+    [...(await profileAudience(session.user.id))].map((recipient) =>
+      notifyUser(recipient, {
+        type: "profile-updated",
+        userId: user.id,
+        name: user.name,
+      }),
+    ),
+  );
   return NextResponse.json(user);
 }
 

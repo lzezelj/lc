@@ -397,6 +397,11 @@ function historyFixture(channel = false) {
         context,
       ),
     event: (message) => {
+      context.serverOrderRequest ??= { current: 0 };
+      context.channelOrderRequests ??= { current: new Map() };
+      context.notificationSoundGate = { current: { take: () => null } };
+      context.notificationPolicyRef = { current: { enabled: true } };
+      context.deafenedRef = { current: false };
       context.incoming = { data: JSON.stringify(message) };
       vm.runInNewContext(
         ts.transpile(`(${historyCode.presenceMessage})(incoming);`),
@@ -415,6 +420,35 @@ function historyFixture(channel = false) {
       ),
   };
 }
+test("targeted ordering events refresh lists without clearing histories or changing chat/call selection", async () => {
+  const f = historyFixture();
+  const calls = [];
+  f.context.orderRefreshHandlers = {
+    current: {
+      servers: async () => calls.push("servers"),
+      channels: async (id) => calls.push(id),
+    },
+  };
+  const direct = [{ id: "direct-history" }],
+    messages = [{ id: "channel-history" }];
+  Object.assign(f.context, {
+    directMessages: direct,
+    messages,
+    selectedChannelId: "selected-channel",
+    selectedServerId: "selected-server",
+    activeVoiceChannelId: "active-call",
+  });
+  f.event({ type: "server-order-updated" });
+  f.event({ type: "channel-order-updated", serverId: "another-server" });
+  await settle();
+  assert.deepEqual(calls, ["servers", "another-server"]);
+  assert.equal(f.context.directMessages, direct);
+  assert.equal(f.context.messages, messages);
+  assert.equal(f.context.selectedChannelId, "selected-channel");
+  assert.equal(f.context.selectedServerId, "selected-server");
+  assert.equal(f.context.activeVoiceChannelId, "active-call");
+});
+
 test("direct history is eligible only in the visible friend's chat, including a matching DM call", () => {
   const visible = (values) =>
     vm.runInNewContext(historyCode.visible, {

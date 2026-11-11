@@ -29,6 +29,11 @@ function control(name, additions = {}) {
   const sounds = [],
     errors = [];
   const scope = {
+    takeVoiceToggle: () => true,
+    peerGeneration: { current: 0 },
+    cameraSource: (track) => track,
+    captureCamera: (...args) =>
+      scope.navigator.mediaDevices.getUserMedia(...args),
     microphoneMuted: false,
     deafened: false,
     voiceBlocked: (policy) =>

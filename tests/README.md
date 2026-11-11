@@ -158,6 +158,44 @@ and mobile (reduced-motion) composer and attachment-preview checks without the
 other workspace probes. Attachment checks cover filename overflow, size labels,
 separate authenticated downloads, in-app image rendering/error feedback, dialog
 bounds, focus restoration, cancellation/backdrop dismissal and message deletion.
+Composer checks also retain focus through a pending send and prevent a duplicate
+Enter submission. The headless workspace target explicitly emulates focus so
+native focus/blur assertions do not depend on another browser target being active.
+
+`tests/workspace-presence.test.mjs` covers automatic Away/manual status precedence,
+speech and same-browser-tab activity, 10/15 minute thresholds, the shared mute/deafen
+cooldown, fullscreen exit, and soundboard preferences/public playback when muted.
+Database regressions validate owner-only AFK configuration, same-server group
+destinations, the creation response, FK cleanup, and inviter-only acceptance
+confirmation. Signaling regressions cover automatic status flags and connected
+username changes surviving later presence updates. AFK timers are simulated;
+these tests do not establish browser behavior while an operating system suspends
+the tab or real multi-user LiveKit delivery after an AFK handoff.
+
+Run `node tests/direct-webrtc.browser.mjs --camera-mirror` for desktop/mobile
+camera processing checks. A generated two-color source goes through the same
+processor as native/LiveKit camera capture, then a real local WebRTC peer pair;
+remote decoded pixels verify live mirrored/unmirrored orientation. Cleanup and
+the styled control are covered without a physical camera or hosted SFU. This
+also checks that Friends avatars and profile information remain adjacent.
+Notification gate tests cover DND, deafen, scoped mutes, self-message exclusion,
+refresh silence and message/mention deduplication. Kick tests cover the delivered
+reason and immediate revocation of the displayed workspace. Soundboard lifecycle
+tests keep playback activity active through silence, replacement and completion.
+
+Run `node tests/direct-webrtc.browser.mjs --list-order` for desktop/mobile camera
+control widths, dropdown/toggle grouping, keyboard channel/server drag handles, real mouse/touch server dragging, canceled drops and click suppression, full
+section boundaries while searching, and move-error feedback. Frame-by-frame drop
+checks cover delayed saves without backward neighbor motion, stable mounted
+rows, bounded scrollable overflow, and preserved scroll position in a long server
+list. Above/below-list drops cover first/last placement, including scrolled lists;
+horizontal departures still cancel. Database tests cover
+owner-only shared channel ordering, personal server order isolation, persisted GET
+order, rate limits and new rows appending. Realtime handler tests verify ordering
+refreshes preserve chat history and current call/selection. After building, run
+`node --test tests/list-order.http.mjs` to exercise the actual bundled channel
+route over HTTP with temporary local database fixtures and authenticated
+sessions. This catches helper-export failures that isolated VM tests miss.
 
 `node tests/direct-webrtc.browser.mjs --workspace-layout` runs muted desktop/mobile
 checks for legal-document Back links, portaled device-menu visibility, the wider

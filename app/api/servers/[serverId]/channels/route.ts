@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
-import { channels, serverMembers } from "../../../../../db/schema";
+import { channels, serverMembers, servers } from "../../../../../db/schema";
 import {
   checkRateLimit,
   rateLimits,
@@ -33,7 +33,15 @@ export async function GET(
   if (!session || !(await membership(session.user.id, serverId)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   return NextResponse.json(
-    await db.select().from(channels).where(eq(channels.serverId, serverId)),
+    await db
+      .select()
+      .from(channels)
+      .where(eq(channels.serverId, serverId))
+      .orderBy(
+        asc(channels.position),
+        asc(channels.createdAt),
+        asc(channels.id),
+      ),
   );
 }
 
@@ -150,12 +158,33 @@ export async function DELETE(
     )
   )
     return NextResponse.json({ error: "Invalid channel" }, { status: 400 });
-  const [channel] = await db
-    .delete(channels)
-    .where(
-      and(eq(channels.id, body.channelId), eq(channels.serverId, serverId)),
-    )
-    .returning();
+  const channel = await db.transaction(async (tx) => {
+    // Match ordering/ownership mutations: lock the parent before channel rows.
+    const [parent] = await tx
+      .select({ id: servers.id })
+      .from(servers)
+      .where(eq(servers.id, serverId))
+      .for("update");
+    if (!parent) return null;
+    const [current] = await tx
+      .select({ role: serverMembers.role })
+      .from(serverMembers)
+      .where(
+        and(
+          eq(serverMembers.serverId, serverId),
+          eq(serverMembers.userId, session.user.id),
+        ),
+      )
+      .for("update");
+    if (current?.role !== "owner") return null;
+    const [removed] = await tx
+      .delete(channels)
+      .where(
+        and(eq(channels.id, body.channelId!), eq(channels.serverId, serverId)),
+      )
+      .returning();
+    return removed;
+  });
   if (!channel)
     return NextResponse.json({ error: "Channel not found" }, { status: 404 });
   await removeChannelMedia(serverId, channel.id, channel.type);

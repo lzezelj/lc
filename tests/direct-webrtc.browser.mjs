@@ -23,8 +23,12 @@ const notificationsOnly = process.argv.includes("--notifications");
 const workspaceLayoutOnly = process.argv.includes("--workspace-layout");
 const videoAttachmentsOnly = process.argv.includes("--video-attachments");
 const soundboardOnly = process.argv.includes("--soundboard");
+const cameraMirrorOnly = process.argv.includes("--camera-mirror");
+const listOrderOnly = process.argv.includes("--list-order");
 const panelAnimationsOnly = process.argv.includes("--panel-animations");
 const workspaceControls =
+  listOrderOnly ||
+  cameraMirrorOnly ||
   process.argv.includes("--workspace-controls") ||
   helpTourOnly ||
   messageComposerOnly ||
@@ -39,6 +43,8 @@ const workspaceControls =
 const mediaOptionsOnly =
   process.argv.includes("--media-options-only") || helpTourOnly;
 const supportedFlags = new Set([
+  "--list-order",
+  "--camera-mirror",
   "--turn",
   "--direct-ip",
   "--navigation",
@@ -188,6 +194,7 @@ if (navigation || workspaceControls) {
           "device-selection",
           "call-tile-controls",
           "camera-resolution",
+          "camera-mirror",
         ]
       : []),
   ]) {
@@ -286,6 +293,7 @@ if (navigation || workspaceControls) {
       "pending-server-invitations",
       "server-leave-confirmation",
       "channel-manager",
+      "drag-reorder",
       "message-delete-action",
       "chat-history",
       "stream-info",
@@ -299,6 +307,7 @@ if (navigation || workspaceControls) {
       "screen-audio",
       "screen-share-options",
       "camera-resolution",
+      "camera-mirror",
       "empty-state",
       "use-message-cooldown",
       "message-composer",
@@ -374,6 +383,9 @@ if (navigation || workspaceControls) {
     "voice-policy",
     "voice-permissions",
     "audio-transmission",
+    "list-order",
+    "camera-processing",
+    "voice-toggle-cooldown",
     ...(workspaceControls
       ? [
           "soundboard-audio",
@@ -409,7 +421,9 @@ if (navigation || workspaceControls) {
           new URL(
             name === "soundboard-catalog"
               ? "./sound-wave.ts"
-              : `../app/${name}.ts`,
+              : name === "list-order"
+                ? "../lib/list-order.ts"
+                : `../app/${name}.ts`,
             import.meta.url,
           ),
           "utf8",
@@ -439,7 +453,10 @@ if (navigation || workspaceControls) {
       output: { path: directory, filename: "navigation.js" },
       resolve: {
         modules: [fileURLToPath(new URL("../node_modules", import.meta.url))],
-        alias: { "../user-handle": join(directory, "user-handle.js") },
+        alias: {
+          "../user-handle": join(directory, "user-handle.js"),
+          "../lib/list-order": join(directory, "list-order.js"),
+        },
       },
     });
     compiler.run((error, stats) =>
@@ -535,6 +552,14 @@ try {
     targetId,
     flatten: true,
   });
+  if (workspaceControls) {
+    await call("Page.bringToFront", {}, sessionId);
+    await call(
+      "Emulation.setFocusEmulationEnabled",
+      { enabled: true },
+      sessionId,
+    );
+  }
   if (noiseOrigin) {
     await call("Page.enable", {}, sessionId);
     const loaded = new Promise((resolve, reject) => {
@@ -751,6 +776,8 @@ try {
   const data = result.result.value;
   if (
     messageComposerOnly ||
+    cameraMirrorOnly ||
+    listOrderOnly ||
     participantAudioOnly ||
     serverInvitationsOnly ||
     chatToolsOnly ||
@@ -776,23 +803,27 @@ try {
       const checked = await call(
         "Runtime.evaluate",
         {
-          expression: panelAnimationsOnly
-            ? "window.verifyPanelAnimations()"
-            : soundboardOnly
-              ? "window.verifySoundboard()"
-              : videoAttachmentsOnly
-                ? "window.verifyVideoAttachments()"
-                : workspaceLayoutOnly
-                  ? "window.verifyWorkspaceLayout()"
-                  : serverInvitationsOnly
-                    ? "window.verifyServerInvitations()"
-                    : participantAudioOnly
-                      ? "window.verifyParticipantAudio()"
-                      : notificationsOnly
-                        ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
-                        : chatToolsOnly
-                          ? "window.verifyChatTools()"
-                          : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          expression: listOrderOnly
+            ? "window.verifyOrderAndDeviceSettings()"
+            : cameraMirrorOnly
+              ? "window.verifyCameraMirror()"
+              : panelAnimationsOnly
+                ? "window.verifyPanelAnimations()"
+                : soundboardOnly
+                  ? "window.verifySoundboard()"
+                  : videoAttachmentsOnly
+                    ? "window.verifyVideoAttachments()"
+                    : workspaceLayoutOnly
+                      ? "window.verifyWorkspaceLayout()"
+                      : serverInvitationsOnly
+                        ? "window.verifyServerInvitations()"
+                        : participantAudioOnly
+                          ? "window.verifyParticipantAudio()"
+                          : notificationsOnly
+                            ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+                            : chatToolsOnly
+                              ? "window.verifyChatTools()"
+                              : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,
@@ -801,8 +832,190 @@ try {
       );
       if (checked.exceptionDetails)
         throw new Error(JSON.stringify(checked.exceptionDetails));
+      if (listOrderOnly) {
+        const evaluate = async (expression) => {
+          const result = await call(
+            "Runtime.evaluate",
+            { expression, awaitPromise: true, returnByValue: true },
+            sessionId,
+          );
+          if (result.exceptionDetails)
+            throw new Error(JSON.stringify(result.exceptionDetails));
+          return result.result.value;
+        };
+        for (const kind of ["servers", "channels"]) {
+          await evaluate(`window.mountDragProbe(${JSON.stringify(kind)})`);
+          if (mobile)
+            await call(
+              "Emulation.setTouchEmulationEnabled",
+              { enabled: true },
+              sessionId,
+            );
+          const drag = async (id, target, outside = false) => {
+            const baseline = await evaluate("window.dragProbe.read()");
+            const point = await evaluate(
+              `window.dragProbe.points(${JSON.stringify(id)},${JSON.stringify(target)},${!mobile})`,
+            );
+            const x = outside === true ? 380 : point.targetX,
+              y = outside === "top" ? 4 : outside ? 700 : point.targetY;
+            const checkPreview = async () => {
+              await new Promise((resolve) => setTimeout(resolve, 120));
+              const preview = await evaluate("window.dragProbe.read()");
+              assert.equal(
+                preview.scrollHeight,
+                baseline.scrollHeight,
+                "Dragging must not expand scrollable overflow",
+              );
+              assert.equal(
+                preview.grips,
+                kind === "servers" ? 0 : 3,
+                "Only channels have grips",
+              );
+              assert.equal(
+                preview.gripsInside,
+                true,
+                "Channel grips stay inside the row",
+              );
+              if (!outside)
+                assert.ok(
+                  preview.offsets.filter((value) => Math.abs(value) > 1)
+                    .length >= 2,
+                  "Dragged icon follows the pointer and neighbors slide aside",
+                );
+            };
+            if (mobile) {
+              await call(
+                "Input.dispatchTouchEvent",
+                {
+                  type: "touchStart",
+                  touchPoints: [{ x: point.x, y: point.y }],
+                },
+                sessionId,
+              );
+              await call(
+                "Input.dispatchTouchEvent",
+                { type: "touchMove", touchPoints: [{ x, y }] },
+                sessionId,
+              );
+              await checkPreview();
+              await call(
+                "Input.dispatchTouchEvent",
+                { type: "touchEnd", touchPoints: [] },
+                sessionId,
+              );
+            } else {
+              await call(
+                "Input.dispatchMouseEvent",
+                { type: "mouseMoved", x: point.x, y: point.y },
+                sessionId,
+              );
+              await call(
+                "Input.dispatchMouseEvent",
+                {
+                  type: "mousePressed",
+                  x: point.x,
+                  y: point.y,
+                  button: "left",
+                  clickCount: 1,
+                },
+                sessionId,
+              );
+              await call(
+                "Input.dispatchMouseEvent",
+                { type: "mouseMoved", x, y, button: "left", buttons: 1 },
+                sessionId,
+              );
+              await checkPreview();
+              await call(
+                "Input.dispatchMouseEvent",
+                { type: "mouseReleased", x, y, button: "left", clickCount: 1 },
+                sessionId,
+              );
+            }
+            const frames = await evaluate("window.dragProbe.watchDrop()");
+            assert.ok(
+              frames.every((frame) => frame.sameNodes),
+              "Drops preserve mounted rows",
+            );
+            assert.ok(
+              frames.every(
+                (frame) => frame.scrollHeight === baseline.scrollHeight,
+              ),
+              "Saving does not change the list's scrollable size",
+            );
+            if (!outside)
+              for (let i = 1; i < frames.length; i++)
+                assert.ok(
+                  frames[i].positions.b <= frames[i - 1].positions.b + 1.5,
+                  "Neighbors must not jump back while the order saves",
+                );
+          };
+          await drag("a", "c");
+          let probe = await evaluate("window.dragProbe.read()");
+          assert.equal(probe.order, "b,c,a");
+          assert.equal(probe.commits, 1);
+          assert.equal(probe.clicks, 0);
+          assert.equal(probe.markers, 0);
+          await drag("b", "a", true);
+          probe = await evaluate("window.dragProbe.read()");
+          assert.equal(probe.order, "b,c,a");
+          assert.equal(probe.commits, 1);
+          assert.equal(probe.clicks, 0);
+          assert.equal(probe.markers, 0);
+          await drag("a", "b", "top");
+          probe = await evaluate("window.dragProbe.read()");
+          assert.equal(
+            probe.order,
+            "a,b,c",
+            "Dropping above the list inserts first",
+          );
+          assert.equal(probe.commits, 2);
+          await drag("a", "c", "bottom");
+          probe = await evaluate("window.dragProbe.read()");
+          assert.equal(
+            probe.order,
+            "b,c,a",
+            "Dropping below the list inserts last",
+          );
+          assert.equal(probe.commits, 3);
+          await evaluate("window.dragProbe.close()");
+          if (kind === "servers") {
+            await evaluate('window.mountDragProbe("servers",true)');
+            await evaluate("window.dragProbe.scroll(120)");
+            await drag("extra-5", "extra-3");
+            const scrolled = await evaluate("window.dragProbe.read()");
+            assert.equal(
+              scrolled.scrollTop,
+              120,
+              "Saving a move preserves the user's scroll position",
+            );
+            await drag("extra-5", "extra-3", "top");
+            assert.equal(
+              (await evaluate("window.dragProbe.read()")).order.split(",")[0],
+              "extra-5",
+              "Dropping above a scrolled list reaches its absolute beginning",
+            );
+            await evaluate("window.dragProbe.scroll(120)");
+            await drag("extra-4", "extra-3", "bottom");
+            assert.equal(
+              (await evaluate("window.dragProbe.read()")).order
+                .split(",")
+                .at(-1),
+              "extra-4",
+              "Dropping below a scrolled list reaches its absolute end",
+            );
+            await evaluate("window.dragProbe.close()");
+          }
+          if (mobile)
+            await call(
+              "Emulation.setTouchEmulationEnabled",
+              { enabled: false },
+              sessionId,
+            );
+        }
+      }
       console.log(
-        `${panelAnimationsOnly ? "Panel animations" : soundboardOnly ? "Soundboard" : videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
+        `${listOrderOnly ? "List ordering" : cameraMirrorOnly ? "Camera mirror" : panelAnimationsOnly ? "Panel animations" : soundboardOnly ? "Soundboard" : videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
         JSON.stringify(checked.result.value),
       );
       if (workspaceLayoutOnly) {

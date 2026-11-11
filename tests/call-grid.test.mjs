@@ -269,6 +269,10 @@ function renderCall(state = {}, options = {}) {
     },
   };
   const Component = vm.runInNewContext(`${code}; GroupCall`, {
+    useCameraMirror: () => false,
+    CameraMirrorControl: () => null,
+    CameraMirrorProcessor: class {},
+    takeVoiceToggle: () => true,
     React: {
       createElement: (type, props, ...children) => ({
         type,
@@ -852,16 +856,25 @@ test("group soundboard publishes a named separate track and removes that same pu
   );
 });
 
-test("published soundboard activity announces speaking even with a muted microphone and clears on completion", () => {
+test("published soundboard activity announces a distinct flag and clears on completion", () => {
   const options = {};
-  const result = renderCall({ joined: true, userMuted: true }, options);
+  const result = renderCall({ joined: true, userMuted: false }, options);
   options.soundSettings.onSpeakingChange(true);
+  options.soundSettings.onPlayingChange(true);
   const active = result.events
     .filter((event) => event[0] === "media")
     .at(-1)[1];
   assert.equal(active.speaking, true);
-  assert.equal(active.muted, true);
+  assert.equal(active.muted, false);
+  assert.equal(active.soundboard, true);
+  assert.equal(active.microphoneSpeaking, false);
   options.soundSettings.onSpeakingChange(false);
+  assert.equal(
+    result.events.filter((event) => event[0] === "media").at(-1)[1].soundboard,
+    true,
+    "Silence in a clip keeps the playback indicator visible",
+  );
+  options.soundSettings.onPlayingChange(false);
   assert.equal(
     result.events.filter((event) => event[0] === "media").at(-1)[1].speaking,
     false,
@@ -899,6 +912,7 @@ test("direct speaking combines microphone and soundboard without one source clea
     {
       directMicSpeaking,
       directSoundSpeaking,
+      directSoundPlaying: { current: true },
       effectiveMutedRef: { current: true },
       stream: { current: null },
       screenSharing: false,
@@ -1130,6 +1144,7 @@ test("the direct deafen control restores the user's previous mute choice", async
         {
           microphoneMuted,
           ownVoicePolicy: {},
+          takeVoiceToggle: () => true,
           deafened,
           deafenedRef: { current: deafened },
           activeGroupChannelId: { current: "" },

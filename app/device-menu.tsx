@@ -180,12 +180,6 @@ export function DeviceMenu({
             id={panelId}
             style={placement.style}
           >
-            {kind === "microphone" && (
-              <>
-                <MicrophoneModeSelector />
-                <EchoCancellationToggle />
-              </>
-            )}
             {kind !== "headphones" && (
               <DeviceSelection
                 label={kind === "microphone" ? "Microphone" : "Camera"}
@@ -194,7 +188,9 @@ export function DeviceMenu({
                 onSelect={onSelect}
               />
             )}
+            {kind === "microphone" && <MicrophoneModeSelector />}
             {extraOptions}
+            {kind === "microphone" && <EchoCancellationToggle />}
           </div>,
           placement.parent,
         )}

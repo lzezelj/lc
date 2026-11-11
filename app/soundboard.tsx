@@ -25,7 +25,9 @@ export function useSoundboard(
     outputVolume?: number;
     outputId?: string;
     deafened?: boolean;
+    microphoneMuted?: boolean;
     onSpeakingChange?: (speaking: boolean) => void;
+    onPlayingChange?: (playing: boolean) => void;
   } = {},
 ) {
   const player = useRef<SoundPlayer | null>(null);
@@ -52,14 +54,62 @@ export function useSoundboard(
   const localAudio = useRef<HTMLAudioElement | null>(null);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const activity = useRef(options.onSpeakingChange);
+  const playback = useRef(options.onPlayingChange);
   const [openCall, setOpenCall] = useState<string | null>(null);
   const open = openCall === callId;
   const setOpen = useCallback(
     (value: boolean) => setOpenCall(value ? callId : null),
     [callId],
   );
-  const [volume, setVolume] = useState(100);
-  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(() => {
+    try {
+      const saved = localStorage.getItem("lc.soundboardVolume");
+      const value = saved === null ? 100 : Number(saved);
+      return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 100;
+    } catch {
+      return 100;
+    }
+  });
+  const [muted, setMuted] = useState(() => {
+    try {
+      return localStorage.getItem("lc.soundboardMuted") === "true";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("lc.soundboardVolume", String(volume));
+      localStorage.setItem("lc.soundboardMuted", String(muted));
+      window.dispatchEvent(new Event("lc-soundboard-preferences"));
+    } catch {}
+  }, [volume, muted]);
+  useEffect(() => {
+    const changed = () => {
+      try {
+        const saved = localStorage.getItem("lc.soundboardVolume");
+        const next = saved === null ? 100 : Number(saved);
+        setVolume(
+          Number.isFinite(next) ? Math.max(0, Math.min(100, next)) : 100,
+        );
+        setMuted(localStorage.getItem("lc.soundboardMuted") === "true");
+      } catch {}
+    };
+    window.addEventListener("lc-soundboard-preferences", changed);
+    window.addEventListener("storage", changed);
+    return () => {
+      window.removeEventListener("lc-soundboard-preferences", changed);
+      window.removeEventListener("storage", changed);
+    };
+  }, []);
+  const microphoneMuted = useRef(Boolean(options.microphoneMuted));
+  useEffect(() => {
+    microphoneMuted.current = Boolean(options.microphoneMuted);
+    if (options.microphoneMuted) {
+      player.current?.stop();
+      joinPlayer.current?.stop();
+    }
+  }, [options.microphoneMuted]);
   const cooldown = useRef(new SoundCooldown());
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [playBlocked, setPlayBlocked] = useState(false);
@@ -77,10 +127,13 @@ export function useSoundboard(
   }
   useEffect(() => {
     activity.current = options.onSpeakingChange;
+    playback.current = options.onPlayingChange;
   });
   useEffect(() => {
-    const current = new SoundPlayer((track) =>
-      monitorVoiceActivity(track, (speaking) => activity.current?.(speaking)),
+    const current = new SoundPlayer(
+      (track) =>
+        monitorVoiceActivity(track, (speaking) => activity.current?.(speaking)),
+      (playing) => playback.current?.(playing),
     );
     const localPreview = new SoundPlayer();
     player.current = current;
@@ -141,7 +194,8 @@ export function useSoundboard(
     audition = false,
   ) {
     const current = audition ? preview.current : player.current;
-    if (!current || (!audition && !reservePlay())) return;
+    if (!current || (!audition && (microphoneMuted.current || !reservePlay())))
+      return;
     await current.play(
       prepareVoiceActivity(),
       () => loadSoundAudio(serverId, clipId),
@@ -155,7 +209,12 @@ export function useSoundboard(
           const result = await permit.json();
           throw new Error(result.error ?? "The sound could not be played");
         }
+        if (microphoneMuted.current) return () => {};
         const unpublish = await publish(track);
+        if (microphoneMuted.current) {
+          unpublish();
+          return () => {};
+        }
         try {
           const stopListening = await listen(track, false);
           return () => {

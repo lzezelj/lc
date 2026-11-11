@@ -294,7 +294,7 @@ test("voice moderation persists independent flags before SFU updates and sends o
 });
 function fixture(options = {}) {
   const tables = Object.fromEntries(
-    ["channels", "serverMembers"].map((table) => [
+    ["channels", "serverMembers", "servers"].map((table) => [
       table,
       new Proxy(
         { table },
@@ -303,6 +303,9 @@ function fixture(options = {}) {
     ]),
   );
   const rows = {
+    servers: [
+      { id: serverId, afkChannelId: options.afkChannelId ?? destinationId },
+    ],
     serverMembers: [
       {
         userId: actor,
@@ -408,6 +411,22 @@ test("voice move API enforces owner, target membership, same-server voice channe
     assert.equal((await f.run(body)).status, 400);
     assert.equal(f.requests.length, 0);
   }
+});
+
+test("AFK self-moves allow ordinary members only into their server's configured channel", async () => {
+  const body = { userId: actor, channelId: sourceId, destinationId, afk: true };
+  const allowed = fixture({ owner: false });
+  assert.equal((await allowed.run(body)).status, 200);
+  assert.equal(allowed.requests[0].body.userId, actor);
+  const wrongDestination = fixture({ owner: false, afkChannelId: sourceId });
+  assert.equal((await wrongDestination.run(body)).status, 403);
+  assert.equal(wrongDestination.requests.length, 0);
+  const otherPerson = fixture({ owner: false });
+  assert.equal((await otherPerson.run({ ...body, userId })).status, 403);
+  const crossServer = fixture({ owner: false, crossServer: true });
+  assert.equal((await crossServer.run(body)).status, 404);
+  const text = fixture({ owner: false, destinationType: "text" });
+  assert.equal((await text.run(body)).status, 404);
 });
 
 test("voice move sends only the validated destination and reports delivery or capacity failures", async () => {

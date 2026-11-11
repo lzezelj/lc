@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { takeVoiceToggle } from "./voice-toggle-cooldown";
 
 import type { ParticipantAudio } from "./remote-audio-volume";
 export type { ParticipantAudio } from "./remote-audio-volume";
@@ -40,7 +41,9 @@ export function ParticipantAudioControls({
           type="button"
           role="menuitemcheckbox"
           aria-checked={value.muted}
-          onClick={() => onChange({ muted: !value.muted })}
+          onClick={() => {
+            if (takeVoiceToggle()) onChange({ muted: !value.muted });
+          }}
         >
           {value.muted ? "Unmute person" : "Mute person"}
         </button>
@@ -48,7 +51,9 @@ export function ParticipantAudioControls({
           type="button"
           role="menuitemcheckbox"
           aria-checked={Boolean(value.deafened)}
-          onClick={() => onChange({ deafened: !value.deafened })}
+          onClick={() => {
+            if (takeVoiceToggle()) onChange({ deafened: !value.deafened });
+          }}
         >
           {value.deafened ? "Undeafen person" : "Deafen person"}
         </button>

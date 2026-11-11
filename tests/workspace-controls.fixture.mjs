@@ -8,6 +8,12 @@ import {
 } from "./settings-modal.js";
 import { UserProfile } from "./user-profile.js";
 import { ChannelManager } from "./channel-manager.js";
+import {
+  useDragReorder,
+  ReorderHandle,
+  ReorderStatus,
+} from "./drag-reorder.js";
+import { moveRelative } from "./list-order.js";
 import { MessageDeleteAction } from "./message-delete-action.js";
 import { ChatHistory } from "./chat-history.js";
 import { MessageComposer } from "./message-composer.js";
@@ -16,6 +22,8 @@ import { useMessageReactions } from "./use-message-reactions.js";
 import { useTyping } from "./use-typing.js";
 import { useConversationDraft } from "./use-conversation-draft.js";
 import { Avatar } from "./avatar.js";
+import { CameraMirrorProcessor } from "./camera-processing.js";
+import { CameraMirrorControl } from "./camera-mirror.js";
 import { StatusAvatar } from "./status-avatar.js";
 import { LocallyMuted } from "./locally-muted.js";
 import { ProfilePictureSettings } from "./profile-picture-settings.js";
@@ -730,6 +738,13 @@ window.verifyServerInvitations = async () => {
         incoming.serverImage,
       "Invites show the server picture",
     );
+    const pictureBounds = host
+      .querySelector(".serverPicture")
+      .getBoundingClientRect();
+    check(
+      pictureBounds.width === 36 && pictureBounds.height === 36,
+      "Pending invitation pictures retain a fixed square size",
+    );
     button("Accept").click();
     await wait();
     check(
@@ -1013,6 +1028,504 @@ async function verifyServerPictureLoading() {
   }
 }
 
+window.verifyOrderAndDeviceSettings = async () => {
+  const host = document.createElement("section");
+  host.className = "workspace settingsModal";
+  host.style.cssText =
+    "position:fixed;inset:12px;width:auto;display:block;overflow:auto;z-index:10000;padding:12px";
+  document.body.append(host);
+  const root = createRoot(host);
+  const initial = [
+    { id: "a", name: "Text A", type: "text" },
+    { id: "voice", name: "Voice A", type: "voice_direct" },
+    { id: "b", name: "Text B", type: "text" },
+    { id: "c", name: "Text C", type: "text" },
+  ];
+  let fail = false;
+  function Fixture() {
+    const [channels, setChannels] = useState(initial),
+      [servers, setServers] = useState([
+        { id: "one", name: "One" },
+        { id: "two", name: "Two" },
+      ]);
+    const drag = useDragReorder({
+      items: servers,
+      scope: "servers",
+      onReorder: async (id, targetId, placement) =>
+        setServers((rows) => moveRelative(rows, id, targetId, placement)),
+    });
+    return h(
+      React.Fragment,
+      null,
+      h(
+        "div",
+        { className: "controls" },
+        h(DeviceMenu, {
+          kind: "camera",
+          devices: [{ deviceId: "camera", label: "Camera" }],
+          selectedId: "camera",
+          onAction() {},
+          onSelect() {},
+          extraOptions: h(
+            React.Fragment,
+            null,
+            h(CameraResolutionSelection, {
+              resolution: "720",
+              frameRate: 30,
+              onChange() {},
+              onFrameRateChange() {},
+            }),
+            h(CameraMirrorControl),
+          ),
+        }),
+        h(DeviceMenu, {
+          kind: "microphone",
+          devices: [],
+          selectedId: "",
+          onAction() {},
+          onSelect() {},
+        }),
+      ),
+      h(ChannelManager, {
+        channels,
+        onRename: async () => {},
+        onDelete: async () => {},
+        onReorder: async (target, targetId, placement) => {
+          if (fail) throw new Error("Only the server owner can move channels");
+          setChannels((rows) => {
+            const sameGroup = (row) =>
+              (row.type === "text") === (target.type === "text");
+            const moved = moveRelative(
+              rows.filter(sameGroup),
+              target.id,
+              targetId,
+              placement,
+            );
+            return [...moved, ...rows.filter((row) => !sameGroup(row))];
+          });
+        },
+      }),
+      h(
+        "div",
+        { "data-server-moves": true },
+        h(ReorderStatus, { drag }),
+        ...servers.map((server) =>
+          h(
+            "div",
+            { key: server.id, ...drag.itemProps(server.id) },
+            server.name,
+            h(ReorderHandle, { drag, id: server.id }),
+          ),
+        ),
+      ),
+      h(
+        "output",
+        { "data-server-order": true },
+        servers.map((row) => row.id).join(","),
+      ),
+    );
+  }
+  try {
+    flushSync(() => root.render(h(Fixture)));
+    host.querySelector('[aria-label="Choose camera"]').click();
+    await wait();
+    let panel = document.querySelector(".deviceDropdownPortal");
+    const selectors = [...panel.querySelectorAll("select")],
+      mirror = panel.querySelector(".cameraMirrorControl");
+    const bounds = mirror.getBoundingClientRect();
+    check(
+      selectors.length === 3 &&
+        selectors.every(
+          (select) =>
+            Math.abs(select.getBoundingClientRect().left - bounds.left) < 1 &&
+            Math.abs(select.getBoundingClientRect().width - bounds.width) < 1,
+        ),
+      "Camera dropdowns and Mirror camera share the same width and horizontal edges",
+    );
+    check(
+      selectors.every(
+        (select) =>
+          select.compareDocumentPosition(mirror) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+      "Camera dropdown settings appear together before on/off settings",
+    );
+    host.querySelector('[aria-label="Choose camera"]').click();
+    await wait();
+    host.querySelector('[aria-label="Choose microphone"]').click();
+    await wait();
+    panel = document.querySelector(".deviceDropdownPortal");
+    const toggle = panel.querySelector(".rnnoiseToggle");
+    check(
+      [...panel.querySelectorAll("select")].every(
+        (select) =>
+          select.compareDocumentPosition(toggle) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+      "Microphone dropdown settings precede on/off settings",
+    );
+    host.querySelector('[aria-label="Choose microphone"]').click();
+    await wait();
+    const key = async (name, value) => {
+      const handle = host.querySelector(
+        `[aria-label="Drag to reorder ${name}"]`,
+      );
+      handle.focus();
+      handle.dispatchEvent(
+        new KeyboardEvent("keydown", { key: value, bubbles: true }),
+      );
+      await wait();
+    };
+    check(
+      host.querySelector('[aria-label="Drag to reorder Voice A"]').disabled,
+      "Single voice channel cannot be moved",
+    );
+    check(
+      !host.querySelector('[aria-label^="Move "]'),
+      "Separate movement controls are removed",
+    );
+    await key("Text C", " ");
+    await key("Text C", "ArrowUp");
+    await key("Text C", "ArrowUp");
+    await key("Text C", " ");
+    check(
+      [...host.querySelectorAll(".managedChannelHeading strong")]
+        .map((node) => node.textContent)
+        .join(",") === "Text C,Text A,Text B,Voice A",
+      "One drop moves across multiple rows within its section",
+    );
+    await key("Text C", " ");
+    await key("Text C", "ArrowDown");
+    await key("Text C", "Escape");
+    check(
+      !host.querySelector("[data-reorder-drop]"),
+      "Escape clears insertion markers",
+    );
+    const search = host.querySelector('input[type="search"]');
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    ).set.call(search, "Text C");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await wait();
+    fail = true;
+    await key("Text C", " ");
+    await key("Text C", "ArrowDown");
+    await key("Text C", " ");
+    check(
+      host.querySelector('[role="alert"]').textContent.includes("server owner"),
+      "Failed saves are visible and retain order",
+    );
+    await key("Two", " ");
+    await key("Two", "ArrowUp");
+    await key("Two", " ");
+    check(
+      host.querySelector("[data-server-order]").textContent === "two,one",
+      "Personal server drag order saves",
+    );
+    return {
+      cameraWidths: true,
+      groupedSettings: true,
+      channelMoves: true,
+      sectionBoundaries: true,
+      searchBoundaries: true,
+      errors: true,
+      personalServerMoves: true,
+    };
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+};
+
+window.mountDragProbe = async (kind = "servers", long = false) => {
+  const host = document.createElement("section");
+  host.className = "workspace";
+  host.style.cssText =
+    "position:fixed;inset:12px;background:#181e2b;display:block;z-index:10000;padding:12px;overflow:auto";
+  document.body.append(host);
+  const root = createRoot(host);
+  let clicks = 0,
+    commits = 0;
+  function Fixture() {
+    const [rows, setRows] = useState([
+      { id: "a", name: "A" },
+      { id: "b", name: "B" },
+      { id: "c", name: "C" },
+      ...(long
+        ? Array.from({ length: 9 }, (_, index) => ({
+            id: `extra-${index + 3}`,
+            name: `Extra ${index + 3}`,
+          }))
+        : []),
+    ]);
+    const drag = useDragReorder({
+      items: rows,
+      scope: "probe",
+      onReorder: async (id, target, placement) => {
+        commits++;
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        setRows((items) => moveRelative(items, id, target, placement));
+      },
+    });
+    return h(
+      "nav",
+      {
+        className: kind === "servers" ? "serverScroller" : "",
+        style: { width: kind === "servers" ? 72 : 280, height: 220 },
+      },
+      h(ReorderStatus, { drag }),
+      ...rows.map((row) =>
+        kind === "channels"
+          ? h(
+              "div",
+              {
+                key: row.id,
+                className: "channelRow",
+                ...drag.itemProps(row.id),
+              },
+              h(ReorderHandle, { drag, id: row.id }),
+              h(
+                "button",
+                {
+                  className: "channel",
+                  ...drag.pointerProps(row.id),
+                  onClick: () => clicks++,
+                },
+                row.name,
+              ),
+            )
+          : h(ServerNavButton, {
+              key: row.id,
+              server: row,
+              drag,
+              voiceUsers: [],
+              onContextMenu: () => {},
+              onClick: () => clicks++,
+            }),
+      ),
+    );
+  }
+  flushSync(() => root.render(h(Fixture)));
+  await wait();
+  const originalRows = new Map(
+    [...host.querySelectorAll("[data-reorder-id]")].map((node) => [
+      node.dataset.reorderId,
+      node,
+    ]),
+  );
+  window.dragProbe = {
+    scroll(top) {
+      host.querySelector("nav").scrollTop = top;
+    },
+    async watchDrop() {
+      const samples = [];
+      const end = performance.now() + 350;
+      while (performance.now() < end) {
+        await new Promise(requestAnimationFrame);
+        samples.push(this.read());
+      }
+      return samples;
+    },
+    points(id, target) {
+      const row = host.querySelector(`[data-reorder-id="${id}"]`),
+        destination = host.querySelector(`[data-reorder-id="${target}"]`);
+      const from = row
+          .querySelector("[data-reorder-icon], [data-reorder-handle]")
+          .getBoundingClientRect(),
+        to = destination.getBoundingClientRect();
+      return {
+        x: from.left + from.width / 2,
+        y: from.top + from.height / 2,
+        targetX: to.left + to.width / 2,
+        targetY: to.bottom - 8,
+      };
+    },
+    read() {
+      return {
+        order: [...host.querySelectorAll("[data-reorder-id]")]
+          .map((row) => row.dataset.reorderId)
+          .join(","),
+        clicks,
+        commits,
+        positions: Object.fromEntries(
+          [...host.querySelectorAll("[data-reorder-id]")].map((row) => [
+            row.dataset.reorderId,
+            row.getBoundingClientRect().top,
+          ]),
+        ),
+        scrollHeight: host.querySelector("nav").scrollHeight,
+        scrollTop: host.querySelector("nav").scrollTop,
+        sameNodes: [...originalRows].every(
+          ([id, node]) =>
+            host.querySelector(`[data-reorder-id="${id}"]`) === node,
+        ),
+        offsets: [...host.querySelectorAll("[data-reorder-id]")].map(
+          (row) =>
+            Number.parseFloat(row.style.getPropertyValue("--reorder-offset")) ||
+            0,
+        ),
+        grips: host.querySelectorAll(".reorderDragHandle").length,
+        gripsInside: [...host.querySelectorAll(".reorderDragHandle")].every(
+          (handle) => {
+            const bounds = handle.getBoundingClientRect(),
+              row = handle.parentElement.getBoundingClientRect();
+            return bounds.left >= row.left && bounds.right <= row.right;
+          },
+        ),
+        markers: host.querySelectorAll("[data-reorder-drop]").length,
+      };
+    },
+    close() {
+      root.unmount();
+      host.remove();
+    },
+  };
+};
+
+window.verifyCameraMirror = async () => {
+  const saved = localStorage.getItem("lc.cameraMirror");
+  localStorage.setItem("lc.cameraMirror", "false");
+  const source = document.createElement("canvas");
+  source.width = 96;
+  source.height = 48;
+  const paint = () => {
+    const context = source.getContext("2d");
+    context.fillStyle = "red";
+    context.fillRect(0, 0, 48, 48);
+    context.fillStyle = "blue";
+    context.fillRect(48, 0, 48, 48);
+  };
+  paint();
+  const raw = source.captureStream(30),
+    timer = setInterval(paint, 30);
+  const processor = new CameraMirrorProcessor();
+  const sender = new RTCPeerConnection(),
+    receiver = new RTCPeerConnection();
+  const remote = document.createElement("video");
+  remote.muted = true;
+  remote.playsInline = true;
+  document.body.append(remote);
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const pending = [];
+  sender.onicecandidate = ({ candidate }) => {
+    if (candidate) {
+      if (receiver.remoteDescription) void receiver.addIceCandidate(candidate);
+      else pending.push([receiver, candidate]);
+    }
+  };
+  receiver.onicecandidate = ({ candidate }) => {
+    if (candidate) {
+      if (sender.remoteDescription) void sender.addIceCandidate(candidate);
+      else pending.push([sender, candidate]);
+    }
+  };
+  receiver.ontrack = ({ track }) => {
+    remote.srcObject = new MediaStream([track]);
+    void remote.play();
+  };
+  try {
+    await processor.init({ kind: "video", track: raw.getVideoTracks()[0] });
+    const output = processor.processedTrack;
+    sender.addTrack(output, new MediaStream([output]));
+    await sender.setLocalDescription(await sender.createOffer());
+    await receiver.setRemoteDescription(sender.localDescription);
+    await receiver.setLocalDescription(await receiver.createAnswer());
+    await sender.setRemoteDescription(receiver.localDescription);
+    for (const [peer, candidate] of pending)
+      await peer.addIceCandidate(candidate);
+    const probe = document.createElement("canvas");
+    probe.width = 96;
+    probe.height = 48;
+    const pixels = () => {
+      if (remote.readyState < 2) return [];
+      const ctx = probe.getContext("2d");
+      ctx.drawImage(remote, 0, 0, 96, 48);
+      return Array.from(ctx.getImageData(24, 24, 1, 1).data);
+    };
+    const waitForColor = async (mirrored) => {
+      for (let i = 0; i < 150; i++) {
+        const p = pixels();
+        if (mirrored ? p[2] > 180 && p[0] < 60 : p[0] > 180 && p[2] < 60)
+          return;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      throw new Error(
+        `Remote camera did not become ${mirrored ? "mirrored" : "unmirrored"}`,
+      );
+    };
+    await waitForColor(false);
+    flushSync(() => root.render(h(CameraMirrorControl)));
+    const control = host.querySelector("button");
+    check(
+      control.classList.contains("cameraMirrorControl") &&
+        control.textContent.includes("Mirror camera:"),
+      "Mirror camera uses the styled shared control",
+    );
+    control.click();
+    await waitForColor(true);
+    check(
+      source.getContext("2d").getImageData(24, 24, 1, 1).data[0] === 255,
+      "Only the outgoing camera is transformed",
+    );
+    control.click();
+    await waitForColor(false);
+    flushSync(() =>
+      root.render(
+        h(
+          "button",
+          { className: "friendRow" },
+          h(StatusAvatar, { name: "Friend", status: "online" }),
+          h(
+            "span",
+            { className: "friendConversationLink" },
+            h("b", null, "Friend"),
+            h("small", null, "Online"),
+          ),
+        ),
+      ),
+    );
+    const avatarBounds = host
+      .querySelector(".statusAvatar")
+      .getBoundingClientRect();
+    const identityBounds = host
+      .querySelector(".friendConversationLink")
+      .getBoundingClientRect();
+    check(
+      avatarBounds.width === 36 &&
+        identityBounds.left >= avatarBounds.right &&
+        identityBounds.left - avatarBounds.right <= 16,
+      "Friend profile information sits next to its fixed-size avatar",
+    );
+    await processor.destroy();
+    check(
+      output.readyState === "ended" &&
+        raw.getVideoTracks()[0].readyState === "live",
+      "Processor releases its output while leaving the SDK-owned source to its owner",
+    );
+    return {
+      remotePixelMirroring: true,
+      liveToggle: true,
+      styledControl: true,
+      cleanup: true,
+    };
+  } finally {
+    root.unmount();
+    host.remove();
+    remote.srcObject = null;
+    remote.remove();
+    sender.close();
+    receiver.close();
+    clearInterval(timer);
+    await processor.destroy();
+    raw.getTracks().forEach((track) => track.stop());
+    if (saved === null) localStorage.removeItem("lc.cameraMirror");
+    else localStorage.setItem("lc.cameraMirror", saved);
+  }
+};
+
 window.verifyMessageComposer = async () => {
   const container = document.createElement("section");
   container.className = "chat";
@@ -1020,13 +1533,15 @@ window.verifyMessageComposer = async () => {
     "position:fixed;inset:20px;z-index:10000;display:block";
   document.body.append(container);
   const root = createRoot(container);
-  let setText;
+  let setText, setSending;
   let submitted = 0;
   function Fixture() {
     const [value, onChange] = useState("");
     const [files, onFiles] = useState([]);
+    const [busy, setBusy] = useState(false);
     useEffect(() => {
       setText = onChange;
+      setSending = setBusy;
     }, [onChange]);
     return h(
       "form",
@@ -1042,6 +1557,7 @@ window.verifyMessageComposer = async () => {
         files,
         onFiles,
         placeholder: "Message test",
+        busy,
         progress: null,
       }),
       h("button", { type: "submit" }, "Send"),
@@ -1092,6 +1608,30 @@ window.verifyMessageComposer = async () => {
       }),
     );
     check(submitted === 1, "Enter did not submit a message");
+    textarea.focus();
+    flushSync(() => setSending(true));
+    check(
+      document.activeElement === textarea &&
+        textarea.readOnly &&
+        !textarea.disabled,
+      "Sending retains chat focus while preventing draft edits",
+    );
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    check(submitted === 1, "Enter cannot resubmit while a message is sending");
+    flushSync(() => {
+      setText("");
+      setSending(false);
+    });
+    check(
+      document.activeElement === textarea && !textarea.readOnly,
+      "The composer is ready for the next message after sending",
+    );
     const transfer = new DataTransfer();
     transfer.items.add(
       new File(["%PDF-1.7"], "dropped.pdf", { type: "application/pdf" }),
@@ -1290,6 +1830,7 @@ window.verifyMessageComposer = async () => {
 async function verifyTypingIndicators() {
   const host = document.createElement("section");
   host.className = "chat";
+  host.style.cssText = "position:fixed;inset:20px;z-index:10001";
   document.body.append(host);
   const root = createRoot(host),
     sent = [];
@@ -1378,7 +1919,9 @@ async function verifyTypingIndicators() {
         host.querySelector(".typingIndicator").textContent === "",
         "Typing expires without a stop packet",
       );
-      host.querySelector("textarea").blur();
+      const typingTextarea = host.querySelector("textarea");
+      typingTextarea.focus();
+      typingTextarea.blur();
       await wait();
       check(sent.at(-1).active === false, "Blur immediately stops typing");
       input("More draft");
@@ -1551,6 +2094,8 @@ async function verifyProfilePictures() {
 }
 
 async function verifyParticipantControls() {
+  const voiceDelay = () => new Promise((resolve) => setTimeout(resolve, 800));
+  await voiceDelay();
   const host = document.createElement("div");
   host.style.cssText = "position:fixed;top:20px;left:20px;width:260px";
   document.body.append(host);
@@ -1638,6 +2183,12 @@ async function verifyParticipantControls() {
       host.querySelector('[aria-label="Muted for you"]'),
       "Local mute displays its status icon",
     );
+    host.querySelector("button").click();
+    await wait();
+    check(
+      settings.values.alice.muted,
+      "Rapid mute toggles are ignored during the cooldown",
+    );
     visit("bob");
     check(
       host.querySelector("input").value === "100" &&
@@ -1650,6 +2201,7 @@ async function verifyParticipantControls() {
         host.querySelector('[aria-checked="true"]'),
       "Person settings survive navigation",
     );
+    await voiceDelay();
     host.querySelector("button").click();
     await wait();
     check(
@@ -1660,6 +2212,7 @@ async function verifyParticipantControls() {
       !host.querySelector('[aria-label="Muted for you"]'),
       "Unmuting removes the status icon",
     );
+    await voiceDelay();
     host.querySelectorAll("button")[1].click();
     await wait();
     check(
@@ -1668,6 +2221,7 @@ async function verifyParticipantControls() {
         host.querySelector('[aria-label="Deafened between you"]'),
       "Personal deafen is separate from mute and displays the headphones icon",
     );
+    await voiceDelay();
     host.querySelectorAll("button")[1].click();
     await wait();
     visit("alice", "someone-else");
@@ -1701,6 +2255,7 @@ async function verifyParticipantControls() {
         ),
       "Non-owners can adjust local playback without moderation actions",
     );
+    await voiceDelay();
     const changes = [];
     flushSync(() =>
       root.render(
@@ -1721,7 +2276,7 @@ async function verifyParticipantControls() {
     [...host.querySelectorAll("button")]
       .find((button) => button.textContent.includes("Server mute"))
       .click();
-    await wait();
+    await voiceDelay();
     [...host.querySelectorAll("button")]
       .find((button) => button.textContent.includes("Server deafen"))
       .click();
@@ -1730,6 +2285,7 @@ async function verifyParticipantControls() {
       changes.length === 2 && changes[0].voiceMuted && changes[1].voiceDeafened,
       "Owner-only server controls send distinct mute and deafen changes",
     );
+    await voiceDelay();
     flushSync(() =>
       root.render(
         h(VoiceParticipantMenu, {
@@ -1750,7 +2306,7 @@ async function verifyParticipantControls() {
     [...host.querySelectorAll("button")]
       .find((button) => button.textContent === "Server unmute")
       .click();
-    await wait();
+    await voiceDelay();
     [...host.querySelectorAll("button")]
       .find((button) => button.textContent === "Server undeafen")
       .click();
@@ -4350,6 +4906,11 @@ async function verifyModeratorControls() {
 }
 
 async function verifySoundboard() {
+  const savedPreferences = ["lc.soundboardVolume", "lc.soundboardMuted"].map(
+    (key) => [key, localStorage.getItem(key)],
+  );
+  localStorage.setItem("lc.soundboardVolume", "100");
+  localStorage.setItem("lc.soundboardMuted", "false");
   await verifyModeratorControls();
   const originalFetch = window.fetch;
   let publications = 0,
@@ -4637,6 +5198,10 @@ async function verifySoundboard() {
     panel.querySelector('[aria-label="Mute soundboard"]').click();
     await wait();
     check(previewAudio.muted, "Soundboard mute must also mute local previews");
+    check(
+      localStorage.getItem("lc.soundboardMuted") === "true",
+      "Soundboard mute persists for reconnects",
+    );
     panel.querySelector('[aria-label="Play Celebrate for everyone"]').click();
     await wait();
     const playButton = panel.querySelector(
@@ -5125,6 +5690,10 @@ async function verifySoundboard() {
     root.unmount();
     container.remove();
     window.fetch = originalFetch;
+    for (const [key, value] of savedPreferences) {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    }
   }
   check(
     previewTrack.readyState === "ended" &&
@@ -5459,7 +6028,20 @@ window.verifyVideoFullscreen = async () => {
     getComputedStyle(tile.querySelector('[role="tooltip"]')).display === "grid",
     "Focusing the info icon must reveal stream details",
   );
-  await document.exitFullscreen();
+  const exit = tile.querySelector('[aria-label="Exit fullscreen"]');
+  check(
+    getComputedStyle(exit).display !== "none",
+    "Fullscreen must expose its exit button",
+  );
+  exit.click();
+  await wait();
+  check(!document.fullscreenElement, "The exit button closes fullscreen");
+  await fullscreenVideoTile(container);
+  await fullscreenVideoTile(tile);
+  check(
+    !document.fullscreenElement,
+    "Double-click fullscreen helper closes fullscreen",
+  );
   const volumeButton = tile.querySelector(".streamVolume button");
   volumeButton.focus();
   check(
@@ -6935,6 +7517,8 @@ window.verifyWorkspaceControlsTest = async () => {
     "Friend profile card exceeds its panel width",
   );
   const handle = document.querySelector(".sidebarResizer");
+  handle.focus();
+  await wait();
   const draggedWidth = sidebar.getBoundingClientRect().width;
   check(
     draggedWidth > 360,
@@ -6946,7 +7530,7 @@ window.verifyWorkspaceControlsTest = async () => {
   await wait();
   check(
     sidebar.getBoundingClientRect().width === draggedWidth - 10,
-    "Keyboard resize did not change width",
+    `Keyboard resize did not change width (before ${draggedWidth}, after ${sidebar.getBoundingClientRect().width}, preferred ${sidebar.parentElement.style.getPropertyValue("--preferred-sidebar-width")})`,
   );
   handle.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   await wait();

@@ -122,6 +122,10 @@ export const servers = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
     image: text("image"),
+    afkChannelId: uuid("afk_channel_id").references(
+      (): AnyPgColumn => channels.id,
+      { onDelete: "set null" },
+    ),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
@@ -142,6 +146,7 @@ export const serverMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     role: serverRole("role").default("member").notNull(),
+    position: integer("position"),
     voiceMuted: boolean("voice_muted").default(false).notNull(),
     voiceDeafened: boolean("voice_deafened").default(false).notNull(),
     joinSoundId: uuid("join_sound_id").references(
@@ -198,6 +203,7 @@ export const channels = pgTable(
       .references(() => servers.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     type: channelType("type").notNull(),
+    position: integer("position"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

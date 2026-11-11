@@ -175,6 +175,10 @@ export async function PATCH(request: Request) {
       serverId: invite.serverId,
       inviterId: invite.inviterId,
       recipientId: invite.recipientId,
+      recipientName:
+        people.find((person) => person.id === invite.recipientId)?.name ??
+        "Someone",
+      serverName: server.name,
     };
   });
   if ("error" in result)
@@ -201,6 +205,11 @@ export async function PATCH(request: Request) {
               invitationId: body.id,
               serverId: result.serverId,
               userId: result.recipientId,
+              ...(userId === result.inviterId
+                ? {
+                    notice: `${result.recipientName} accepted your invitation to ${result.serverName}.`,
+                  }
+                : {}),
             }
           : {}),
       }),

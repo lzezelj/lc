@@ -42,7 +42,10 @@ export class SoundCooldown {
 
 // Owns capture independently of microphone mute/gating and of the board dialog.
 export class SoundPlayer {
-  constructor(private monitor?: (track: MediaStreamTrack) => () => void) {}
+  constructor(
+    private monitor?: (track: MediaStreamTrack) => () => void,
+    private onPlayingChange?: (playing: boolean) => void,
+  ) {}
   private generation = 0;
   private release: (() => void) | null = null;
   stop() {
@@ -67,6 +70,7 @@ export class SoundPlayer {
     let unpublish: (() => void) | undefined;
     let stopActivity: (() => void) | undefined;
     let released = false;
+    let playing = false;
     const release = () => {
       if (released) return;
       released = true;
@@ -76,6 +80,10 @@ export class SoundPlayer {
       } catch {}
       source.disconnect();
       stopActivity?.();
+      if (playing) {
+        playing = false;
+        this.onPlayingChange?.(false);
+      }
       track.stop();
       unpublish?.();
     };
@@ -89,6 +97,8 @@ export class SoundPlayer {
       }
       source.onended = () => this.stop();
       source.start();
+      playing = true;
+      this.onPlayingChange?.(true);
       stopActivity = this.monitor?.(track);
     } catch (error) {
       release();

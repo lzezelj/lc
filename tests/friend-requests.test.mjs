@@ -248,6 +248,8 @@ test("profile friend requests resolve a user ID and notify only the target", asy
   assert.equal(f.notifications.length, 1);
   assert.equal(f.notifications[0][0], targetId);
   assert.equal(f.notifications[0][1].type, "friendship-changed");
+  assert.equal(f.notifications[0][1].notification, "friend-request");
+  assert.equal(f.notifications[0][1].fromUserId, actorId);
 });
 
 test("handle-based requests remain supported", async () => {

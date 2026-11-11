@@ -10,6 +10,7 @@ Monitoring and structured logs
 
 Admin dashboard
 Changing user data through admin dashboard.
+Add a option to remove delay for soundboard sounds
 
 Long term
 Check if anything new has been added that should go in help and introduction

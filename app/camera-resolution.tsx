@@ -101,24 +101,28 @@ export function CameraResolutionSelection({
   onFrameRateChange?: (value: VideoFrameRate) => void;
 }) {
   return (
-    <div className="deviceSelection">
-      <label>
-        Camera resolution
-        <select
-          value={resolution}
-          onChange={(event) => onChange(event.target.value as CameraResolution)}
-        >
-          {Object.keys(cameraResolutions).map((value) => (
-            <option key={value} value={value}>
-              {value === "2160" ? "4K (2160p)" : `${value}p`}
-            </option>
-          ))}
-        </select>
-      </label>
-      <small className="deviceSelectionNote">
-        Up to this resolution at {frameRate} fps, depending on your camera and
-        connection.
-      </small>
+    <>
+      <div className="deviceSelection">
+        <label>
+          Camera resolution
+          <select
+            value={resolution}
+            onChange={(event) =>
+              onChange(event.target.value as CameraResolution)
+            }
+          >
+            {Object.keys(cameraResolutions).map((value) => (
+              <option key={value} value={value}>
+                {value === "2160" ? "4K (2160p)" : `${value}p`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <small className="deviceSelectionNote">
+          Up to this resolution at {frameRate} fps, depending on your camera and
+          connection.
+        </small>
+      </div>
       {onFrameRateChange && (
         <FrameRateSelection
           value={frameRate}
@@ -126,6 +130,6 @@ export function CameraResolutionSelection({
           label="Camera frame rate"
         />
       )}
-    </div>
+    </>
   );
 }

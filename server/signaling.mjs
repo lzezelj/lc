@@ -275,7 +275,22 @@ export function createSignalingServer({
           }
           for (const client of ws.clients) {
             if (client.identity?.sub === body.userId) {
-              client.send(JSON.stringify({ type: "access-changed" }));
+              client.send(
+                JSON.stringify({
+                  type: "access-changed",
+                  ...(body.reason === "server-kicked" &&
+                  typeof body.serverId === "string"
+                    ? {
+                        reason: body.reason,
+                        serverId: body.serverId,
+                        serverName:
+                          typeof body.serverName === "string"
+                            ? body.serverName
+                            : "the server",
+                      }
+                    : {}),
+                }),
+              );
               client.close(4003, "Access changed");
             }
           }
@@ -304,6 +319,24 @@ export function createSignalingServer({
             return;
           }
           for (const client of ws.clients) {
+            if (
+              body.event.type === "profile-updated" &&
+              typeof body.event.name === "string" &&
+              client.identity?.sub === body.event.userId &&
+              client.identity.name !== body.event.name
+            ) {
+              client.identity.name = body.event.name;
+              client.participantName = body.event.name;
+              for (const [roomId, person] of client.groupPresence ?? []) {
+                client.groupPresence.set(roomId, {
+                  ...person,
+                  name: body.event.name,
+                });
+                broadcastPresence(roomId);
+              }
+              for (const [roomId, peers] of rooms)
+                if (peers.has(client)) broadcastPresence(roomId);
+            }
             if (
               client.identity?.sub === body.userId &&
               client.readyState === WebSocket.OPEN
@@ -523,6 +556,7 @@ export function createSignalingServer({
   typingTimer.unref();
   server.once("close", () => clearInterval(typingTimer));
   const userStatuses = new Map();
+  const automaticAwayUsers = new Set();
   const validStatuses = new Set(["online", "away", "dnd", "invisible"]);
   const voiceSessions = createVoiceSessions({
     removeGroupMedia,
@@ -599,6 +633,7 @@ export function createSignalingServer({
         camera: Boolean(peer.mediaState?.camera),
         screen: Boolean(peer.mediaState?.screen),
         speaking: Boolean(peer.mediaState?.speaking),
+        soundboard: Boolean(peer.mediaState?.soundboard),
       })),
       ...[...ws.clients]
         .filter((client) => client.groupPresence?.has(roomId))
@@ -889,6 +924,7 @@ export function createSignalingServer({
           JSON.stringify({
             type: "user-status",
             status: userStatuses.get(socket.identity.sub) ?? "online",
+            automatic: automaticAwayUsers.has(socket.identity.sub),
           }),
         );
         return;
@@ -896,6 +932,9 @@ export function createSignalingServer({
       if (message.type === "set-user-status") {
         if (!validStatuses.has(message.status)) return;
         userStatuses.set(socket.identity.sub, message.status);
+        if (message.status === "away" && message.automatic === true)
+          automaticAwayUsers.add(socket.identity.sub);
+        else automaticAwayUsers.delete(socket.identity.sub);
         const serverIds = new Set();
         for (const client of ws.clients) {
           if (
@@ -904,7 +943,11 @@ export function createSignalingServer({
           )
             continue;
           client.send(
-            JSON.stringify({ type: "user-status", status: message.status }),
+            JSON.stringify({
+              type: "user-status",
+              status: message.status,
+              automatic: automaticAwayUsers.has(socket.identity.sub),
+            }),
           );
           client.identity.serverIds.forEach((id) => serverIds.add(id));
         }
@@ -1066,6 +1109,7 @@ export function createSignalingServer({
                 camera: Boolean(message.camera),
                 screen: Boolean(message.screen),
                 speaking: Boolean(message.speaking),
+                soundboard: Boolean(message.soundboard),
               });
               completePendingVoice(socket.identity.sub, message.roomId);
               broadcastPresence(message.roomId);
@@ -1101,6 +1145,7 @@ export function createSignalingServer({
             camera: Boolean(message.camera),
             screen: Boolean(message.screen),
             speaking: Boolean(message.speaking),
+            soundboard: Boolean(message.soundboard),
           });
         } else {
           socket.groupPresence.delete(message.roomId);
@@ -1118,6 +1163,7 @@ export function createSignalingServer({
           camera: Boolean(message.camera),
           screen: Boolean(message.screen),
           speaking: Boolean(message.speaking),
+          soundboard: Boolean(message.soundboard),
         };
         broadcastPresence(joinedRoomId);
         return;
@@ -1233,6 +1279,7 @@ export function createSignalingServer({
         )
       )
         userStatuses.delete(socket.identity.sub);
+      automaticAwayUsers.delete(socket.identity.sub);
       for (const serverId of socket.identity.serverIds) {
         broadcastOnlinePresence(serverId);
       }

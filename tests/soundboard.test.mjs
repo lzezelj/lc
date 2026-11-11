@@ -484,7 +484,8 @@ async function customRoute({
   );
   const writes = [],
     predicates = [],
-    locks = [];
+    locks = [],
+    notifications = [];
   let memberReads = 0;
   const db = {
     select(fields) {
@@ -497,10 +498,10 @@ async function customRoute({
               : table === members
                 ? memberReads++ === 0
                   ? role
-                    ? [{ role }]
+                    ? [{ role, userId: "actor" }]
                     : []
                   : lockedRole
-                    ? [{ role: lockedRole }]
+                    ? [{ role: lockedRole, userId: "actor" }]
                     : []
                 : fields?.value
                   ? [{ value: total }]
@@ -586,13 +587,16 @@ async function customRoute({
         servers,
       },
       "../../../../../server/sound-upload": uploads,
-      "../../../../../server/notify-server": { notifyServer: async () => {} },
+      "../../../../../server/notify-user": {
+        notifyUser: async (userId, event) =>
+          notifications.push({ userId, ...event }),
+      },
       "../../../../../server/rate-limit": {
         checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 12 }),
       },
     },
   );
-  return { route, writes, predicates, locks };
+  return { route, writes, predicates, locks, notifications };
 }
 const params = { params: Promise.resolve({ serverId }) };
 const uploadRequest = (
@@ -804,6 +808,10 @@ test("uploads persist validated bytes and metadata; deletion and audio reads are
   const fixture = await customRoute();
   const response = await fixture.route.POST(uploadRequest(), params);
   assert.equal(response.status, 201);
+  assert.deepEqual(
+    fixture.notifications.map((event) => ({ ...event })),
+    [{ userId: "actor", type: "soundboard-updated", serverId }],
+  );
   const sound = await response.json();
   assert.equal(sound.custom, true);
   assert.equal(sound.durationMs, 600);
@@ -833,6 +841,7 @@ test("uploads persist validated bytes and metadata; deletion and audio reads are
     ]),
   );
   const reader = await customRoute({ role: "member" });
+  assert.equal(deletion.notifications[0].type, "soundboard-updated");
   const audio = await reader.route.GET(
     new Request(`https://lc.test/soundboard?clip=${clipId}`),
     params,
@@ -991,8 +1000,8 @@ test("metadata and audio each require current session and target server membersh
             serverSounds: "sounds",
           },
           "../../../../../server/sound-upload": uploads,
-          "../../../../../server/notify-server": {
-            notifyServer: async () => {},
+          "../../../../../server/notify-user": {
+            notifyUser: async () => {},
           },
           "../../../../../server/rate-limit": {
             checkRateLimit: () => ({ allowed: true }),
@@ -1195,4 +1204,41 @@ test("published audio monitoring starts only after publication and is released o
   assert.equal(releases, 1);
   player.stop();
   assert.equal(releases, 1);
+});
+
+test("public playback activity spans silence and clears on completion, replacement, stop and failure", async () => {
+  const audio = audioFixture(),
+    activity = [];
+  const player = new SoundPlayer(
+    () => () => {},
+    (playing) => activity.push(playing),
+  );
+  const play = () =>
+    player.play(
+      audio.context,
+      async () => new ArrayBuffer(4),
+      async () => () => {},
+    );
+  await play();
+  assert.deepEqual(activity, [true]);
+  await play();
+  assert.deepEqual(activity, [true, false, true]);
+  audio.sources[1].onended();
+  assert.deepEqual(activity, [true, false, true, false]);
+  player.stop();
+  assert.equal(activity.length, 4);
+  await assert.rejects(
+    player.play(
+      audio.context,
+      async () => new ArrayBuffer(4),
+      async () => {
+        throw new Error("failed");
+      },
+    ),
+  );
+  assert.equal(
+    activity.length,
+    4,
+    "A failed publication never announces playback",
+  );
 });

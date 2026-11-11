@@ -9,7 +9,19 @@ import {
   validateSoundWave,
 } from "../../../../../server/sound-upload";
 import { checkRateLimit } from "../../../../../server/rate-limit";
-import { notifyServer } from "../../../../../server/notify-server";
+import { notifyUser } from "../../../../../server/notify-user";
+
+async function notifyCatalog(serverId: string) {
+  const members = await db
+    .select({ userId: serverMembers.userId })
+    .from(serverMembers)
+    .where(eq(serverMembers.serverId, serverId));
+  await Promise.allSettled(
+    members.map(({ userId }) =>
+      notifyUser(userId, { type: "soundboard-updated", serverId }),
+    ),
+  );
+}
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const metadata = {
@@ -163,7 +175,7 @@ export async function POST(
       },
       { status: 400 },
     );
-  return db.transaction(async (tx) => {
+  const response = await db.transaction(async (tx) => {
     // All uploaders share this lock; individual member locks cannot protect the quota.
     const [server] = await tx
       .select({ id: servers.id })
@@ -204,6 +216,8 @@ export async function POST(
       .returning(metadata);
     return NextResponse.json({ ...sound, custom: true }, { status: 201 });
   });
+  if (response.ok) await notifyCatalog(serverId);
+  return response;
 }
 
 export async function DELETE(
@@ -249,6 +263,6 @@ export async function DELETE(
       ? NextResponse.json(removed)
       : NextResponse.json({ error: "Sound not found" }, { status: 404 });
   });
-  if (response.ok) void notifyServer(serverId);
+  if (response.ok) await notifyCatalog(serverId);
   return response;
 }

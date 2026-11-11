@@ -134,6 +134,7 @@ function fixture({
   serverViewCache.scope("actor");
   conversationCache.scope("actor");
   const context = {
+    kickedServers: { current: new Set() },
     serverViewCache: { current: serverViewCache },
     conversationCache: { current: conversationCache },
     authStatus: "authenticated",

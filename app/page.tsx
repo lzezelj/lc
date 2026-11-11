@@ -10,12 +10,20 @@ import {
   type CSSProperties,
 } from "react";
 import { signOut, useSession } from "next-auth/react";
-import { playVoiceSound, prepareVoiceSounds } from "./call-sounds";
+import {
+  playVoiceSound,
+  prepareVoiceSounds,
+  playNotificationSound,
+} from "./call-sounds";
+import { NotificationSoundGate } from "./notification-sounds";
 import { VoiceParticipantMenu } from "./voice-participant-menu";
 import { HelpTour } from "./help-tour";
 import { LoadingSkeleton } from "./loading-skeleton";
 import { DeviceMenu, MediaDeviceOption } from "./device-menu";
-import { ParticipantMediaIndicators } from "./participant-media-indicators";
+import {
+  ParticipantMediaIndicators,
+  SoundboardIndicator,
+} from "./participant-media-indicators";
 import { PanelToggle } from "./panel-toggle";
 import { DeviceSelection } from "./device-selection";
 import { GroupCall } from "./group-call";
@@ -29,6 +37,11 @@ import {
 } from "./call-tile-controls";
 import { useCallAudio, useScreenAudio, useSoundboardAudio } from "./call-media";
 import { SoundboardButton, useSoundboard } from "./soundboard";
+import { takeVoiceToggle } from "./voice-toggle-cooldown";
+import { useIdlePresence } from "./use-idle-presence";
+import { CameraMirrorControl } from "./camera-mirror";
+import { captureCamera, cameraSource } from "./camera-processing";
+import { ServerAfkSettings } from "./server-afk-settings";
 import { sharedAudioCapture, preferSharedAudio } from "./shared-audio";
 import { StreamVolume } from "./stream-volume";
 import {
@@ -56,6 +69,8 @@ import {
 } from "./settings-modal";
 import { UserProfile, type ProfileUser } from "./user-profile";
 import { ChannelManager } from "./channel-manager";
+import { useDragReorder, ReorderHandle, ReorderStatus } from "./drag-reorder";
+import type { DropPlacement } from "../lib/list-order";
 import { groupMessagesByServer } from "./message-groups";
 import { MessageDeleteAction } from "./message-delete-action";
 import { ChatHistory } from "./chat-history";
@@ -195,6 +210,7 @@ function mergeChatMessages(incoming: ChatMessage[], current: ChatMessage[]) {
 }
 
 type Server = {
+  afkChannelId?: string | null;
   image?: string | null;
   voiceMuted?: boolean;
   voiceDeafened?: boolean;
@@ -248,6 +264,7 @@ type AccountMessage = {
   serverName: string;
 };
 type VoiceParticipant = {
+  soundboard?: boolean;
   connecting?: boolean;
   userId?: string;
   name: string;
@@ -274,6 +291,13 @@ type CallDiagnostics = {
   audioBitrate: string;
 };
 type Signal = {
+  notification?: string;
+  reason?: string;
+  serverName?: string;
+  automatic?: boolean;
+  soundboard?: boolean;
+  notice?: string;
+  name?: string;
   invitationId?: string;
   voiceMuted?: boolean;
   voiceDeafened?: boolean;
@@ -424,7 +448,32 @@ export default function Home() {
       ? "authenticated"
       : sessionStatus;
   const [servers, setServers] = useState<Server[]>([]);
+  const serverOrderRequest = useRef(0);
+  const channelOrderRequests = useRef(new Map<string, number>());
+  const orderRefreshHandlers = useRef<{
+    servers: () => Promise<void>;
+    channels: (serverId: string) => Promise<void>;
+  }>({ servers: async () => {}, channels: async () => {} });
+  useEffect(() => {
+    orderRefreshHandlers.current = {
+      servers: refreshServerOrder,
+      channels: refreshChannelOrder,
+    };
+  });
+  useEffect(() => {
+    if (!session?.user.id) return;
+    const refresh = () => {
+      void orderRefreshHandlers.current.servers().catch(() => undefined);
+      if (selectedServerIdRef.current)
+        void orderRefreshHandlers.current
+          .channels(selectedServerIdRef.current)
+          .catch(() => undefined);
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [session?.user.id]);
   const invitationAccount = useRef(session?.user.id);
+  const kickedServers = useRef(new Set<string>());
   useEffect(() => {
     invitationAccount.current = session?.user.id;
   }, [session?.user.id]);
@@ -433,6 +482,7 @@ export default function Home() {
     (serverId, userId) => {
       serverViewCache.current.delete(session?.user.id, serverId);
       if (userId === session?.user.id) {
+        kickedServers.current.delete(serverId);
         invalidateSignalingToken();
         void fetch("/api/servers")
           .then(async (response) => {
@@ -537,6 +587,8 @@ export default function Home() {
   const [members, setMembers] = useState<Member[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
   const [userStatus, setUserStatus] = useState<UserStatus>(readUserStatus);
+  const [automaticAway, setAutomaticAway] = useState(false);
+  const [createAfk, setCreateAfk] = useState(false);
   const notificationsEnabled = userStatus !== "dnd";
   const [userStatuses, setUserStatuses] = useState<Record<string, UserStatus>>(
     {},
@@ -757,7 +809,15 @@ export default function Home() {
     );
   const deafened = userDeafened || Boolean(ownVoicePolicy?.voiceDeafened);
   const deafenedRef = useRef(deafened);
-  const groupMediaRef = useRef({
+  const groupMediaRef = useRef<{
+    microphoneSpeaking?: boolean;
+    soundboard?: boolean;
+    muted: boolean;
+    camera: boolean;
+    screen: boolean;
+    speaking: boolean;
+  }>({
+    soundboard: false,
     muted: false,
     camera: false,
     screen: false,
@@ -821,14 +881,21 @@ export default function Home() {
       : (localStorage.getItem("lc.cameraId") ?? ""),
   );
   const [requestingPermissions, setRequestingPermissions] = useState(false);
+  const [mediaPermissionsGranted, setMediaPermissionsGranted] = useState(false);
   const [voiceJoinKey, setVoiceJoinKey] = useState(0);
   const voiceSessionId = useRef("");
   const disconnectedVoiceSessionId = useRef("");
   const [voiceTransferOpen, setVoiceTransferOpen] = useState(false);
   const [voiceJoinTarget, setVoiceJoinTarget] = useState("");
   const directSoundSpeaking = useRef(false);
+  const directSoundPlaying = useRef(false);
   const directMicSpeaking = useRef(false);
   const soundboard = useSoundboard(activeVoiceChannelId, {
+    onPlayingChange: (playing) => {
+      directSoundPlaying.current = playing;
+      updateDirectSpeaking();
+    },
+    microphoneMuted: muted,
     serverId: activeVoiceChannelSnapshot?.serverId,
     outputVolume,
     outputId,
@@ -885,6 +952,44 @@ export default function Home() {
   const remoteVisualStream = useRef<MediaStream | null>(null);
   const socket = useRef<WebSocket | null>(null);
   const presenceSocket = useRef<WebSocket | null>(null);
+  const recordIdleActivity = useIdlePresence(session?.user.id, {
+    status: userStatus,
+    automaticAway,
+    isSpeaking: () =>
+      directMicSpeaking.current ||
+      Boolean(
+        activeGroupChannelId.current &&
+        groupMediaRef.current.microphoneSpeaking,
+      ),
+    onStatus: changePresenceStatus,
+    onAfk: () => {
+      const current = activeVoiceChannelSnapshot;
+      const destinationId = servers.find(
+        (server) => server.id === current?.serverId,
+      )?.afkChannelId;
+      if (!current?.serverId || !destinationId || current.id === destinationId)
+        return;
+      void fetch(`/api/servers/${current.serverId}/voice-move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: session?.user.id,
+          channelId: current.id,
+          destinationId,
+          afk: true,
+        }),
+      }).catch(() => {});
+    },
+  });
+  function changePresenceStatus(status: UserStatus, automatic = false) {
+    localStorage.setItem("lc.userStatus", automatic ? "online" : status);
+    setUserStatus(status);
+    setAutomaticAway(automatic);
+    if (presenceSocket.current?.readyState === WebSocket.OPEN)
+      presenceSocket.current.send(
+        JSON.stringify({ type: "set-user-status", status, automatic }),
+      );
+  }
   const typing = useTyping(
     presenceSocket,
     session?.user.id,
@@ -904,7 +1009,6 @@ export default function Home() {
   const screenStream = useRef<MediaStream | null>(null);
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
   const messageContextMenu = useRef<HTMLDivElement>(null);
-  const memberContextMenu = useRef<HTMLDivElement>(null);
   const lastTextChannelId = useRef("");
   const activeGroupChannelId = useRef("");
   const directVideoGrid = useRef<HTMLDivElement>(null);
@@ -985,15 +1089,18 @@ export default function Home() {
       : null,
   );
   const notificationInboxRef = useRef(notificationInbox);
+  const notificationSoundGate = useRef(new NotificationSoundGate());
   const notificationPolicyRef = useRef({
     enabled: notificationsEnabled,
     channelId: "",
+    outputVolume,
   });
   useEffect(() => {
     notificationInboxRef.current = notificationInbox;
     notificationPolicyRef.current = {
       enabled: notificationsEnabled,
       channelId: canReadConversation && !friendsView ? selectedChannelId : "",
+      outputVolume,
     };
   });
   const callsNotificationAllowed =
@@ -1864,7 +1971,7 @@ export default function Home() {
         }
       })
       .catch(() => {
-        if (active) {
+        if (active && !kickedServers.current.has(selectedServerId)) {
           pendingLocation.current = null;
           setServerChannelsLoaded(selectedServerId);
           setNavigationReady(true);
@@ -1893,7 +2000,8 @@ export default function Home() {
         }
       })
       .catch(() => {
-        if (active) setErrorMessage("Members could not be loaded.");
+        if (active && !kickedServers.current.has(selectedServerId))
+          setErrorMessage("Members could not be loaded.");
       });
     return () => {
       active = false;
@@ -2069,22 +2177,6 @@ export default function Home() {
       document.removeEventListener("scroll", closeMessageMenuOnScroll, true);
     };
   }, [messageMenu]);
-
-  useEffect(() => {
-    if (!memberMenu) return;
-    const closeMemberMenu = (event: PointerEvent) => {
-      if (!memberContextMenu.current?.contains(event.target as Node)) {
-        setMemberMenu(null);
-      }
-    };
-    const closeOnScroll = () => setMemberMenu(null);
-    document.addEventListener("pointerdown", closeMemberMenu);
-    document.addEventListener("scroll", closeOnScroll, true);
-    return () => {
-      document.removeEventListener("pointerdown", closeMemberMenu);
-      document.removeEventListener("scroll", closeOnScroll, true);
-    };
-  }, [memberMenu]);
 
   const historyChannelType = channels.find(
     (channel) => channel.id === selectedChannelId,
@@ -2276,11 +2368,11 @@ export default function Home() {
     }
   }
 
+  const selectedChannelIsText = channels.some(
+    (channel) => channel.id === selectedChannelId && channel.type === "text",
+  );
   useEffect(() => {
-    const selected = channels.find(
-      (channel) => channel.id === selectedChannelId,
-    );
-    if (!selectedChannelId || selected?.type !== "text") return;
+    if (!selectedChannelId || !selectedChannelIsText) return;
 
     let hasOpened = false;
     const liveText = createReconnectingSignalingConnection({
@@ -2395,7 +2487,7 @@ export default function Home() {
       liveText.close();
       textSocket.current = null;
     };
-  }, [channels, selectedChannelId, session?.user.id]);
+  }, [selectedChannelIsText, selectedChannelId, session?.user.id]);
 
   useEffect(
     () => () => {
@@ -2499,6 +2591,30 @@ export default function Home() {
       },
       onMessage: (event) => {
         const message = JSON.parse(event.data) as Signal;
+        if (message.type === "server-order-updated") {
+          void orderRefreshHandlers.current.servers().catch(() => undefined);
+          return;
+        }
+        if (message.type === "channel-order-updated" && message.serverId) {
+          void orderRefreshHandlers.current
+            .channels(message.serverId)
+            .catch(() => undefined);
+          return;
+        }
+        const inbox = notificationInboxRef.current;
+        const cue = notificationSoundGate.current.take(message, {
+          userId: currentUserId,
+          enabled: notificationPolicyRef.current.enabled,
+          ready: inbox.ready,
+          deafened: deafenedRef.current,
+          channels: inbox.channels,
+          allowed: inbox.allowed,
+        });
+        if (cue)
+          playNotificationSound(
+            cue,
+            notificationPolicyRef.current.outputVolume,
+          );
         if (message.type === "attachments-expired") {
           conversationCache.current.clear();
           setHistoryRefreshKey((current) => current + 1);
@@ -2511,6 +2627,7 @@ export default function Home() {
           return;
         }
         if (message.type === "server-invitations-changed") {
+          if (message.notice) setNoticeMessage(message.notice);
           window.dispatchEvent(
             new CustomEvent("lc-server-invitations", { detail: message }),
           );
@@ -2529,12 +2646,36 @@ export default function Home() {
           });
           return;
         }
-        if (
-          message.type === "profile-updated" &&
-          message.userId &&
-          (message.image === null || typeof message.image === "string")
-        ) {
-          applyProfilePicture(message.userId, message.image);
+        if (message.type === "profile-updated" && message.userId) {
+          if (message.image === null || typeof message.image === "string")
+            applyProfilePicture(message.userId, message.image);
+          if (typeof message.name === "string") {
+            const { userId, name } = message;
+            serverViewCache.current.clear();
+            setMembers((rows) =>
+              rows.map((person) =>
+                person.id === userId ? { ...person, name } : person,
+              ),
+            );
+            setFriends((rows) =>
+              rows.map((person) =>
+                person.id === userId ? { ...person, name } : person,
+              ),
+            );
+            setSelectedFriend((person) =>
+              person?.id === userId ? { ...person, name } : person,
+            );
+            setVoicePresence((rooms) =>
+              Object.fromEntries(
+                Object.entries(rooms).map(([id, people]) => [
+                  id,
+                  people.map((person) =>
+                    person.userId === userId ? { ...person, name } : person,
+                  ),
+                ]),
+              ),
+            );
+          }
           if (message.userId === currentUserId) void updateSessionRef.current();
           return;
         }
@@ -2619,10 +2760,35 @@ export default function Home() {
           return;
         }
         if (message.type === "user-status" && isUserStatus(message.status)) {
-          localStorage.setItem("lc.userStatus", message.status);
+          localStorage.setItem(
+            "lc.userStatus",
+            message.automatic === true ? "online" : message.status,
+          );
           setUserStatus(message.status);
+          setAutomaticAway(message.automatic === true);
         }
         if (message.type === "access-changed") {
+          serverOrderRequest.current++;
+          channelOrderRequests.current.clear();
+          if (message.reason === "server-kicked") {
+            if (message.serverId) kickedServers.current.add(message.serverId);
+            channelHistoryGeneration.current++;
+            setNoticeMessage(
+              `You have been kicked from ${message.serverName ?? "the server"}.`,
+            );
+            setErrorMessage("");
+            if (message.serverId === activeVoiceServerRef.current)
+              closeCallViewRef.current();
+            if (message.serverId === selectedServerIdRef.current) {
+              setSelectedServerId("");
+              setSelectedChannelId("");
+              setChannels([]);
+              setMembers([]);
+              setMessages([]);
+              setFriendsView(true);
+              setSelectedFriend(null);
+            }
+          }
           setHistoryContext(null);
           setEditingMessage(null);
           conversationCache.current.clear();
@@ -2650,6 +2816,14 @@ export default function Home() {
             typeof message.joinSoundId === "string"
           )
             applyVoiceSoundSettings(message.serverId, message.joinSoundId);
+          return;
+        }
+        if (message.type === "soundboard-updated" && message.serverId) {
+          window.dispatchEvent(
+            new CustomEvent("lc-soundboard-updated", {
+              detail: { serverId: message.serverId },
+            }),
+          );
           return;
         }
         if (
@@ -2981,6 +3155,7 @@ export default function Home() {
       camera: Boolean(stream.current?.getVideoTracks()[0]?.enabled),
       screen: screenSharing,
       speaking,
+      soundboard: directSoundPlaying.current,
     });
   }
 
@@ -3353,6 +3528,14 @@ export default function Home() {
           label: device.label || `Output device ${index + 1}`,
         })),
     );
+    setMediaPermissionsGranted(
+      devices.some(
+        (device) => device.kind === "audioinput" && !!device.label,
+      ) &&
+        devices.some(
+          (device) => device.kind === "videoinput" && !!device.label,
+        ),
+    );
     setMicrophones(
       devices
         .filter((device) => device.kind === "audioinput")
@@ -3380,6 +3563,7 @@ export default function Home() {
       });
       permissionStream.getTracks().forEach((track) => track.stop());
       await loadMediaDevices();
+      setMediaPermissionsGranted(true);
       setMediaNotice("Microphone and camera access granted.");
     } catch {
       setErrorMessage(
@@ -3462,11 +3646,19 @@ export default function Home() {
     selectCamera(deviceId);
     const oldTrack = stream.current?.getVideoTracks()[0];
     if (cameraOff || !oldTrack || !stream.current) return;
+    const originalStream = stream.current;
     try {
-      const replacement = await navigator.mediaDevices.getUserMedia({
-        video: cameraConstraints(deviceId),
-      });
+      const replacement = await captureCamera(cameraConstraints(deviceId));
+      if (
+        stream.current !== originalStream ||
+        oldTrack.readyState === "ended"
+      ) {
+        replacement.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const nextTrack = replacement.getVideoTracks()[0];
+      nextTrack.enabled = oldTrack.enabled;
+      cameraSource(nextTrack).enabled = oldTrack.enabled;
       nextTrack.contentHint = "detail";
       const sender = connection.current
         ?.getSenders()
@@ -3822,6 +4014,7 @@ export default function Home() {
 
   function toggleAudio() {
     if (deafened || voiceBlocked(ownVoicePolicy)) return;
+    if (!takeVoiceToggle()) return;
     const track = stream.current?.getAudioTracks()[0];
     if (!track) {
       const nextMuted = !microphoneMuted;
@@ -3843,8 +4036,30 @@ export default function Home() {
     }
   }
 
+  async function changeServerVoicePolicy(userId: string, patch: VoicePolicy) {
+    const response = await fetch(
+      `/api/servers/${selectedServerId}/voice-moderation`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, ...patch }),
+      },
+    );
+    const policy = await response.json();
+    if (!response.ok)
+      throw new Error(
+        policy.error ?? "Could not change server voice controls.",
+      );
+    applyVoiceModeration(selectedServerId, userId, policy);
+    if (!policy.mediaSynced)
+      setErrorMessage(
+        "Voice policy saved, but the media server could not be updated. The user must reconnect for server enforcement.",
+      );
+  }
+
   function toggleDeafen() {
     if (ownVoicePolicy?.voiceDeafened) return;
+    if (!takeVoiceToggle()) return;
     const next = !deafened;
     deafenedRef.current = next;
     setMicrophoneDeafened(next);
@@ -3877,6 +4092,7 @@ export default function Home() {
     const track = stream.current?.getVideoTracks()[0];
     if (track) {
       track.enabled = !track.enabled;
+      cameraSource(track).enabled = track.enabled;
       setCameraOff(!track.enabled);
       playVoiceSound(track.enabled ? "camera-on" : "camera-off");
       send({ type: "camera-state", enabled: track.enabled });
@@ -3896,10 +4112,13 @@ export default function Home() {
       return;
     }
 
+    const generation = peerGeneration.current;
     try {
-      const cameraStream = await navigator.mediaDevices.getUserMedia({
-        video: cameraConstraints(cameraId),
-      });
+      const cameraStream = await captureCamera(cameraConstraints(cameraId));
+      if (generation !== peerGeneration.current) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const cameraTrack = cameraStream.getVideoTracks()[0];
       if (!cameraTrack) throw new Error("No camera track");
       cameraTrack.contentHint = "detail";
@@ -4077,6 +4296,7 @@ export default function Home() {
           : [...current, chatMessage],
       );
     } catch (error) {
+      if (generation !== channelHistoryGeneration.current) return;
       setErrorMessage(
         error instanceof Error
           ? error.message
@@ -4143,7 +4363,7 @@ export default function Home() {
     const response = await fetch("/api/servers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, createAfk }),
     });
     const server = await response.json();
     if (response.ok) {
@@ -4800,6 +5020,24 @@ export default function Home() {
   const isSelectedServerOwner = members.some(
     (member) => member.id === session?.user.id && member.role === "owner",
   );
+  const serverDrag = useDragReorder({
+    items: servers,
+    scope: `servers:${session?.user.id}:${friendsView}`,
+    enabled: !!session,
+    onReorder: moveServer,
+  });
+  const channelDrag = useDragReorder({
+    items: channels.map((channel) => ({
+      ...channel,
+      group: channel.type === "text" ? "text" : "voice",
+    })),
+    scope: `channels:${session?.user.id}:${selectedServerId}:${friendsView}`,
+    enabled: isSelectedServerOwner,
+    onReorder: async (id, targetId, placement) => {
+      const channel = channels.find((row) => row.id === id);
+      if (channel) await moveChannel(channel, targetId, placement);
+    },
+  });
   const isSelectedServerModerator = members.some(
     (member) => member.id === session?.user.id && member.role === "mod",
   );
@@ -4885,7 +5123,7 @@ export default function Home() {
     setChannelContext({
       channel,
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 208)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 60)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 150)),
     });
   };
 
@@ -4915,8 +5153,12 @@ export default function Home() {
       : activeVoiceChannel
         ? `Connecting to "${activeVoiceChannel.name}"…`
         : "Not connected";
-  const renderAudioDeviceOptions = (mode: "input" | "output" | "both") => (
+  const renderAudioDeviceOptions = (
+    mode: "input" | "output" | "both",
+    controls: "all" | "devices" | "levels" = "all",
+  ) => (
     <AudioDeviceOptions
+      controls={controls}
       mode={mode}
       outputs={outputs}
       outputId={outputId}
@@ -4943,7 +5185,7 @@ export default function Home() {
     const track = stream.current?.getVideoTracks()[0];
     if (track) {
       try {
-        await track.applyConstraints(
+        await cameraSource(track).applyConstraints(
           cameraCaptureConstraints(cameraId, resolution),
         );
         if (!screenStream.current) {
@@ -4962,7 +5204,7 @@ export default function Home() {
     setCameraFrameRate(frameRate);
     const track = stream.current?.getVideoTracks()[0];
     try {
-      await track?.applyConstraints(
+      await (track ? cameraSource(track) : undefined)?.applyConstraints(
         cameraCaptureConstraints(cameraId, cameraResolution, frameRate),
       );
       if (!screenStream.current) {
@@ -4976,12 +5218,15 @@ export default function Home() {
     }
   }
   const cameraResolutionOptions = (
-    <CameraResolutionSelection
-      resolution={cameraResolution}
-      frameRate={cameraFrameRate}
-      onFrameRateChange={(value) => void changeCameraFrameRate(value)}
-      onChange={(value) => void changeCameraResolution(value)}
-    />
+    <>
+      <CameraResolutionSelection
+        resolution={cameraResolution}
+        frameRate={cameraFrameRate}
+        onFrameRateChange={(value) => void changeCameraFrameRate(value)}
+        onChange={(value) => void changeCameraResolution(value)}
+      />
+      <CameraMirrorControl />
+    </>
   );
   const audioDeviceOptions = renderAudioDeviceOptions("input");
   const profilePanel = session && (
@@ -5001,14 +5246,7 @@ export default function Home() {
               handle: session.user.handle ?? undefined,
             })
           }
-          onChange={(next) => {
-            localStorage.setItem("lc.userStatus", next);
-            setUserStatus(next);
-            if (presenceSocket.current?.readyState === WebSocket.OPEN)
-              presenceSocket.current.send(
-                JSON.stringify({ type: "set-user-status", status: next }),
-              );
-          }}
+          onChange={(next) => changePresenceStatus(next)}
         />
         {!activeVoiceChannel && (
           <div className="controls profileMicrophone">
@@ -5154,6 +5392,77 @@ export default function Home() {
       )}
     </NotificationMuteMenu>
   );
+  async function refreshServerOrder() {
+    const account = session?.user.id,
+      request = ++serverOrderRequest.current;
+    const response = await fetch("/api/servers", { cache: "no-store" });
+    if (!response.ok) throw new Error("Server order could not be refreshed.");
+    const rows = await response.json();
+    if (
+      account === invitationAccount.current &&
+      request === serverOrderRequest.current &&
+      Array.isArray(rows)
+    )
+      setServers(rows);
+  }
+  async function refreshChannelOrder(serverId: string) {
+    const account = session?.user.id,
+      request = (channelOrderRequests.current.get(serverId) ?? 0) + 1;
+    channelOrderRequests.current.set(serverId, request);
+    const response = await fetch(`/api/servers/${serverId}/channels`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Channel order could not be refreshed.");
+    const rows = await response.json();
+    if (
+      account !== invitationAccount.current ||
+      request !== channelOrderRequests.current.get(serverId) ||
+      !Array.isArray(rows)
+    )
+      return;
+    const cached = serverViewCache.current.get(account, serverId);
+    if (cached)
+      serverViewCache.current.set(account, serverId, {
+        ...cached,
+        channels: rows,
+      });
+    if (serverId === selectedServerIdRef.current) setChannels(rows);
+  }
+  async function moveServer(
+    serverId: string,
+    targetId: string,
+    placement: DropPlacement,
+  ) {
+    const response = await fetch("/api/servers/order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serverId, targetId, placement }),
+    });
+    if (!response.ok)
+      throw new Error(
+        (await response.json().catch(() => null))?.error ??
+          "Server could not be moved. Please try again.",
+      );
+    await refreshServerOrder();
+  }
+  async function moveChannel(
+    channel: Channel,
+    targetId: string,
+    placement: DropPlacement,
+  ) {
+    const serverId = channel.serverId ?? selectedServerId;
+    const response = await fetch(`/api/servers/${serverId}/channels/order`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channelId: channel.id, targetId, placement }),
+    });
+    if (!response.ok)
+      throw new Error(
+        (await response.json().catch(() => null))?.error ??
+          "Channel could not be moved. Please try again.",
+      );
+    await refreshChannelOrder(serverId);
+  }
   const serverContextMenu = serverContext && (
     <div
       className="messageContextMenu"
@@ -5221,20 +5530,24 @@ export default function Home() {
 
   const mediaSettingsContent = (
     <div className="mediaSettings">
-      <p>
-        Grant access once so LC can show device names and use your saved choices
-        when you join.
-      </p>
-      <button
-        className="permissionButton"
-        type="button"
-        onClick={() => void requestMediaPermissions()}
-        disabled={requestingPermissions}
-      >
-        {requestingPermissions
-          ? "Waiting for browser..."
-          : "Grant microphone & camera access"}
-      </button>
+      {!mediaPermissionsGranted && (
+        <>
+          <p>
+            Grant access once so LC can show device names and use your saved
+            choices when you join.
+          </p>
+          <button
+            className="permissionButton"
+            type="button"
+            onClick={() => void requestMediaPermissions()}
+            disabled={requestingPermissions}
+          >
+            {requestingPermissions
+              ? "Waiting for browser..."
+              : "Grant microphone & camera access"}
+          </button>
+        </>
+      )}
       <MediaTests
         microphoneId={microphoneId}
         cameraId={cameraId}
@@ -5255,9 +5568,10 @@ export default function Home() {
                 else selectMicrophone(deviceId);
               }}
             />
-            {renderAudioDeviceOptions("both")}
+            {renderAudioDeviceOptions("both", "devices")}
           </>
         }
+        audioLevels={renderAudioDeviceOptions("both", "levels")}
         cameraDevices={
           <>
             <DeviceSelection
@@ -5711,6 +6025,36 @@ export default function Home() {
             {serverSettingsSection === "channels" && (
               <>
                 <h3>Channels</h3>
+                <ServerAfkSettings
+                  key={`afk:${selectedServerId}`}
+                  serverId={selectedServerId}
+                  channelId={
+                    servers.find((server) => server.id === selectedServerId)
+                      ?.afkChannelId
+                  }
+                  channels={channels}
+                  onSaved={(afkChannelId) => {
+                    setServers((rows) =>
+                      rows.map((server) =>
+                        server.id === selectedServerId
+                          ? { ...server, afkChannelId }
+                          : server,
+                      ),
+                    );
+                    void fetch(`/api/servers/${selectedServerId}/channels`)
+                      .then((response) =>
+                        response.ok ? response.json() : null,
+                      )
+                      .then((rows) => {
+                        if (
+                          selectedServerIdRef.current === selectedServerId &&
+                          Array.isArray(rows)
+                        )
+                          setChannels(rows);
+                      })
+                      .catch(() => {});
+                  }}
+                />
 
                 <h4>Create channel</h4>
                 <form className="settingsNameForm" onSubmit={createChannel}>
@@ -5746,6 +6090,7 @@ export default function Home() {
                 </form>
                 <h4>Channel list</h4>
                 <ChannelManager
+                  onReorder={moveChannel}
                   key={selectedServerId}
                   channels={channels}
                   onRename={async (channel, name) => {
@@ -6187,6 +6532,7 @@ export default function Home() {
         )
       }
       onMediaStateChange={(media) => {
+        if (media.microphoneSpeaking) recordIdleActivity();
         if (activeGroupChannelId.current !== activeVoiceChannel.id) return;
         if (!deafened) setMuted(media.muted);
         sendGroupPresence(
@@ -6442,6 +6788,17 @@ export default function Home() {
                   maxLength={60}
                   required
                 />
+              </label>
+            )}
+            {form === "server" && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={createAfk}
+                  onChange={(event) => setCreateAfk(event.target.checked)}
+                />
+                Create an AFK voice channel (move inactive users after 15
+                minutes)
               </label>
             )}
             {form === "channel" && (
@@ -6976,10 +7333,12 @@ export default function Home() {
             aria-label="Servers"
             style={{ height: Math.max(0, servers.length * 60 - 6) }}
           >
+            <ReorderStatus drag={serverDrag} />
             {servers.map((server) => (
               <ServerNavButton
                 key={server.id}
                 server={server}
+                drag={serverDrag}
                 active={false}
                 unread={unreadServerIds.has(server.id)}
                 mentions={serverMentionCounts[server.id] ?? 0}
@@ -6995,7 +7354,7 @@ export default function Home() {
                     x: Math.min(event.clientX, window.innerWidth - 200),
                     y: Math.max(
                       8,
-                      Math.min(event.clientY, window.innerHeight - 110),
+                      Math.min(event.clientY, window.innerHeight - 210),
                     ),
                   });
                 }}
@@ -7048,7 +7407,7 @@ export default function Home() {
                 openFriendsHome();
               }}
             >
-              Friends
+              {selectedFriend ? "Back to Friends" : "Friends"}
             </button>
           </header>
           <nav>
@@ -7741,6 +8100,14 @@ export default function Home() {
                   />
                 </label>
                 <button type="submit">Create server</button>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={createAfk}
+                    onChange={(event) => setCreateAfk(event.target.checked)}
+                  />
+                  Create an AFK voice channel (15 minutes)
+                </label>
               </form>
             </>
           )}
@@ -7780,10 +8147,12 @@ export default function Home() {
           aria-label="Servers"
           style={{ height: Math.max(0, servers.length * 60 - 6) }}
         >
+          <ReorderStatus drag={serverDrag} />
           {servers.map((server) => (
             <ServerNavButton
               key={server.id}
               server={server}
+              drag={serverDrag}
               active={server.id === selectedServerId}
               unread={unreadServerIds.has(server.id)}
               mentions={serverMentionCounts[server.id] ?? 0}
@@ -7799,7 +8168,7 @@ export default function Home() {
                   x: Math.min(event.clientX, window.innerWidth - 200),
                   y: Math.max(
                     8,
-                    Math.min(event.clientY, window.innerHeight - 110),
+                    Math.min(event.clientY, window.innerHeight - 210),
                   ),
                 });
               }}
@@ -7892,6 +8261,7 @@ export default function Home() {
             )}
         </header>
         <nav>
+          <ReorderStatus drag={channelDrag} />
           <p className="sectionLabel">TEXT CHANNELS</p>
           {serverChannelsLoaded !== selectedServerId && (
             <LoadingSkeleton kind="channels" />
@@ -7901,10 +8271,15 @@ export default function Home() {
             .map((channel) => (
               <div
                 className="channelRow"
+                {...channelDrag.itemProps(channel.id)}
                 key={channel.id}
                 onContextMenu={(event) => openChannelContext(event, channel)}
               >
+                {isSelectedServerOwner && (
+                  <ReorderHandle drag={channelDrag} id={channel.id} />
+                )}
                 <button
+                  {...channelDrag.pointerProps(channel.id)}
                   className={`channel ${!callViewOpen && channel.id === selectedChannelId ? "active" : ""}`}
                   title={channel.name}
                   onClick={() => selectTextChannel(channel.id)}
@@ -7927,6 +8302,7 @@ export default function Home() {
             .map((channel) => (
               <div
                 className="voiceChannel"
+                {...channelDrag.itemProps(channel.id)}
                 key={channel.id}
                 onContextMenu={(event) => {
                   if ((event.target as Element).closest(".voiceParticipant"))
@@ -7934,7 +8310,11 @@ export default function Home() {
                   openChannelContext(event, channel);
                 }}
               >
+                {isSelectedServerOwner && (
+                  <ReorderHandle drag={channelDrag} id={channel.id} />
+                )}
                 <button
+                  {...channelDrag.pointerProps(channel.id)}
                   className={`channel ${callViewOpen && channel.id === activeVoiceChannelId ? "active" : ""}`}
                   onClick={() => selectVoiceChannel(channel)}
                 >
@@ -8018,6 +8398,9 @@ export default function Home() {
                                 small
                               />
                               <b title={participant.name}>{participant.name}</b>
+                              <SoundboardIndicator
+                                playing={participant.soundboard}
+                              />
                               {participant.connecting && (
                                 <small
                                   className="voiceConnectingLabel"
@@ -8537,11 +8920,34 @@ export default function Home() {
       {notificationMuteMenu}
       {channelContextMenu}
       {memberMenu && (
-        <div
-          className="messageContextMenu"
-          ref={memberContextMenu}
-          role="menu"
-          style={{ left: memberMenu.x, top: memberMenu.y }}
+        <VoiceParticipantMenu
+          key={memberMenu.member.id}
+          x={memberMenu.x}
+          y={memberMenu.y}
+          channels={[]}
+          onClose={() => setMemberMenu(null)}
+          onKick={() => {}}
+          onMove={() => {}}
+          showVoiceActions={false}
+          canModerate={
+            isSelectedServerOwner &&
+            memberMenu.member.role !== "owner" &&
+            memberMenu.member.id !== session.user.id
+          }
+          audio={participantAudio.values[memberMenu.member.id]}
+          onAudioChange={
+            memberMenu.member.id !== session.user.id
+              ? (patch) => participantAudio.change(memberMenu.member.id, patch)
+              : undefined
+          }
+          serverPolicy={
+            voicePolicies[`${session.user.id}:${selectedServerId}`]?.[
+              memberMenu.member.id
+            ] ?? members.find((person) => person.id === memberMenu.member.id)
+          }
+          onServerChange={(patch) =>
+            changeServerVoicePolicy(memberMenu.member.id, patch)
+          }
         >
           {friends.some(
             (friend) =>
@@ -8580,7 +8986,7 @@ export default function Home() {
               Kick from server
             </button>
           )}
-        </div>
+        </VoiceParticipantMenu>
       )}
       {voiceMenu && (
         <VoiceParticipantMenu
@@ -8593,26 +8999,9 @@ export default function Home() {
               voiceMenu.userId
             ] ?? members.find((member) => member.id === voiceMenu.userId)
           }
-          onServerChange={async (patch) => {
-            const response = await fetch(
-              `/api/servers/${selectedServerId}/voice-moderation`,
-              {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId: voiceMenu.userId, ...patch }),
-              },
-            );
-            const policy = await response.json();
-            if (!response.ok)
-              throw new Error(
-                policy.error ?? "Could not change server voice controls.",
-              );
-            applyVoiceModeration(selectedServerId, voiceMenu.userId, policy);
-            if (!policy.mediaSynced)
-              setErrorMessage(
-                "Voice policy saved, but the media server could not be updated. The user must reconnect for server enforcement.",
-              );
-          }}
+          onServerChange={(patch) =>
+            changeServerVoicePolicy(voiceMenu.userId, patch)
+          }
           audio={participantAudio.values[voiceMenu.userId]}
           onAudioChange={(patch) =>
             participantAudio.change(voiceMenu.userId, patch)

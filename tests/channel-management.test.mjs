@@ -29,10 +29,20 @@ function fixture({
     "../../../../../db/schema": {
       channels: { id: "channel.id", serverId: "channel.serverId" },
       serverMembers: {},
+      servers: { id: "server.id" },
     },
     "../../../../../db": {
       db: {
-        select: () => ({ from: () => ({ where: async () => [{ role }] }) }),
+        transaction: async (run) => run(dependencies["../../../../../db"].db),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              then: (resolve, reject) =>
+                Promise.resolve([{ role }]).then(resolve, reject),
+              for: async () => [{ role }],
+            }),
+          }),
+        }),
         delete: () => ({
           where: (predicate) => {
             predicates.push(predicate);

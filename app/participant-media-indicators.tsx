@@ -3,6 +3,18 @@
 import { MediaIcon } from "./device-menu";
 import type { VoicePolicy } from "./voice-policy";
 
+export function SoundboardIndicator({ playing }: { playing?: boolean }) {
+  return playing ? (
+    <span
+      className="soundboardIndicator"
+      title="Playing soundboard"
+      aria-label="Playing soundboard"
+    >
+      ♫
+    </span>
+  ) : null;
+}
+
 export function ParticipantMediaIndicators({
   participant,
   selfState,
@@ -12,6 +24,7 @@ export function ParticipantMediaIndicators({
   onWatch,
 }: {
   participant: {
+    soundboard?: boolean;
     name: string;
     muted: boolean;
     deafened?: boolean;

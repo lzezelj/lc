@@ -475,6 +475,102 @@ test("authenticated internal events reach only the selected user", async () => {
   await stayedQuiet;
 });
 
+test("profile name updates replace connected identities and survive subsequent voice presence packets", async () => {
+  const url = await startServer();
+  const actor = await connect(url, "Grace"),
+    observer = await connect(url, "Ada");
+  const initial = nextMessage(observer);
+  observer.send(
+    JSON.stringify({ type: "subscribe-presence", roomIds: ["lounge"] }),
+  );
+  await initial;
+  const occupied = matchingMessage(
+    observer,
+    (event) => event.type === "presence" && event.participants.length === 1,
+  );
+  const joined = matchingMessage(actor, (event) => event.type === "joined");
+  actor.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "lounge",
+      participantName: "Grace",
+    }),
+  );
+  await Promise.all([occupied, joined]);
+  const changed = matchingMessage(
+    observer,
+    (event) =>
+      event.type === "presence" &&
+      event.participants[0]?.name === "Updated Grace",
+  );
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/user-event`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: "test-Grace",
+        event: {
+          type: "profile-updated",
+          userId: "test-Grace",
+          name: "Updated Grace",
+        },
+      }),
+    },
+  );
+  assert.equal(response.status, 204);
+  await changed;
+  const subsequent = matchingMessage(
+    observer,
+    (event) => event.type === "presence" && event.participants[0]?.soundboard,
+  );
+  actor.send(
+    JSON.stringify({ type: "media-state", soundboard: true, speaking: true }),
+  );
+  assert.equal((await subsequent).participants[0].name, "Updated Grace");
+});
+
+test("automatic Away is distinguished from manual Away and synchronizes across account sockets", async () => {
+  const url = await startServer();
+  const first = await connect(url, "Grace"),
+    second = await connect(url, "Grace");
+  const automatic = matchingMessage(
+    second,
+    (event) => event.type === "user-status",
+  );
+  first.send(
+    JSON.stringify({
+      type: "set-user-status",
+      status: "away",
+      automatic: true,
+    }),
+  );
+  assert.deepEqual(await automatic, {
+    type: "user-status",
+    status: "away",
+    automatic: true,
+  });
+  const snapshot = matchingMessage(
+    second,
+    (event) => event.type === "user-status",
+  );
+  second.send(JSON.stringify({ type: "get-user-status" }));
+  assert.equal((await snapshot).automatic, true);
+  const manual = matchingMessage(
+    first,
+    (event) => event.type === "user-status" && !event.automatic,
+  );
+  second.send(JSON.stringify({ type: "set-user-status", status: "away" }));
+  assert.deepEqual(await manual, {
+    type: "user-status",
+    status: "away",
+    automatic: false,
+  });
+});
+
 test("call invitations require an accepted friend in the signaling token", async () => {
   const url = await startServer();
   const ada = await connect(
@@ -597,7 +693,11 @@ test("status changes are self-only, synchronize sockets, and invisible stays off
   );
   assert.deepEqual(hidden.statuses, { "test-Ada": "online" });
   for (const ack of await Promise.all(acknowledgements))
-    assert.deepEqual(ack, { type: "user-status", status: "invisible" });
+    assert.deepEqual(ack, {
+      type: "user-status",
+      status: "invisible",
+      automatic: false,
+    });
   update = nextMessage(observer);
   await connect(url, "Grace");
   assert.deepEqual(
@@ -615,7 +715,11 @@ test("status changes are self-only, synchronize sockets, and invisible stays off
   const unchanged = nextMessage(grace);
   grace.send(JSON.stringify({ type: "set-user-status", status: "invalid" }));
   grace.send(JSON.stringify({ type: "get-user-status" }));
-  assert.deepEqual(await unchanged, { type: "user-status", status: "online" });
+  assert.deepEqual(await unchanged, {
+    type: "user-status",
+    status: "online",
+    automatic: false,
+  });
 });
 
 test("saved invisible status is applied before the first online broadcast", async () => {
@@ -740,6 +844,32 @@ test("an unauthenticated disconnect command cannot remove a user", async () => {
   assert.equal(response.status, 401);
   await stayedConnected;
   assert.equal(socket.readyState, WebSocket.OPEN);
+});
+
+test("server removal delivers a specific kick notice before closing account sockets", async () => {
+  const url = await startServer(),
+    socket = await connect(url, "Ada");
+  const accessChanged = nextMessage(socket),
+    closed = once(socket, "close");
+  const removal = {
+    reason: "server-kicked",
+    serverId: "server-1",
+    serverName: "Friends server",
+  };
+  const response = await fetch(
+    `${url.replace("ws://", "http://")}/internal/disconnect-user`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${authSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId: "test-Ada", ...removal }),
+    },
+  );
+  assert.equal(response.status, 204);
+  assert.deepEqual(await accessChanged, { type: "access-changed", ...removal });
+  assert.equal((await closed)[0], 4003);
 });
 
 test("connections without a valid authentication token are rejected", async () => {
@@ -1662,6 +1792,7 @@ test("presence observers see occupants without joining the call", async () => {
         camera: false,
         screen: false,
         speaking: false,
+        soundboard: false,
       },
     ],
   });
@@ -1687,6 +1818,7 @@ test("presence observers see occupants without joining the call", async () => {
         camera: true,
         screen: false,
         speaking: false,
+        soundboard: false,
       },
     ],
   });
@@ -1745,6 +1877,7 @@ test("group presence is broadcast immediately on join and leave", async () => {
         camera: false,
         screen: false,
         speaking: false,
+        soundboard: false,
       },
     ],
   });

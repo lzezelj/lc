@@ -13,11 +13,23 @@ export function StreamInfo({
 }) {
   const id = useId();
   return (
-    <div className="streamInfo" onClick={(event) => event.stopPropagation()}>
+    <div
+      className="streamInfo"
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
       <div className="streamSummary">
         {quality && <small className="qualityBadge">{quality}</small>}
         {stats && <small className="networkBadge">{stats}</small>}
       </div>
+      <button
+        className="fullscreenExit"
+        type="button"
+        aria-label="Exit fullscreen"
+        onClick={() => void document.exitFullscreen().catch(() => {})}
+      >
+        Exit fullscreen
+      </button>
       <button
         className="streamInfoTrigger"
         type="button"
@@ -36,6 +48,8 @@ export function StreamInfo({
 }
 
 export function fullscreenVideoTile(grid: HTMLElement | null) {
+  if (document.fullscreenElement)
+    return document.exitFullscreen().catch(() => {});
   const tile = grid?.matches(".videoCard:not(.nameOnly)")
     ? grid
     : grid?.querySelector<HTMLElement>(

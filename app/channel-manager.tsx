@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { SettingsNameForm } from "./settings-modal";
+import { useDragReorder, ReorderHandle, ReorderStatus } from "./drag-reorder";
+import type { DropPlacement } from "../lib/list-order";
 
 type ManagedChannel = {
   id: string;
@@ -12,23 +14,45 @@ export function ChannelManager({
   channels,
   onRename,
   onDelete,
+  onReorder,
 }: {
   channels: ManagedChannel[];
   onRename: (channel: ManagedChannel, name: string) => Promise<void>;
   onDelete: (channel: ManagedChannel) => Promise<void>;
+  onReorder?: (
+    channel: ManagedChannel,
+    targetId: string,
+    placement: DropPlacement,
+  ) => Promise<void>;
 }) {
   const [editing, setEditing] = useState("");
   const [deleting, setDeleting] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
-  const visible = channels.filter((channel) =>
+  const drag = useDragReorder({
+    items: channels.map((channel) => ({
+      ...channel,
+      group: channel.type === "text" ? "text" : "voice",
+    })),
+    scope: "channel-manager",
+    enabled: !!onReorder && !busy,
+    onReorder: async (id, targetId, placement) => {
+      const channel = channels.find((row) => row.id === id);
+      if (channel) await onReorder?.(channel, targetId, placement);
+    },
+  });
+  const visible = [
+    ...channels.filter((channel) => channel.type === "text"),
+    ...channels.filter((channel) => channel.type !== "text"),
+  ].filter((channel) =>
     `${channel.name} ${channel.type}`
       .toLowerCase()
       .includes(query.trim().toLowerCase()),
   );
   return (
     <div className="channelManager">
+      <ReorderStatus drag={drag} />
       <label>
         Search channels
         <input
@@ -44,7 +68,11 @@ export function ChannelManager({
         <p className="empty">No channels match this search.</p>
       )}
       {visible.map((channel) => (
-        <section className="managedChannel" key={channel.id}>
+        <section
+          className="managedChannel"
+          key={channel.id}
+          {...drag.itemProps(channel.id)}
+        >
           <div className="managedChannelHeading">
             <div>
               <strong>{channel.name}</strong>
@@ -57,6 +85,7 @@ export function ChannelManager({
               </small>
             </div>
             <div className="managedChannelActions">
+              {onReorder && <ReorderHandle drag={drag} id={channel.id} />}
               <button
                 type="button"
                 disabled={busy}
