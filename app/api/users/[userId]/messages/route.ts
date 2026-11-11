@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { channels, messages, servers, users } from "../../../../../db/schema";
+import {
+  auditAdmin,
+  type AdminTransaction,
+} from "../../../../../server/admin-audit";
 
 async function canManageMessages(
   actorId: string,
@@ -81,25 +85,41 @@ export async function DELETE(
     return NextResponse.json({ error: "Invalid server" }, { status: 400 });
   }
   const deletedAt = new Date();
-  const deleted = await db
-    .update(messages)
-    .set({ content: "", deletedAt, editedAt: deletedAt })
-    .where(
-      and(
-        eq(messages.authorId, userId),
-        isNull(messages.deletedAt),
-        serverId
-          ? inArray(
-              messages.channelId,
-              db
-                .select({ id: channels.id })
-                .from(channels)
-                .where(eq(channels.serverId, serverId)),
-            )
-          : undefined,
-      ),
-    )
-    .returning({ id: messages.id, channelId: messages.channelId });
+  const remove = (connection: typeof db | AdminTransaction) =>
+    connection
+      .update(messages)
+      .set({ content: "", deletedAt, editedAt: deletedAt })
+      .where(
+        and(
+          eq(messages.authorId, userId),
+          isNull(messages.deletedAt),
+          serverId
+            ? inArray(
+                messages.channelId,
+                db
+                  .select({ id: channels.id })
+                  .from(channels)
+                  .where(eq(channels.serverId, serverId)),
+              )
+            : undefined,
+        ),
+      )
+      .returning({ id: messages.id, channelId: messages.channelId });
+  const deleted =
+    session.user.id === userId
+      ? await remove(db)
+      : await db.transaction(async (tx) => {
+          const deleted = await remove(tx);
+          await auditAdmin(
+            tx,
+            session.user.id,
+            "demo.messages.delete",
+            "user",
+            userId,
+            { userId, ...(serverId ? { serverId } : {}) },
+          );
+          return deleted;
+        });
 
   const signalingUrl =
     process.env.SIGNALING_INTERNAL_URL ?? "http://localhost:3001";

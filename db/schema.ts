@@ -19,6 +19,25 @@ import type { Mention } from "../app/notification-types";
 import { sql } from "drizzle-orm";
 
 export const userRole = pgEnum("user_role", ["owner", "member", "demo"]);
+
+// No target foreign keys: moderation history survives removal of its targets.
+export const adminAuditLog = pgTable(
+  "admin_audit_log",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    actorId: uuid("actor_id").notNull(),
+    action: text("action").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: uuid("target_id").notNull(),
+    userId: uuid("user_id"),
+    serverId: uuid("server_id"),
+    channelId: uuid("channel_id"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("admin_audit_created_idx").on(table.createdAt, table.id)],
+);
 export const friendshipStatus = pgEnum("friendship_status", [
   "pending",
   "accepted",
@@ -265,6 +284,7 @@ export const messages = pgTable(
       .defaultNow()
       .notNull(),
     editedAt: timestamp("edited_at", { withTimezone: true }),
+    editedByAdmin: boolean("edited_by_admin").default(false).notNull(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (table) => [
@@ -274,6 +294,11 @@ export const messages = pgTable(
       table.id,
     ),
     index("messages_reply_to_id_idx").on(table.replyToId),
+    index("messages_author_timeline_idx").on(
+      table.authorId,
+      table.createdAt,
+      table.id,
+    ),
   ],
 );
 
@@ -317,6 +342,7 @@ export const directMessages = pgTable(
       .notNull(),
     callDurationSeconds: integer("call_duration_seconds"),
     editedAt: timestamp("edited_at", { withTimezone: true }),
+    editedByAdmin: boolean("edited_by_admin").default(false).notNull(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()

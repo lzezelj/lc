@@ -92,6 +92,7 @@ export async function GET(request: Request) {
         // Keep PostgreSQL's microseconds for ordering; Date only retains milliseconds.
         sortTimestamp: sql<string>`to_char(${table.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
         editedAt: table.editedAt,
+        editedByAdmin: table.editedByAdmin,
         attachments: table.attachments,
         mentions: userId
           ? sql<import("../../notification-types").Mention[]>`'[]'::jsonb`

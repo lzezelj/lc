@@ -3354,11 +3354,11 @@ window.verifyChatTools = async () => {
     check(
       container
         .querySelector(".testOwnerNavigation")
-        .textContent.includes("Demo accounts") &&
+        .textContent.includes("Admin dashboard") &&
         !container
           .querySelector(".testMemberNavigation")
-          .textContent.includes("Demo accounts"),
-      "Demo settings visibility is not owner-only",
+          .textContent.includes("Admin dashboard"),
+      "Admin dashboard navigation is not owner-only",
     );
     const helpButton = [...container.querySelectorAll(".helpTrigger")].find(
       (button) => button.getBoundingClientRect().width > 0,

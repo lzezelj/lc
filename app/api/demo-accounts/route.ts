@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { and, eq, inArray, lte } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { auth } from "../../../auth";
+import { ownerSession as auth } from "../../../server/owner";
+import { auditAdmin } from "../../../server/admin-audit";
 import { db } from "../../../db";
 import { buildUserHandle } from "../../../user-handle";
 import {
@@ -172,6 +173,10 @@ export async function POST(request: Request) {
       tokenHash,
       expiresAt,
     });
+    await auditAdmin(tx, session.user.id, "demo.create", "user", demoUserId, {
+      userId: demoUserId,
+      serverId,
+    });
   });
   const publicOrigin = process.env.AUTH_URL ?? new URL(request.url).origin;
   return NextResponse.json(
@@ -265,6 +270,14 @@ export async function PATCH(request: Request) {
         .update(demoInvites)
         .set({ expiresAt })
         .where(eq(demoInvites.demoUserId, demoUser.id));
+      await auditAdmin(
+        tx,
+        session.user.id,
+        "demo.extend",
+        "user",
+        demoUser.id,
+        { userId: demoUser.id },
+      );
       return { id: demoUser.id, expiresAt };
     });
     if (!result)
@@ -285,10 +298,20 @@ export async function PATCH(request: Request) {
         { error: "Username must be 1-60 characters" },
         { status: 400 },
       );
-    await db
-      .update(users)
-      .set({ name, updatedAt: new Date() })
-      .where(eq(users.id, demoUser.id));
+    await db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ name, updatedAt: new Date() })
+        .where(eq(users.id, demoUser.id));
+      await auditAdmin(
+        tx,
+        session.user.id,
+        "demo.rename",
+        "user",
+        demoUser.id,
+        { userId: demoUser.id },
+      );
+    });
     return NextResponse.json({ id: demoUser.id, name });
   }
 
@@ -335,6 +358,14 @@ export async function PATCH(request: Request) {
         .values(
           serverIds.map((serverId) => ({ serverId, userId: demoUser.id })),
         );
+      await auditAdmin(
+        tx,
+        session.user.id,
+        "demo.servers",
+        "user",
+        demoUser.id,
+        { userId: demoUser.id },
+      );
     });
     await disconnectUserEverywhere(
       demoUser.id,
@@ -344,17 +375,103 @@ export async function PATCH(request: Request) {
   }
 
   if (body.action === "regenerate") {
+    const serverIds = Array.isArray(body.serverIds)
+      ? [...new Set(body.serverIds)]
+      : undefined;
+    if (
+      serverIds &&
+      (!serverIds.length ||
+        serverIds.some(
+          (id) =>
+            typeof id !== "string" ||
+            !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id),
+        ))
+    )
+      return NextResponse.json(
+        { error: "Choose at least one valid server." },
+        { status: 400 },
+      );
+    if (serverIds) {
+      const owned = await db
+        .select({ id: servers.id })
+        .from(servers)
+        .where(
+          and(
+            inArray(servers.id, serverIds),
+            eq(servers.createdBy, session.user.id),
+          ),
+        );
+      if (owned.length !== serverIds.length)
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
     const token = randomBytes(32).toString("base64url");
     const tokenHash = createHash("sha256").update(token).digest("hex");
     const expiresAt = new Date(Date.now() + 4 * 60 * 60 * 1000);
-    await db
-      .update(demoInvites)
-      .set({ tokenHash, expiresAt, revokedAt: null, redeemedAt: null })
-      .where(eq(demoInvites.demoUserId, demoUser.id));
-    await db
-      .update(users)
-      .set({ expiresAt, disabledAt: null, updatedAt: new Date() })
-      .where(eq(users.id, demoUser.id));
+    const renewed = await db.transaction(async (tx) => {
+      const [account] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          and(
+            eq(users.id, demoUser.id),
+            eq(users.role, "demo"),
+            eq(users.createdBy, session.user.id),
+          ),
+        )
+        .for("update");
+      if (!account) return false;
+      if (serverIds) {
+        await tx
+          .delete(serverMembers)
+          .where(eq(serverMembers.userId, demoUser.id));
+        await tx
+          .insert(serverMembers)
+          .values(
+            serverIds.map((serverId) => ({ serverId, userId: demoUser.id })),
+          );
+      } else {
+        const [member] = await tx
+          .select({ serverId: serverMembers.serverId })
+          .from(serverMembers)
+          .where(eq(serverMembers.userId, demoUser.id))
+          .limit(1);
+        if (!member) return false;
+      }
+      await tx
+        .update(demoInvites)
+        .set({ tokenHash, expiresAt, revokedAt: null, redeemedAt: null })
+        .where(eq(demoInvites.demoUserId, demoUser.id));
+      await tx
+        .update(users)
+        .set({ expiresAt, disabledAt: null, updatedAt: new Date() })
+        .where(eq(users.id, demoUser.id));
+      await auditAdmin(
+        tx,
+        session.user.id,
+        "demo.regenerate",
+        "user",
+        demoUser.id,
+        { userId: demoUser.id },
+      );
+      return true;
+    });
+    if (!renewed)
+      return NextResponse.json(
+        {
+          error: "Choose server access before reactivating this demo account.",
+        },
+        { status: 409 },
+      );
+    if (serverIds) {
+      const groupChannels = await db
+        .select({ id: channels.id })
+        .from(channels)
+        .where(eq(channels.type, "voice_group"));
+      await disconnectUserEverywhere(
+        demoUser.id,
+        groupChannels.map((channel) => channel.id),
+      );
+    }
     const publicOrigin = process.env.AUTH_URL ?? new URL(request.url).origin;
     return NextResponse.json({
       id: demoUser.id,
@@ -387,6 +504,9 @@ export async function PATCH(request: Request) {
       .set({ revokedAt })
       .where(eq(demoInvites.demoUserId, demoUser.id));
     await tx.delete(serverMembers).where(eq(serverMembers.userId, demoUser.id));
+    await auditAdmin(tx, session.user.id, "demo.revoke", "user", demoUser.id, {
+      userId: demoUser.id,
+    });
   });
   await disconnectUserEverywhere(
     demoUser.id,
@@ -443,6 +563,14 @@ export async function DELETE(request: Request) {
   await db.transaction(async (tx) => {
     await tx.delete(serverMembers).where(eq(serverMembers.userId, demoUser.id));
     await tx.delete(demoInvites).where(eq(demoInvites.demoUserId, demoUser.id));
+    await auditAdmin(
+      tx,
+      session.user.id,
+      body.deleteMessages ? "demo.delete-with-messages" : "demo.delete",
+      "user",
+      demoUser.id,
+      { userId: demoUser.id },
+    );
     if (body.deleteMessages) {
       await tx.delete(messages).where(eq(messages.authorId, demoUser.id));
       await tx.delete(users).where(eq(users.id, demoUser.id));

@@ -6,12 +6,14 @@ export function MessageHeader({
   time,
   onProfile,
   edited,
+  editedByAdmin,
   image,
 }: {
   name: string;
   time: string;
   onProfile: () => void;
   edited?: boolean;
+  editedByAdmin?: boolean;
   image?: string | null;
 }) {
   return (
@@ -21,7 +23,11 @@ export function MessageHeader({
         <span className="messageAuthorName">{name}</span>
       </button>
       <time>{time}</time>
-      {edited && <small className="messageEdited">(edited)</small>}
+      {edited && (
+        <small className="messageEdited">
+          {editedByAdmin ? "(edited by admin)" : "(edited)"}
+        </small>
+      )}
     </div>
   );
 }

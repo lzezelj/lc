@@ -71,8 +71,6 @@ import { UserProfile, type ProfileUser } from "./user-profile";
 import { ChannelManager } from "./channel-manager";
 import { useDragReorder, ReorderHandle, ReorderStatus } from "./drag-reorder";
 import type { DropPlacement } from "../lib/list-order";
-import { groupMessagesByServer } from "./message-groups";
-import { MessageDeleteAction } from "./message-delete-action";
 import { ChatHistory } from "./chat-history";
 import { ConversationSearch, type SearchMessage } from "./conversation-search";
 import {
@@ -193,6 +191,7 @@ type ChatMessage = {
   callDurationSeconds: number | null;
   attachments?: MessageAttachment[];
   editedAt?: string | null;
+  editedByAdmin?: boolean;
   mentions?: Mention[];
 };
 
@@ -246,22 +245,6 @@ type Member = {
   handle?: string | null;
   image: string | null;
   role: "owner" | "member" | "mod";
-};
-type DemoAccount = {
-  id: string;
-  name: string;
-  expiresAt: string | null;
-  status: "pending" | "active" | "expired" | "revoked";
-  servers: Server[];
-};
-type AccountMessage = {
-  serverId: string;
-  id: string;
-  text: string;
-  attachments?: MessageAttachment[];
-  createdAt: string;
-  channelName: string;
-  serverName: string;
 };
 type VoiceParticipant = {
   soundboard?: boolean;
@@ -362,12 +345,6 @@ async function loadIceServers() {
   } catch {
     return fallbackIceServers;
   }
-}
-
-function formatLocalDateTime(value: string) {
-  const date = new Date(value);
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function formatCallDuration(seconds: number | null) {
@@ -594,14 +571,9 @@ export default function Home() {
     {},
   );
   const [selectedChannelId, setSelectedChannelId] = useState("");
-  const [form, setForm] = useState<
-    "server" | "channel" | "account" | "manage" | "messages" | null
-  >(null);
+  const [form, setForm] = useState<"server" | "channel" | null>(null);
   const [formName, setFormName] = useState("");
   const [channelType, setChannelType] = useState<ChannelType>("text");
-  const [inviteServerId, setInviteServerId] = useState("");
-  const [chooseInviteServer, setChooseInviteServer] = useState(false);
-  const [inviteUrl, setInviteUrl] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [serverListToggled, setServerListToggled] = useState(false);
   const [channelsHidden, setChannelsHidden] = useState(false);
@@ -662,26 +634,6 @@ export default function Home() {
   const [leaveServerTarget, setLeaveServerTarget] = useState<Server | null>(
     null,
   );
-  const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
-  const [editingDemoServers, setEditingDemoServers] = useState<string[]>([]);
-  const [editingDemoAccount, setEditingDemoAccount] =
-    useState<DemoAccount | null>(null);
-  const [extendingDemoAccount, setExtendingDemoAccount] =
-    useState<DemoAccount | null>(null);
-  const [demoExtensionHours, setDemoExtensionHours] = useState("4");
-  const [extendingDemoAccess, setExtendingDemoAccess] = useState(false);
-  const [demoInviteLinks, setDemoInviteLinks] = useState<
-    Record<string, string>
-  >({});
-  const [deleteDemoCandidate, setDeleteDemoCandidate] =
-    useState<DemoAccount | null>(null);
-  const [deleteDemoMessages, setDeleteDemoMessages] = useState(false);
-  const [regenerateInviteCandidate, setRegenerateInviteCandidate] =
-    useState<DemoAccount | null>(null);
-  const [revokeCandidateId, setRevokeCandidateId] = useState("");
-  const [messageAccount, setMessageAccount] = useState({ id: "", name: "" });
-  const [accountMessages, setAccountMessages] = useState<AccountMessage[]>([]);
-  const [returnToDemoManager, setReturnToDemoManager] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [nextMessageCursor, setNextMessageCursor] = useState<{
     beforeCreatedAt: string;
@@ -916,7 +868,7 @@ export default function Home() {
     "local-screen",
   ]);
   const [renameTarget, setRenameTarget] = useState<{
-    kind: "user" | "demo" | "server" | "channel";
+    kind: "user" | "server" | "channel";
     id: string;
     name: string;
   } | null>(null);
@@ -2770,11 +2722,16 @@ export default function Home() {
         if (message.type === "access-changed") {
           serverOrderRequest.current++;
           channelOrderRequests.current.clear();
-          if (message.reason === "server-kicked") {
+          if (
+            message.reason === "server-kicked" ||
+            message.reason === "server-deleted"
+          ) {
             if (message.serverId) kickedServers.current.add(message.serverId);
             channelHistoryGeneration.current++;
             setNoticeMessage(
-              `You have been kicked from ${message.serverName ?? "the server"}.`,
+              message.reason === "server-deleted"
+                ? "This server was deleted by an admin."
+                : `You have been kicked from ${message.serverName ?? "the server"}.`,
             );
             setErrorMessage("");
             if (message.serverId === activeVoiceServerRef.current)
@@ -2799,8 +2756,11 @@ export default function Home() {
           return;
         }
         if (message.type === "channel-deleted" && message.channelId) {
-          if (activeVoiceChannelRef.current === message.channelId)
+          if (activeVoiceChannelRef.current === message.channelId) {
             closeCallViewRef.current();
+            if (message.reason === "admin")
+              setNoticeMessage("This channel was deleted by an admin.");
+          }
           setChannels((current) =>
             current.filter((channel) => channel.id !== message.channelId),
           );
@@ -4413,218 +4373,6 @@ export default function Home() {
     } else setErrorMessage(channel.error ?? "Channel could not be created.");
   }
 
-  async function createDemoAccount(event: FormEvent) {
-    event.preventDefault();
-    if (!inviteServerId) return;
-    const name = formName.trim();
-    if (!name) return;
-    const response = await fetch("/api/demo-accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, serverId: inviteServerId }),
-    });
-    const result = await response.json();
-    if (response.ok) {
-      setInviteUrl(result.inviteUrl);
-      setFormName("");
-      if (inviteServerId === selectedServerId && result.member) {
-        setMembers((current) => [...current, result.member]);
-      }
-      setNoticeMessage("Demo account created. Copy the invitation link now.");
-    } else
-      setErrorMessage(result.error ?? "Demo account could not be created.");
-  }
-
-  function openDemoAccount(serverId: string, chooseServer: boolean) {
-    setAccountMenuOpen(false);
-    setInviteServerId(serverId);
-    setChooseInviteServer(chooseServer);
-    setInviteUrl("");
-    setForm("account");
-  }
-
-  async function openDemoAccountManager() {
-    setAccountMenuOpen(false);
-    setRevokeCandidateId("");
-    setForm("manage");
-    const response = await fetch("/api/demo-accounts");
-    const data = await response.json();
-    setDemoAccounts(response.ok && Array.isArray(data) ? data : []);
-  }
-
-  async function revokeDemoAccount(demoUserId: string) {
-    const response = await fetch("/api/demo-accounts", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoUserId, action: "revoke" }),
-    });
-    if (!response.ok) return setErrorMessage("Access could not be revoked.");
-    setDemoAccounts((current) =>
-      current.map((account) =>
-        account.id === demoUserId
-          ? { ...account, status: "revoked", servers: [] }
-          : account,
-      ),
-    );
-    setMembers((current) =>
-      current.filter((member) => member.id !== demoUserId),
-    );
-    setRevokeCandidateId("");
-    setNoticeMessage("Demo account access revoked.");
-  }
-
-  async function saveDemoServers(account: DemoAccount) {
-    const response = await fetch("/api/demo-accounts", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        demoUserId: account.id,
-        action: "servers",
-        serverIds: editingDemoServers,
-      }),
-    });
-    if (!response.ok)
-      return setErrorMessage("Server assignments could not be saved.");
-    setDemoAccounts((current) =>
-      current.map((candidate) =>
-        candidate.id === account.id
-          ? {
-              ...candidate,
-              servers: servers.filter((server) =>
-                editingDemoServers.includes(server.id),
-              ),
-            }
-          : candidate,
-      ),
-    );
-    setEditingDemoAccount(null);
-    if (selectedServerId) {
-      const membersResponse = await fetch(
-        `/api/servers/${selectedServerId}/members`,
-      );
-      const latestMembers = await membersResponse.json();
-      if (membersResponse.ok && Array.isArray(latestMembers)) {
-        setMembers(latestMembers);
-      }
-    }
-    setNoticeMessage("Server access updated.");
-  }
-
-  async function openDemoServerAssignments(account: DemoAccount) {
-    const response = await fetch("/api/servers");
-    const latestServers = await readJsonResponse<Server[]>(response);
-    if (!response.ok || !Array.isArray(latestServers)) {
-      setErrorMessage("Servers could not be refreshed.");
-      return;
-    }
-    setServers(latestServers);
-    setEditingDemoServers(account.servers.map((server) => server.id));
-    setEditingDemoAccount(account);
-  }
-
-  async function regenerateDemoInvite(account: DemoAccount) {
-    const response = await fetch("/api/demo-accounts", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ demoUserId: account.id, action: "regenerate" }),
-    });
-    const result = await readJsonResponse<{
-      inviteUrl?: string;
-      expiresAt?: string;
-      status?: DemoAccount["status"];
-      error?: string;
-    }>(response);
-    if (!response.ok || !result.inviteUrl)
-      return setErrorMessage(
-        result.error ?? "Invitation could not be generated.",
-      );
-    setDemoInviteLinks((current) => ({
-      ...current,
-      [account.id]: result.inviteUrl!,
-    }));
-    setDemoAccounts((current) =>
-      current.map((candidate) =>
-        candidate.id === account.id
-          ? {
-              ...candidate,
-              expiresAt: result.expiresAt ?? candidate.expiresAt,
-              status: result.status ?? candidate.status,
-            }
-          : candidate,
-      ),
-    );
-    setRegenerateInviteCandidate(null);
-    setNoticeMessage(
-      "A new invitation link was generated. The old link no longer works.",
-    );
-  }
-
-  async function extendDemoAccess(event: FormEvent) {
-    event.preventDefault();
-    if (!extendingDemoAccount || extendingDemoAccess) return;
-    setExtendingDemoAccess(true);
-    try {
-      const response = await fetch("/api/demo-accounts", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          demoUserId: extendingDemoAccount.id,
-          action: "extend",
-          extensionHours: Number(demoExtensionHours),
-        }),
-      });
-      const result = await readJsonResponse<{
-        id?: string;
-        expiresAt?: string;
-        error?: string;
-      }>(response);
-      if (!response.ok || !result.expiresAt)
-        throw new Error(result.error ?? "Demo access could not be extended.");
-      setDemoAccounts((current) =>
-        current.map((account) =>
-          account.id === result.id
-            ? { ...account, expiresAt: result.expiresAt! }
-            : account,
-        ),
-      );
-      setExtendingDemoAccount(null);
-      setNoticeMessage(
-        `Demo access extended until ${formatLocalDateTime(result.expiresAt)}.`,
-      );
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Demo access could not be extended.",
-      );
-    } finally {
-      setExtendingDemoAccess(false);
-    }
-  }
-
-  async function deleteDemoAccount() {
-    if (!deleteDemoCandidate) return;
-    const response = await fetch("/api/demo-accounts", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        demoUserId: deleteDemoCandidate.id,
-        deleteMessages: deleteDemoMessages,
-      }),
-    });
-    if (!response.ok)
-      return setErrorMessage("The demo account could not be deleted.");
-    setDemoAccounts((current) =>
-      current.filter((account) => account.id !== deleteDemoCandidate.id),
-    );
-    setMembers((current) =>
-      current.filter((member) => member.id !== deleteDemoCandidate.id),
-    );
-    setDeleteDemoCandidate(null);
-    setDeleteDemoMessages(false);
-    setNoticeMessage("Demo account deleted.");
-  }
-
   async function kickMember(userId: string) {
     const response = await fetch(`/api/servers/${selectedServerId}/members`, {
       method: "DELETE",
@@ -4678,54 +4426,6 @@ export default function Home() {
         error instanceof Error ? error.message : "Could not move this person.",
       );
     }
-  }
-
-  async function openAccountMessages(
-    userId: string,
-    name: string,
-    fromDemoManager = false,
-    inSettings = false,
-  ) {
-    if (!inSettings) setAccountMenuOpen(false);
-    setMessageAccount({ id: userId, name });
-    setReturnToDemoManager(fromDemoManager);
-    if (!inSettings) setForm("messages");
-    setAccountMessages([]);
-    try {
-      const response = await fetch(`/api/users/${userId}/messages`);
-      const data = await readJsonResponse<unknown>(response);
-      if (!response.ok) throw new Error(apiErrorMessage(data));
-      setAccountMessages(Array.isArray(data) ? data : []);
-    } catch (error) {
-      setAccountMessages([]);
-      setErrorMessage(
-        error instanceof Error
-          ? error.message
-          : "Account messages could not be loaded.",
-      );
-    }
-  }
-
-  async function deleteAccountMessages(serverId?: string) {
-    const query = serverId ? `?serverId=${encodeURIComponent(serverId)}` : "";
-    const response = await fetch(
-      `/api/users/${messageAccount.id}/messages${query}`,
-      { method: "DELETE" },
-    );
-    if (!response.ok) {
-      const result = await readJsonResponse<{ error?: string }>(response);
-      throw new Error(result?.error ?? "Messages could not be deleted.");
-    }
-    conversationCache.current.clear();
-    setAccountMessages((current) =>
-      serverId
-        ? current.filter((message) => message.serverId !== serverId)
-        : [],
-    );
-    setDeleteMessageCandidate(null);
-    setNoticeMessage(
-      serverId ? "Messages deleted in this server." : "All messages deleted.",
-    );
   }
 
   function requestMessageDeletion(
@@ -4818,31 +4518,14 @@ export default function Home() {
               : message,
         ),
     );
-    setAccountMessages((current) =>
-      current.filter((message) => message.id !== deleteMessageCandidate.id),
-    );
     setMessageMenu(null);
     setDeleteMessageCandidate(null);
     setPermanentMessageDeletion(false);
   }
 
-  function closeCurrentForm() {
-    if (form === "messages" && returnToDemoManager) {
-      setForm("manage");
-      setAccountMessages([]);
-      setReturnToDemoManager(false);
-      return;
-    }
-    closeForm();
-  }
-
   function closeForm() {
     setForm(null);
     setFormName("");
-    setInviteUrl("");
-    setChooseInviteServer(false);
-    setRevokeCandidateId("");
-    setReturnToDemoManager(false);
   }
 
   async function saveRename(
@@ -4856,23 +4539,19 @@ export default function Home() {
     const endpoint =
       target.kind === "user"
         ? "/api/users/me"
-        : target.kind === "demo"
-          ? "/api/demo-accounts"
-          : target.kind === "server"
-            ? "/api/servers"
-            : `/api/servers/${selectedServerId}/channels`;
+        : target.kind === "server"
+          ? "/api/servers"
+          : `/api/servers/${selectedServerId}/channels`;
     const response = await fetch(endpoint, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         name,
-        ...(target.kind === "demo"
-          ? { demoUserId: target.id, action: "rename" }
-          : target.kind === "server"
-            ? { serverId: target.id }
-            : target.kind === "channel"
-              ? { channelId: target.id }
-              : {}),
+        ...(target.kind === "server"
+          ? { serverId: target.id }
+          : target.kind === "channel"
+            ? { channelId: target.id }
+            : {}),
       }),
     });
     const result = await readJsonResponse<{ error?: string }>(response);
@@ -4880,18 +4559,7 @@ export default function Home() {
       setErrorMessage(result?.error ?? "The name could not be changed.");
       return;
     }
-    if (target.kind === "demo") {
-      setDemoAccounts((current) =>
-        current.map((account) =>
-          account.id === target.id ? { ...account, name } : account,
-        ),
-      );
-      setMembers((current) =>
-        current.map((member) =>
-          member.id === target.id ? { ...member, name } : member,
-        ),
-      );
-    } else if (target.kind === "server") {
+    if (target.kind === "server") {
       setServers((current) =>
         current.map((server) =>
           server.id === target.id ? { ...server, name } : server,
@@ -5590,92 +5258,6 @@ export default function Home() {
       />
     </div>
   );
-  const accountMessagesContent = (
-    <div className="accountMessageList">
-      {accountMessages.length === 0 && (
-        <p className="empty">No messages found.</p>
-      )}
-      {groupMessagesByServer(accountMessages, selectedServerId).map((group) => (
-        <details
-          className="serverMessageGroup"
-          key={group.id}
-          open={group.id === selectedServerId}
-        >
-          <summary>
-            <strong>{group.name}</strong>
-            {group.id === selectedServerId && <small>Current server</small>}
-            <span>{group.messages.length} messages</span>
-          </summary>
-          <MessageDeleteAction
-            key={`${messageAccount.id}:${group.id}`}
-            label="Delete all messages in this server"
-            confirmation={`Delete all messages written by ${messageAccount.name} in "${group.name}"? Messages in other servers will be kept. This cannot be undone.`}
-            onDelete={() => deleteAccountMessages(group.id)}
-          />
-          {group.messages.map((message) => (
-            <article key={message.id}>
-              <div className="managedMessageHeader">
-                <small>
-                  {message.serverName} / #{message.channelName} ·{" "}
-                  {formatLocalDateTime(message.createdAt)}
-                </small>
-                <button
-                  className="messageDeleteButton"
-                  type="button"
-                  onClick={() =>
-                    requestMessageDeletion(
-                      message.id,
-                      messageDeletionPreview(message),
-                    )
-                  }
-                >
-                  Delete
-                </button>
-              </div>
-              <p>{messageDeletionPreview(message)}</p>
-              {accountMenuOpen && deleteMessageCandidate?.id === message.id && (
-                <div className="settingsDangerZone">
-                  <p>Delete this message?</p>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={permanentMessageDeletion}
-                      disabled={deleteMessageCandidate?.alreadyDeleted}
-                      onChange={(event) =>
-                        setPermanentMessageDeletion(event.target.checked)
-                      }
-                    />
-                    Permanently remove this message
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteMessageCandidate(null)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => void deleteMessage()}
-                  >
-                    Confirm delete
-                  </button>
-                </div>
-              )}
-            </article>
-          ))}
-        </details>
-      ))}
-      {accountMessages.length > 0 && (
-        <MessageDeleteAction
-          key={messageAccount.id}
-          label="Delete all messages"
-          confirmation={`Delete all messages written by ${messageAccount.name} across every server? This cannot be undone.`}
-          onDelete={() => deleteAccountMessages()}
-        />
-      )}
-    </div>
-  );
 
   const profileOverlay = profileUser && session && (
     <UserProfile
@@ -5834,6 +5416,10 @@ export default function Home() {
                     : "join-sound"
               }
               onSelect={(id) => {
+                if (id === "admin") {
+                  window.open("/admin", "_blank", "noopener,noreferrer");
+                  return;
+                }
                 if (id === "logout") {
                   void signOut({ callbackUrl: "/login" });
                   return;
@@ -5928,41 +5514,6 @@ export default function Home() {
             {userSettingsSection === "messages" && (
               <PersonalMessages currentServerId={selectedServerId} />
             )}
-            {userSettingsSection === "demos" &&
-              session.user.role === "owner" && (
-                <>
-                  <h3>Demo accounts</h3>
-                  <p className="settingsDescription">
-                    Create invitations and manage demo accounts, access and
-                    messages.
-                  </p>
-                  <div className="demoSettingsActions">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        openDemoAccount(
-                          selectedServerId || servers[0]?.id || "",
-                          true,
-                        )
-                      }
-                      disabled={!servers.length}
-                    >
-                      Create demo account
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void openDemoAccountManager()}
-                    >
-                      Manage demo accounts
-                    </button>
-                  </div>
-                  {!servers.length && (
-                    <p className="settingsDescription">
-                      Create a server before inviting a demo account.
-                    </p>
-                  )}
-                </>
-              )}
             {userSettingsSection === "delete-account" && (
               <AccountDeletion
                 onDeleted={() => {
@@ -6721,9 +6272,7 @@ export default function Home() {
           >
             <h2>
               Rename{" "}
-              {["user", "demo"].includes(renameTarget.kind)
-                ? "username"
-                : renameTarget.kind}
+              {renameTarget.kind === "user" ? "username" : renameTarget.kind}
             </h2>
             <label>
               Name
@@ -6753,43 +6302,23 @@ export default function Home() {
         </div>
       )}
       {form && (
-        <div className="modalBackdrop" onMouseDown={closeCurrentForm}>
+        <div className="modalBackdrop" onMouseDown={closeForm}>
           <form
-            className={`modalCard ${form === "manage" ? "manageDemoModal" : ""}`}
-            onSubmit={
-              form === "server"
-                ? createServer
-                : form === "channel"
-                  ? createChannel
-                  : form === "account"
-                    ? createDemoAccount
-                    : (event) => event.preventDefault()
-            }
+            className="modalCard"
+            onSubmit={form === "server" ? createServer : createChannel}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2>
-              {form === "server"
-                ? "Create server"
-                : form === "channel"
-                  ? "Create channel"
-                  : form === "account"
-                    ? "Create demo account"
-                    : form === "messages"
-                      ? "Account messages"
-                      : "Manage demo accounts"}
-            </h2>
-            {form !== "manage" && form !== "messages" && (
-              <label>
-                Name
-                <input
-                  autoFocus
-                  value={formName}
-                  onChange={(event) => setFormName(event.target.value)}
-                  maxLength={60}
-                  required
-                />
-              </label>
-            )}
+            <h2>{form === "server" ? "Create server" : "Create channel"}</h2>
+            <label>
+              Name
+              <input
+                autoFocus
+                value={formName}
+                onChange={(event) => setFormName(event.target.value)}
+                maxLength={60}
+                required
+              />
+            </label>
             {form === "server" && (
               <label>
                 <input
@@ -6820,195 +6349,15 @@ export default function Home() {
                 </select>
               </label>
             )}
-            {form === "account" && chooseInviteServer && (
-              <label>
-                Server
-                <select
-                  value={inviteServerId}
-                  onChange={(event) => setInviteServerId(event.target.value)}
-                  required
-                >
-                  {servers.map((server) => (
-                    <option value={server.id} key={server.id}>
-                      {server.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {form === "account" && inviteUrl && (
-              <p className="inviteResult">Invitation: {inviteUrl}</p>
-            )}
-            {form === "manage" && (
-              <div className="demoAccountList">
-                {demoAccounts.length === 0 && (
-                  <p className="empty">No demo accounts yet.</p>
-                )}
-                {demoAccounts.map((account) => (
-                  <article className="demoAccount" key={account.id}>
-                    <div>
-                      <strong>{account.name}</strong>
-                      <span className={`accountStatus ${account.status}`}>
-                        {account.status}
-                      </span>
-                    </div>
-                    <small>
-                      {account.servers.length
-                        ? account.servers
-                            .map((server) => server.name)
-                            .join(", ")
-                        : "No server access"}
-                    </small>
-                    {account.expiresAt && account.status !== "revoked" && (
-                      <small>
-                        Expires {formatLocalDateTime(account.expiresAt)}
-                      </small>
-                    )}
-                    {demoInviteLinks[account.id] && (
-                      <p className="inviteResult">
-                        {demoInviteLinks[account.id]}
-                      </p>
-                    )}
-                    <div className="demoAccountActions">
-                      {(account.status === "active" ||
-                        account.status === "pending") &&
-                        account.servers.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setExtendingDemoAccount(account);
-                              setDemoExtensionHours("4");
-                            }}
-                          >
-                            Extend access
-                          </button>
-                        )}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setRenameTarget({
-                            kind: "demo",
-                            id: account.id,
-                            name: account.name,
-                          })
-                        }
-                      >
-                        Rename
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void openDemoServerAssignments(account)}
-                      >
-                        Servers
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRegenerateInviteCandidate(account)}
-                      >
-                        New invite
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void openAccountMessages(
-                            account.id,
-                            account.name,
-                            true,
-                          )
-                        }
-                      >
-                        Messages
-                      </button>
-                      {!["revoked", "expired"].includes(account.status) && (
-                        <button
-                          className="danger"
-                          type="button"
-                          onClick={() => setRevokeCandidateId(account.id)}
-                        >
-                          Revoke access
-                        </button>
-                      )}
-                    </div>
-                    <button
-                      className="deleteDemoTrash"
-                      type="button"
-                      title="Delete account"
-                      aria-label={`Delete ${account.name}`}
-                      onClick={() => {
-                        setDeleteDemoCandidate(account);
-                        setDeleteDemoMessages(false);
-                      }}
-                    >
-                      <span aria-hidden="true">🗑</span>
-                    </button>
-                  </article>
-                ))}
-              </div>
-            )}
-            {form === "messages" && accountMessagesContent}
             <div className="modalActions">
-              <button type="button" onClick={closeCurrentForm}>
-                {form === "manage" || form === "messages"
-                  ? form === "messages" && returnToDemoManager
-                    ? "Back"
-                    : "Close"
-                  : "Cancel"}
-              </button>
-              {form !== "manage" && form !== "messages" && (
-                <button className="primary" type="submit">
-                  {form === "account" && inviteUrl
-                    ? "Create another"
-                    : "Create"}
-                </button>
-              )}
-            </div>
-          </form>
-        </div>
-      )}
-      {editingDemoAccount && (
-        <div className="modalBackdrop nestedModalBackdrop">
-          <section
-            className="modalCard serverAssignmentModal"
-            role="dialog"
-            aria-modal="true"
-          >
-            <h2>Server access for {editingDemoAccount.name}</h2>
-            <p>
-              Select at least one server. Saving applies the latest server list
-              and refreshes the demo user’s page.
-            </p>
-            <div className="serverAssignmentList">
-              {servers.map((server) => (
-                <label key={server.id}>
-                  <input
-                    type="checkbox"
-                    checked={editingDemoServers.includes(server.id)}
-                    onChange={(event) =>
-                      setEditingDemoServers((current) =>
-                        event.target.checked
-                          ? [...current, server.id]
-                          : current.filter((id) => id !== server.id),
-                      )
-                    }
-                  />
-                  <span>{server.name}</span>
-                </label>
-              ))}
-            </div>
-            <div className="modalActions">
-              <button type="button" onClick={() => setEditingDemoAccount(null)}>
+              <button type="button" onClick={closeForm}>
                 Cancel
               </button>
-              <button
-                className="primary"
-                type="button"
-                disabled={editingDemoServers.length === 0}
-                onClick={() => void saveDemoServers(editingDemoAccount)}
-              >
-                Save access
+              <button className="primary" type="submit">
+                Create
               </button>
             </div>
-          </section>
+          </form>
         </div>
       )}
       {kickCandidate && (
@@ -7036,128 +6385,6 @@ export default function Home() {
               </button>
             </div>
           </section>
-        </div>
-      )}
-      {revokeCandidateId && (
-        <div
-          className="modalBackdrop nestedModalBackdrop"
-          onMouseDown={() => setRevokeCandidateId("")}
-        >
-          <section
-            className="modalCard confirmationModal"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <h2>Revoke access?</h2>
-            <p>
-              This signs the demo account out and removes it from every server.
-              Its existing messages are kept.
-            </p>
-            <div className="modalActions">
-              <button type="button" onClick={() => setRevokeCandidateId("")}>
-                Cancel
-              </button>
-              <button
-                className="danger"
-                type="button"
-                onClick={() => void revokeDemoAccount(revokeCandidateId)}
-              >
-                Revoke access
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-      {regenerateInviteCandidate && (
-        <div className="modalBackdrop nestedModalBackdrop">
-          <section
-            className="modalCard deletionConfirmation"
-            role="dialog"
-            aria-modal="true"
-          >
-            <h2>Generate a new invitation?</h2>
-            <p>
-              The existing invitation link for {regenerateInviteCandidate.name}{" "}
-              will stop working immediately.
-            </p>
-            <div className="modalActions">
-              <button
-                type="button"
-                onClick={() => setRegenerateInviteCandidate(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="primary"
-                type="button"
-                onClick={() =>
-                  void regenerateDemoInvite(regenerateInviteCandidate)
-                }
-              >
-                Generate new link
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-      {extendingDemoAccount && (
-        <div
-          className="modalBackdrop nestedModalBackdrop"
-          onMouseDown={() => {
-            if (!extendingDemoAccess) setExtendingDemoAccount(null);
-          }}
-        >
-          <form
-            className="modalCard demoExtensionModal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="extend-demo-title"
-            onMouseDown={(event) => event.stopPropagation()}
-            onSubmit={(event) => void extendDemoAccess(event)}
-          >
-            <h2 id="extend-demo-title">
-              Extend access for {extendingDemoAccount.name}
-            </h2>
-            <p>
-              Add time to the current expiry without interrupting their login or
-              changing their invitation.
-            </p>
-            {extendingDemoAccount.expiresAt && (
-              <p>
-                Current expiry:{" "}
-                {formatLocalDateTime(extendingDemoAccount.expiresAt)}
-              </p>
-            )}
-            <label>
-              Additional access (hours)
-              <input
-                autoFocus
-                type="number"
-                min={1}
-                max={720}
-                step={1}
-                required
-                value={demoExtensionHours}
-                onChange={(event) => setDemoExtensionHours(event.target.value)}
-              />
-            </label>
-            <small>Choose 1–720 hours (up to 30 additional days).</small>
-            <div className="modalActions">
-              <button
-                type="button"
-                disabled={extendingDemoAccess}
-                onClick={() => setExtendingDemoAccount(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="primary"
-                type="submit"
-                disabled={extendingDemoAccess}
-              >
-                {extendingDemoAccess ? "Extending…" : "Extend access"}
-              </button>
-            </div>
-          </form>
         </div>
       )}
       {directDeletionDialog}
@@ -7235,52 +6462,6 @@ export default function Home() {
             </section>
           </div>
         )}
-      {deleteDemoCandidate && (
-        <div className="modalBackdrop deletionConfirmationBackdrop">
-          <section
-            className="modalCard deletionConfirmation"
-            role="dialog"
-            aria-modal="true"
-          >
-            <h2>Delete {deleteDemoCandidate.name}?</h2>
-            <p>
-              The account will immediately lose all server, signaling, and voice
-              access.
-            </p>
-            <label className="permanentDeleteOption">
-              <input
-                type="checkbox"
-                checked={deleteDemoMessages}
-                onChange={(event) =>
-                  setDeleteDemoMessages(event.target.checked)
-                }
-              />
-              <span>
-                Delete all messages
-                <small>
-                  When disabled, messages remain under “Deleted user”. When
-                  enabled, every message is permanently removed.
-                </small>
-              </span>
-            </label>
-            <div className="modalActions">
-              <button
-                type="button"
-                onClick={() => setDeleteDemoCandidate(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="danger"
-                type="button"
-                onClick={() => void deleteDemoAccount()}
-              >
-                Delete account
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
     </>
   );
 
@@ -7765,6 +6946,7 @@ export default function Home() {
                             message.authorImage,
                           )}
                           edited={!!message.editedAt && !message.deleted}
+                          editedByAdmin={message.editedByAdmin}
                           time={message.time}
                           onProfile={() =>
                             setProfileUser({
@@ -8270,9 +7452,9 @@ export default function Home() {
             .filter((channel) => channel.type === "text")
             .map((channel) => (
               <div
+                key={channel.id}
                 className="channelRow"
                 {...channelDrag.itemProps(channel.id)}
-                key={channel.id}
                 onContextMenu={(event) => openChannelContext(event, channel)}
               >
                 {isSelectedServerOwner && (
@@ -8301,9 +7483,9 @@ export default function Home() {
             .filter((channel) => channel.type !== "text")
             .map((channel) => (
               <div
+                key={channel.id}
                 className="voiceChannel"
                 {...channelDrag.itemProps(channel.id)}
-                key={channel.id}
                 onContextMenu={(event) => {
                   if ((event.target as Element).closest(".voiceParticipant"))
                     return;
@@ -8707,6 +7889,7 @@ export default function Home() {
                     name={message.author}
                     image={userImage(message.authorId, message.authorImage)}
                     edited={!!message.editedAt && !message.deleted}
+                    editedByAdmin={message.editedByAdmin}
                     time={message.time}
                     onProfile={() =>
                       setProfileUser({
@@ -9108,6 +8291,7 @@ function toChatMessage(message: {
   attachments?: MessageAttachment[];
   createdAt?: string | Date;
   editedAt?: string | Date | null;
+  editedByAdmin?: boolean;
   mentions?: Mention[];
   deleted?: boolean;
   deletedAt?: string | Date | null;
@@ -9120,6 +8304,7 @@ function toChatMessage(message: {
     authorId: message.authorId,
     author: message.author,
     authorImage: message.authorImage,
+    editedByAdmin: message.editedByAdmin,
     mentions:
       message.deleted || message.deletedAt ? [] : (message.mentions ?? []),
     editedAt: message.editedAt

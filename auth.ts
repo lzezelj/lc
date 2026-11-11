@@ -12,6 +12,10 @@ import {
 import { db } from "./db";
 import { ensureUserHandle } from "./server/user-handles";
 import {
+  currentAccountRole,
+  matchesOwnerEmail,
+} from "./server/owner-policy.mjs";
+import {
   accounts,
   demoInvites,
   serverMembers,
@@ -29,7 +33,7 @@ function normalizedEmails(value: string | undefined) {
 }
 
 function isOwnerEmail(email: string) {
-  return email === process.env.OWNER_EMAIL?.trim().toLowerCase();
+  return matchesOwnerEmail(email, process.env.OWNER_EMAIL);
 }
 
 function isAllowedGoogleEmail(email: string) {
@@ -135,6 +139,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         .select({
           id: users.id,
           role: users.role,
+          email: users.email,
           disabledAt: users.disabledAt,
           expiresAt: users.expiresAt,
           handle: users.handle,
@@ -151,7 +156,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         }
         return null;
       }
-      token.role = currentUser.role;
+      token.role = currentAccountRole(currentUser, process.env.OWNER_EMAIL);
+      token.email = currentUser.email;
       token.handle =
         currentUser.handle ??
         (await ensureUserHandle(currentUser.id, currentUser.name));

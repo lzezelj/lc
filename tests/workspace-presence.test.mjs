@@ -420,6 +420,23 @@ test("kicked workspace leaves revoked content, cancels stale history and preserv
   assert.equal(state.kicked.current.has("server"), true);
   assert.equal(state.refreshes, 1);
   assert.equal(state.leaves, 1);
+  context.message.reason = "server-deleted";
+  context.activeVoiceServerRef.current = "other-server";
+  state.serverId = "server";
+  state.friendView = false;
+  vm.runInNewContext(
+    ts.transpile(`(() => ${branch})()`, { target: ts.ScriptTarget.ES2022 }),
+    context,
+  );
+  assert.equal(state.notice, "This server was deleted by an admin.");
+  assert.equal(state.serverId, "");
+  assert.equal(state.friendView, true);
+  assert.equal(
+    state.leaves,
+    1,
+    "Deleting another server must preserve an unrelated call",
+  );
+  assert.equal(state.refreshes, 2);
 });
 
 test("double-clicking a fullscreen tile exits and entering fullscreen selects a visible video", async () => {

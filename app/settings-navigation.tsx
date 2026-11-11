@@ -31,7 +31,12 @@ export function SettingsNavigation({
           ],
         },
         ...(owner
-          ? [{ label: "Administration", items: [["demos", "Demo accounts"]] }]
+          ? [
+              {
+                label: "Administration",
+                items: [["admin", "Admin dashboard ↗"]],
+              },
+            ]
           : []),
         { label: "Session", items: [["logout", "Log out"]] },
       ]

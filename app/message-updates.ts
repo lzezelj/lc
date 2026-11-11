@@ -2,6 +2,7 @@ export type MessageEdit = {
   id: string;
   text: string;
   editedAt: string;
+  editedByAdmin?: boolean;
   mentions?: import("./notification-types").Mention[];
 };
 
@@ -65,6 +66,9 @@ export function applyMessageEdit<
         ...message,
         text: edit.text,
         editedAt: edit.editedAt,
+        ...(edit.editedByAdmin !== undefined
+          ? { editedByAdmin: edit.editedByAdmin }
+          : {}),
         ...(edit.mentions ? { mentions: edit.mentions } : {}),
       };
     }

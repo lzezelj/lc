@@ -42,6 +42,49 @@ export function createSignalingServer({
       );
       return;
     }
+    if (
+      request.method === "POST" &&
+      request.url === "/internal/admin-presence"
+    ) {
+      const supplied = request.headers.authorization?.replace(
+        /^Bearer\s+/i,
+        "",
+      );
+      if (!secretsMatch(supplied, internalSecret))
+        return response.writeHead(401).end("Unauthorized");
+      readJsonBody(request)
+        .then((body) => {
+          if (
+            !Array.isArray(body.userIds) ||
+            body.userIds.length > 50 ||
+            body.userIds.some((id) => typeof id !== "string")
+          )
+            return response.writeHead(400).end("Invalid users");
+          const connected = new Set(
+            [...ws.clients]
+              .filter((client) => client.readyState === WebSocket.OPEN)
+              .map((client) => client.identity?.sub),
+          );
+          response.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          });
+          response.end(
+            JSON.stringify(
+              Object.fromEntries(
+                body.userIds.map((id) => [
+                  id,
+                  connected.has(id)
+                    ? (userStatuses.get(id) ?? "online")
+                    : "offline",
+                ]),
+              ),
+            ),
+          );
+        })
+        .catch(() => response.writeHead(400).end("Invalid JSON"));
+      return;
+    }
     if (request.method === "POST" && request.url === "/internal/claim-voice") {
       const supplied = request.headers.authorization?.replace(
         /^Bearer\s+/i,
@@ -384,6 +427,7 @@ export function createSignalingServer({
                   type: "channel-deleted",
                   channelId: body.channelId,
                   serverId: body.serverId,
+                  ...(body.reason === "admin" ? { reason: "admin" } : {}),
                 }),
               );
           }
@@ -1277,9 +1321,10 @@ export function createSignalingServer({
             client.identity?.sub === socket.identity.sub &&
             client.readyState === WebSocket.OPEN,
         )
-      )
+      ) {
         userStatuses.delete(socket.identity.sub);
-      automaticAwayUsers.delete(socket.identity.sub);
+        automaticAwayUsers.delete(socket.identity.sub);
+      }
       for (const serverId of socket.identity.serverIds) {
         broadcastOnlinePresence(serverId);
       }

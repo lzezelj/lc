@@ -11,7 +11,7 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 - After editing code, run `npm.cmd run format`.
 - Run relevant tests and `npm.cmd run build` for substantial changes.
 - Mention when new behavior deserves automated tests.
-- Update `ARCHITECTURE.md` whenever architecture, infrastructure, authentication, data flow, or major limitations change.
+- Update the owning document in `docs/architecture/` whenever architecture, infrastructure, authentication, data flow, or major limitations change. Update `ARCHITECTURE.md` when the topology, shared component responsibilities, or reading map changes.
 - Do not create `.env` or `.env.example` files unless explicitly requested.
 - Never display, copy, or commit secrets.
 - Do not deploy or change production infrastructure unless explicitly requested.
@@ -33,15 +33,22 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 
 Read this `AGENTS.md` directly; a summary does not replace applicable project instructions.
 
-Before architectural changes, obtain task-specific context from `ARCHITECTURE.md`.
-For substantial feature work, prefer a read-only architecture sub-agent with a fresh
-context: give it the task and ask it to read `ARCHITECTURE.md` and relevant source
-files. Its briefing should include relevant constraints, components and data flows,
-file/section references, testing requirements, and uncertainties or conflicting
-documentation. Keep the briefing concise and do not include secrets.
+Before architectural changes, read the short overview and reading map in
+`ARCHITECTURE.md`, then read only the topic documents in `docs/architecture/`
+needed for the task. Follow related-topic links when the change crosses a boundary;
+do not load every architecture document by default. These topic files are reference
+documentation, not additional `AGENTS.md` instruction files.
 
-The implementing agent may use this briefing instead of reading the whole
-architecture document. Read referenced sections directly when details are unclear
-or consequential, verify assumptions against current source, and still update
-`ARCHITECTURE.md` when required. If sub-agents are unavailable or the task is small,
-read the relevant architecture sections directly.
+For substantial feature work, prefer a read-only architecture sub-agent with a fresh
+context: give it the task and ask it to read the overview, relevant topic documents
+and relevant source files. Its briefing should include relevant constraints,
+components and data flows, file/section references, testing requirements, and
+uncertainties or conflicting documentation. Keep the briefing concise and do not
+include secrets.
+
+The implementing agent may use this briefing instead of reading the topic documents
+in full. Read referenced sections directly when details are unclear or consequential,
+verify assumptions against current source, and update the owning topic when required.
+If sub-agents are unavailable or the task is small, read the relevant topic sections
+directly. Keep detailed contracts in their owning topic and link to them from other
+documents rather than duplicating them.

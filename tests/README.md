@@ -1,5 +1,17 @@
 # Test coverage
 
+Admin dashboard coverage runs in `npm.cmd test` (`admin.test.mjs`) and
+`npm.cmd run test:db` (`admin.database.test.mjs`). It checks strict current-owner
+authorization, bounded parameterized reads, moderation identity/event ordering,
+audit rollback, real SQL and cleanup, and active-channel deletion notices.
+The admin database test rolls back its fixtures and any provisional migration.
+`node tests/direct-webrtc.browser.mjs --admin` covers the actual dashboard UI on
+desktop/mobile with fixture data, including confirmations and access revocation.
+It also covers server creation/rename/AFK/ownership/picture removal/deletion and
+user deletion with an explicit sent-message erasure choice. The PostgreSQL suite
+checks these mutations against real constraints and verifies join-sound fixture
+UUIDs are absent after rollback, preventing the former nested-transaction leak.
+
 Pending server invitations use the existing default server-invites suite for
 owner/friend/search validation and action authentication/rate limits. The database
 suite exercises actual invitation SQL and channel authorization: no access while
@@ -123,7 +135,7 @@ read acknowledgements. `notifications.database.test.mjs` runs the actual channel
 message and edit paths with PostgreSQL: atomic mention persistence, one notification
 per recipient/message, edits, durable counts, monotonic reads, independent DM
 message/call preferences, membership/friendship checks and deletion cleanup.
-`npm.cmd run test:db` includes both database files; use a disposable migrated
+`npm.cmd run test:db` includes the messaging, notification and admin database files; use a disposable migrated
 database. Fixtures roll back their own data.
 `node tests/direct-webrtc.browser.mjs --notifications` runs muted desktop/mobile
 checks for @ completion, keyboard/mouse/manual mentions, profile shortcuts,

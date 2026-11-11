@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const useTurn = process.argv.includes("--turn");
+const adminOnly = process.argv.includes("--admin");
 const directIp = process.argv.includes("--direct-ip");
 const navigation = process.argv.includes("--navigation");
 const microphone = process.argv.includes("--microphone");
@@ -27,6 +28,7 @@ const cameraMirrorOnly = process.argv.includes("--camera-mirror");
 const listOrderOnly = process.argv.includes("--list-order");
 const panelAnimationsOnly = process.argv.includes("--panel-animations");
 const workspaceControls =
+  adminOnly ||
   listOrderOnly ||
   cameraMirrorOnly ||
   process.argv.includes("--workspace-controls") ||
@@ -43,6 +45,7 @@ const workspaceControls =
 const mediaOptionsOnly =
   process.argv.includes("--media-options-only") || helpTourOnly;
 const supportedFlags = new Set([
+  "--admin",
   "--list-order",
   "--camera-mirror",
   "--turn",
@@ -149,7 +152,7 @@ if (microphone) {
     )
     .replace(/^export /gm, "");
 }
-if (workspaceLayoutOnly) {
+if (workspaceLayoutOnly || adminOnly) {
   const { createServer } = await import("node:http");
   noiseServer = createServer((request, response) => {
     response.setHeader("Content-Type", "text/html");
@@ -432,13 +435,65 @@ if (navigation || workspaceControls) {
       ),
     );
   }
+  if (adminOnly) {
+    for (const [source, output] of [
+      ["admin/dashboard", "admin-dashboard"],
+      ["admin/demos", "admin-demos"],
+      ["admin/server-settings", "admin-server-settings"],
+    ]) {
+      let component = await readFile(
+        new URL(`../app/${source}.tsx`, import.meta.url),
+        "utf8",
+      );
+      component = component
+        .replace('import "./admin.css";', "")
+        .replaceAll('"next/navigation"', '"./admin-navigation.mock.js"')
+        .replaceAll('"next-auth/react"', '"./admin-session.mock.js"')
+        .replaceAll('"next/link"', '"./admin-link.mock.js"')
+        .replaceAll('"../avatar"', '"./avatar.js"')
+        .replaceAll('"../settings-modal"', '"./settings-modal.js"')
+        .replaceAll(
+          '"../profile-picture-settings"',
+          '"./profile-picture-settings.js"',
+        )
+        .replaceAll('"./server-settings"', '"./admin-server-settings.js"')
+        .replaceAll('"./demos"', '"./admin-demos.js"')
+        .replaceAll('"./dashboard"', '"./admin-dashboard.js"');
+      await writeFile(
+        join(directory, `${output}.js`),
+        ts.transpile(component, {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.CommonJS,
+          jsx: ts.JsxEmit.ReactJSX,
+        }),
+      );
+    }
+    await writeFile(
+      join(directory, "admin-navigation.mock.js"),
+      `const React = require('react');
+      const subscribe = (listener) => { window.addEventListener('popstate',listener); return () => window.removeEventListener('popstate',listener); };
+      const go = (url, replace) => { history[replace ? 'replaceState' : 'pushState']({},'',url); window.dispatchEvent(new Event('popstate')); };
+      exports.useSearchParams = () => { const value = React.useSyncExternalStore(subscribe, () => location.search); return React.useMemo(() => new URLSearchParams(value),[value]); };
+      const router = {push: (url) => go(url),replace: (url) => go(url,true)}; exports.useRouter = () => router;`,
+    );
+    await writeFile(
+      join(directory, "admin-session.mock.js"),
+      `const React = require('react'); exports.useSession = () => React.useSyncExternalStore((listener) => {window.addEventListener('admin-session',listener); return () => window.removeEventListener('admin-session',listener);}, () => window.adminSession);`,
+    );
+    await writeFile(
+      join(directory, "admin-link.mock.js"),
+      `const React = require('react'); exports.default = (props) => React.createElement('a',props);`,
+    );
+  }
   await writeFile(
     join(directory, "entry.mjs"),
     await readFile(
       new URL(
-        workspaceControls
-          ? "./workspace-controls.fixture.mjs"
-          : "./call-navigation.fixture.mjs",
+        adminOnly
+          ? "./admin.fixture.mjs"
+          : workspaceControls
+            ? "./workspace-controls.fixture.mjs"
+            : "./call-navigation.fixture.mjs",
         import.meta.url,
       ),
       "utf8",
@@ -615,9 +670,14 @@ try {
       { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false },
       sessionId,
     );
-  const workspaceStyles = workspaceControls
+  let workspaceStyles = workspaceControls
     ? await readFile(new URL("../app/globals.css", import.meta.url), "utf8")
     : "";
+  if (adminOnly)
+    workspaceStyles += await readFile(
+      new URL("../app/admin/admin.css", import.meta.url),
+      "utf8",
+    );
   const result = await call(
     "Runtime.evaluate",
     {
@@ -775,6 +835,7 @@ try {
     throw new Error(JSON.stringify(result.exceptionDetails));
   const data = result.result.value;
   if (
+    adminOnly ||
     messageComposerOnly ||
     cameraMirrorOnly ||
     listOrderOnly ||
@@ -803,27 +864,29 @@ try {
       const checked = await call(
         "Runtime.evaluate",
         {
-          expression: listOrderOnly
-            ? "window.verifyOrderAndDeviceSettings()"
-            : cameraMirrorOnly
-              ? "window.verifyCameraMirror()"
-              : panelAnimationsOnly
-                ? "window.verifyPanelAnimations()"
-                : soundboardOnly
-                  ? "window.verifySoundboard()"
-                  : videoAttachmentsOnly
-                    ? "window.verifyVideoAttachments()"
-                    : workspaceLayoutOnly
-                      ? "window.verifyWorkspaceLayout()"
-                      : serverInvitationsOnly
-                        ? "window.verifyServerInvitations()"
-                        : participantAudioOnly
-                          ? "window.verifyParticipantAudio()"
-                          : notificationsOnly
-                            ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
-                            : chatToolsOnly
-                              ? "window.verifyChatTools()"
-                              : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          expression: adminOnly
+            ? "window.verifyAdminDashboard()"
+            : listOrderOnly
+              ? "window.verifyOrderAndDeviceSettings()"
+              : cameraMirrorOnly
+                ? "window.verifyCameraMirror()"
+                : panelAnimationsOnly
+                  ? "window.verifyPanelAnimations()"
+                  : soundboardOnly
+                    ? "window.verifySoundboard()"
+                    : videoAttachmentsOnly
+                      ? "window.verifyVideoAttachments()"
+                      : workspaceLayoutOnly
+                        ? "window.verifyWorkspaceLayout()"
+                        : serverInvitationsOnly
+                          ? "window.verifyServerInvitations()"
+                          : participantAudioOnly
+                            ? "window.verifyParticipantAudio()"
+                            : notificationsOnly
+                              ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+                              : chatToolsOnly
+                                ? "window.verifyChatTools()"
+                                : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,
@@ -1015,7 +1078,7 @@ try {
         }
       }
       console.log(
-        `${listOrderOnly ? "List ordering" : cameraMirrorOnly ? "Camera mirror" : panelAnimationsOnly ? "Panel animations" : soundboardOnly ? "Soundboard" : videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
+        `${adminOnly ? "Admin dashboard" : listOrderOnly ? "List ordering" : cameraMirrorOnly ? "Camera mirror" : panelAnimationsOnly ? "Panel animations" : soundboardOnly ? "Soundboard" : videoAttachmentsOnly ? "Video attachments" : workspaceLayoutOnly ? "Workspace layout" : serverInvitationsOnly ? "Server invitations" : participantAudioOnly ? "Participant audio" : "Message composer"} ${mobile ? "mobile" : "desktop"} passed:`,
         JSON.stringify(checked.result.value),
       );
       if (workspaceLayoutOnly) {

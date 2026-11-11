@@ -395,6 +395,41 @@ async function startServer(options) {
   return `ws://127.0.0.1:${address.port}`;
 }
 
+test("admin presence snapshots require the internal secret and distinguish selected status from disconnection", async () => {
+  const url = await startServer();
+  await connect(
+    url,
+    "Admin presence user",
+    permittedChannelIds,
+    ["server-1"],
+    [],
+    "invisible",
+  );
+  const request = (secret, userIds) =>
+    fetch(`${url.replace("ws://", "http://")}/internal/admin-presence`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userIds }),
+    });
+  assert.equal(
+    (await request("wrong", ["test-Admin presence user"])).status,
+    401,
+  );
+  assert.equal((await request(authSecret, Array(51).fill("user"))).status, 400);
+  const response = await request(authSecret, [
+    "test-Admin presence user",
+    "disconnected",
+  ]);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    "test-Admin presence user": "invisible",
+    disconnected: "offline",
+  });
+});
+
 async function connect(
   url,
   name = "Test user",
@@ -569,6 +604,66 @@ test("automatic Away is distinguished from manual Away and synchronizes across a
     status: "away",
     automatic: false,
   });
+});
+
+test("closing a call socket preserves automatic Away while the account remains connected", async () => {
+  const url = await startServer();
+  for (const automatic of [true, false]) {
+    const name = automatic ? "Automatic away" : "Manual away";
+    const presence = await connect(url, name),
+      voice = await connect(url, name);
+    const changed = matchingMessage(
+      presence,
+      (event) => event.type === "user-status",
+    );
+    presence.send(
+      JSON.stringify({ type: "set-user-status", status: "away", automatic }),
+    );
+    assert.equal((await changed).automatic, automatic);
+    const ready = matchingMessage(
+      presence,
+      (event) => event.type === "online-presence",
+    );
+    presence.send(
+      JSON.stringify({ type: "subscribe-online", serverId: "server-1" }),
+    );
+    await ready;
+    // AFK moves replace the voice socket while the workspace socket stays open.
+    const departed = matchingMessage(
+      presence,
+      (event) => event.type === "online-presence",
+    );
+    voice.close();
+    await departed;
+    const snapshot = matchingMessage(
+      presence,
+      (event) => event.type === "user-status",
+    );
+    presence.send(JSON.stringify({ type: "get-user-status" }));
+    assert.deepEqual(await snapshot, {
+      type: "user-status",
+      status: "away",
+      automatic,
+    });
+    if (automatic) {
+      const restored = matchingMessage(
+        presence,
+        (event) => event.type === "user-status",
+      );
+      presence.send(
+        JSON.stringify({
+          type: "set-user-status",
+          status: "online",
+          automatic: false,
+        }),
+      );
+      assert.deepEqual(await restored, {
+        type: "user-status",
+        status: "online",
+        automatic: false,
+      });
+    }
+  }
 });
 
 test("call invitations require an accepted friend in the signaling token", async () => {
@@ -1457,14 +1552,20 @@ test("channel deletion authenticates, revokes stale access and leaves other room
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ serverId: "server-1", channelId: "lounge" }),
+      body: JSON.stringify({
+        serverId: "server-1",
+        channelId: "lounge",
+        reason: "admin",
+      }),
     });
   assert.equal((await request("wrong")).status, 401);
   assert.equal(target.readyState, WebSocket.OPEN);
   const closed = once(target, "close");
   const event = nextMessage(observer);
   assert.equal((await request(authSecret)).status, 204);
-  assert.equal((await event).type, "channel-deleted");
+  const deletedEvent = await event;
+  assert.equal(deletedEvent.type, "channel-deleted");
+  assert.equal(deletedEvent.reason, "admin");
   await closed;
   assert.equal(other.readyState, WebSocket.OPEN);
   const forbidden = nextMessage(observer);

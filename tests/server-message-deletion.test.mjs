@@ -52,6 +52,7 @@ function fixture({
     throw new Error(`Unexpected predicate ${op}`);
   }
   const dependencies = {
+    "../../../../../server/admin-audit": { auditAdmin: async () => {} },
     "drizzle-orm": Object.fromEntries(
       ["and", "asc", "eq", "inArray", "isNull"].map((op) => [
         op,
@@ -78,6 +79,7 @@ function fixture({
     },
     "../../../../../db": {
       db: {
+        transaction: (run) => run(dependencies["../../../../../db"].db),
         select: () => ({
           from: (table) => ({
             where: (predicate) =>

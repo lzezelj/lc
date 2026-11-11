@@ -11,6 +11,7 @@ export type SearchMessage = {
   text: string;
   createdAt: string;
   editedAt?: string | null;
+  editedByAdmin?: boolean;
   deleted?: boolean;
   deletedAt?: string | null;
   attachments?: MessageAttachment[];

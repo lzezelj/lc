@@ -92,7 +92,8 @@ require self/friend/shared-server access. Targeted image updates and fresh JWT
 picture metadata preserve history and call state. The local migration is applied;
 production deployment must include it. Default/CI, database and browser
 regressions cover the new behavior. Server validation checks signature/dimensions
-without independent full decoding; that limit is recorded in ARCHITECTURE.md.
+without independent full decoding; that limit is recorded in the
+[profile architecture](docs/architecture/ui.md#avatars-profiles-and-identity-updates).
 Verification: formatting, all 239 default tests, nine PostgreSQL tests, production
 build and muted desktop/mobile composer checks passed. Call-navigation checks
 retained stable direct audio and the group room. An initial mobile run hit a
@@ -469,7 +470,8 @@ two-account browser session; no production deployment was performed.
 
 The subsequent attachment feature adds private image/PDF uploads to channel
 messages and friend DMs, plus a shared textarea composer that grows/shrinks up
-to three lines and then scrolls. See `ARCHITECTURE.md` for storage, permissions,
+to three lines and then scrolls. See the
+[messaging architecture](docs/architecture/messaging.md) for storage, permissions,
 quota and deletion details. Verification passed formatting, all 201 default
 tests and the production build. A disposable PostgreSQL 17 container passed
 the migration runner twice and all five database tests, including soft-delete
@@ -492,7 +494,8 @@ sidebar; a selected friend's visible chat loads its latest 50 messages, with
 older pages on demand. A retained selection in another workspace does not load
 history, and leaving the visible conversation aborts its initial request. The
 audit findings and verification counts below describe the original audit;
-`ARCHITECTURE.md` and `tests/README.md` describe the updated behavior and coverage.
+The [messaging architecture](docs/architecture/messaging.md) and
+[test guide](tests/README.md) describe the updated behavior and coverage.
 This follow-up passed formatting, all 172 default regression tests, the production
 build and the muted browser navigation check. The added cases cover metadata-only
 Friends queries, visible-chat loading, cancellation and stale-response rejection.

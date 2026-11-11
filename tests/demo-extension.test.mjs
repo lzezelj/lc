@@ -141,6 +141,12 @@ function createHandler({
       };
     if (name.endsWith("/auth"))
       return { auth: async () => ({ user: { id: "owner", role } }) };
+    if (name.endsWith("/server/owner"))
+      return {
+        ownerSession: async () =>
+          role === "owner" ? { user: { id: "owner", role } } : null,
+      };
+    if (name.endsWith("/admin-audit")) return { auditAdmin: async () => {} };
     if (name.endsWith("/db")) return { db };
     if (name.endsWith("/db/schema")) return schema;
     if (name.endsWith("/demo-duration")) return duration;

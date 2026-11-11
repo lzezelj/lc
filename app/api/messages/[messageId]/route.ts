@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 import { auth } from "../../../../auth";
 import { db } from "../../../../db";
 import { messages, users } from "../../../../db/schema";
+import {
+  auditAdmin,
+  type AdminTransaction,
+} from "../../../../server/admin-audit";
 
 export async function PATCH(
   request: Request,
@@ -42,26 +46,43 @@ export async function DELETE(
     permanent?: boolean;
   };
   const permanent = body.permanent === true;
-  const [deleted] = permanent
-    ? await db
-        .delete(messages)
-        .where(
-          and(
-            eq(messages.id, messageId),
-            eq(messages.authorId, message.authorId),
-          ),
-        )
-        .returning({ id: messages.id })
-    : await db
-        .update(messages)
-        .set({ content: "", deletedAt: new Date(), editedAt: new Date() })
-        .where(
-          and(
-            eq(messages.id, messageId),
-            eq(messages.authorId, message.authorId),
-          ),
-        )
-        .returning({ id: messages.id });
+  const remove = (connection: typeof db | AdminTransaction) =>
+    permanent
+      ? connection
+          .delete(messages)
+          .where(
+            and(
+              eq(messages.id, messageId),
+              eq(messages.authorId, message.authorId),
+            ),
+          )
+          .returning({ id: messages.id })
+      : connection
+          .update(messages)
+          .set({ content: "", deletedAt: new Date(), editedAt: new Date() })
+          .where(
+            and(
+              eq(messages.id, messageId),
+              eq(messages.authorId, message.authorId),
+            ),
+          )
+          .returning({ id: messages.id });
+  const [deleted] =
+    message.authorId === session.user.id
+      ? await remove(db)
+      : await db.transaction(async (tx) => {
+          const deleted = await remove(tx);
+          if (deleted.length)
+            await auditAdmin(
+              tx,
+              session.user.id,
+              permanent ? "message.delete-permanently" : "message.delete",
+              "channel-message",
+              messageId,
+              { userId: message.authorId, channelId: message.channelId },
+            );
+          return deleted;
+        });
   if (!deleted) {
     return NextResponse.json({ error: "Message not found" }, { status: 404 });
   }

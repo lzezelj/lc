@@ -1377,15 +1377,15 @@ test("message reactions enforce conversation access, isolate actors, aggregate l
 
 test("member join sounds are isolated by person and server and reset on sound deletion", async () => {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
+  const user = randomUUID(),
+    otherUser = randomUUID(),
+    server = randomUUID(),
+    otherServer = randomUUID(),
+    sound = randomUUID();
   await client.connect();
   try {
     await client.query("BEGIN");
     const database = drizzle(client, { schema });
-    const user = randomUUID(),
-      otherUser = randomUUID(),
-      server = randomUUID(),
-      otherServer = randomUUID(),
-      sound = randomUUID();
     await database.insert(schema.users).values([
       { id: user, name: "Join sound owner" },
       { id: otherUser, name: "Other member" },
@@ -1412,13 +1412,21 @@ test("member join sounds are isolated by person and server and reset on sound de
     });
     let actor = user;
     const route = {};
+    // The route's transaction must stay inside this test's outer rollback.
+    const scopedDatabase = new Proxy(database, {
+      get(target, key) {
+        if (key === "transaction") return (run) => run(database);
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
     const dependencies = {
       "drizzle-orm": orm,
       "next/server": { NextResponse: { json: Response.json } },
       "../../../../../auth": {
         auth: async () => ({ user: { id: actor, role: "member" } }),
       },
-      "../../../../../db": { db: database },
+      "../../../../../db": { db: scopedDatabase },
       "../../../../../db/schema": schema,
       "../../../../../server/rate-limit": {
         checkRateLimit: () => ({ allowed: true }),
@@ -1534,7 +1542,22 @@ test("member join sounds are isolated by person and server and reset on sound de
     );
   } finally {
     await client.query("ROLLBACK");
-    await client.end();
+    try {
+      const leftovers = await client.query(
+        "SELECT (SELECT count(*) FROM users WHERE id = ANY($1::uuid[])) + (SELECT count(*) FROM servers WHERE id = ANY($2::uuid[])) AS count",
+        [
+          [user, otherUser],
+          [server, otherServer],
+        ],
+      );
+      assert.equal(
+        Number(leftovers.rows[0].count),
+        0,
+        "Join-sound fixtures must not survive rollback",
+      );
+    } finally {
+      await client.end();
+    }
   }
 });
 

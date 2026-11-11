@@ -234,12 +234,16 @@ function ProfileCropEditor({
 export function ProfilePictureSettings({
   image,
   onSaved,
+  confirmChange,
+  requestHeaders,
   name = "You",
   endpoint = "/api/users/me/avatar",
   kind = "profile",
 }: {
   image?: string | null;
   onSaved: (image: string | null) => Promise<void>;
+  confirmChange?: (save: () => Promise<void>, remove: boolean) => void;
+  requestHeaders?: Record<string, string>;
   name?: string;
   endpoint?: string;
   kind?: "profile" | "server";
@@ -258,7 +262,11 @@ export function ProfilePictureSettings({
       const body = file ? await prepareProfilePicture(file, crop) : undefined;
       const response = await fetch(endpoint, {
         method: file ? "PUT" : "DELETE",
-        ...(body ? { headers: { "Content-Type": "image/png" }, body } : {}),
+        headers: {
+          ...requestHeaders,
+          ...(body ? { "Content-Type": "image/png" } : {}),
+        },
+        ...(body ? { body } : {}),
       });
       const result = await response.json();
       if (!response.ok)
@@ -280,6 +288,10 @@ export function ProfilePictureSettings({
       if (input.current) input.current.value = "";
     }
   }
+  function requestSave(file?: File, crop?: ProfileCrop) {
+    if (confirmChange) confirmChange(() => save(file, crop), !file);
+    else void save(file, crop);
+  }
   return (
     <div
       className={`profilePictureSettings ${kind === "server" ? "serverPictureSettings" : ""}`}
@@ -300,7 +312,7 @@ export function ProfilePictureSettings({
               type="button"
               className="danger"
               disabled={busy || !image}
-              onClick={() => void save()}
+              onClick={() => requestSave()}
             >
               Remove picture
             </button>
@@ -342,7 +354,7 @@ export function ProfilePictureSettings({
           file={selected}
           busy={busy}
           error={error}
-          onSave={(crop) => void save(selected, crop)}
+          onSave={(crop) => requestSave(selected, crop)}
           onClose={() => {
             if (!busy) {
               setSelected(null);

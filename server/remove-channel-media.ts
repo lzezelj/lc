@@ -4,6 +4,7 @@ export async function removeChannelMedia(
   serverId: string,
   channelId: string,
   type: string,
+  reason?: "admin",
 ) {
   const url = process.env.SIGNALING_INTERNAL_URL ?? "http://127.0.0.1:3001";
   const secret =
@@ -15,7 +16,7 @@ export async function removeChannelMedia(
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ serverId, channelId }),
+      body: JSON.stringify({ serverId, channelId, reason }),
     }).catch(() => undefined);
   const livekitUrl =
     process.env.LIVEKIT_INTERNAL_URL ?? process.env.LIVEKIT_URL;

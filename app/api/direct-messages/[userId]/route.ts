@@ -46,6 +46,7 @@ export async function GET(
       text: directMessages.content,
       attachments: directMessages.attachments,
       editedAt: directMessages.editedAt,
+      editedByAdmin: directMessages.editedByAdmin,
       createdAt: directMessages.createdAt,
       authorId: directMessages.senderId,
       author: users.name,

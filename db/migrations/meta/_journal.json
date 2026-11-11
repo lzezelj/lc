@@ -225,6 +225,13 @@
       "when": 1793923200013,
       "tag": "0031_list_order",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794355200000,
+      "tag": "0032_admin_dashboard",
+      "breakpoints": true
     }
   ]
 }

@@ -65,6 +65,7 @@ export async function GET(
       text: messages.content,
       attachments: messages.attachments,
       editedAt: messages.editedAt,
+      editedByAdmin: messages.editedByAdmin,
       mentions: messages.mentions,
       createdAt: messages.createdAt,
       author: users.name,

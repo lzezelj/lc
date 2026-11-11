@@ -5,6 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import * as handles from "../user-handle.ts";
 import * as accountPolicy from "../auth-account.mjs";
+import * as ownerPolicy from "../server/owner-policy.mjs";
 
 test("handles display bracketed numbers and accept old and new search formats", () => {
   assert.equal(handles.buildUserHandle("Lovro Žeželj", 7), "lovrozezelj.0007");
@@ -151,6 +152,7 @@ test("OAuth handle allocation runs after persistence and session refresh repairs
     "next-auth/providers/credentials": { default: (value) => value },
     "next-auth/providers/google": { default: (value) => value },
     "./auth-account.mjs": accountPolicy,
+    "./server/owner-policy.mjs": ownerPolicy,
     "./db": { db },
     "./db/schema": {
       users: { id: "id" },

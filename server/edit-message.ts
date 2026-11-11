@@ -119,7 +119,12 @@ async function editMessage(
   ) => {
     const [saved] = await connection
       .update(table)
-      .set({ content: text, editedAt, ...(!userId ? { mentions } : {}) })
+      .set({
+        content: text,
+        editedAt,
+        editedByAdmin: false,
+        ...(!userId ? { mentions } : {}),
+      })
       .where(
         and(
           eq(table.id, messageId),
@@ -137,6 +142,7 @@ async function editMessage(
         id: table.id,
         text: table.content,
         editedAt: table.editedAt,
+        editedByAdmin: table.editedByAdmin,
         mentions: userId
           ? sql<import("../app/notification-types").Mention[]>`'[]'::jsonb`
           : messages.mentions,
