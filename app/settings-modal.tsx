@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { revealSettingsSection } from "./settings-reveal";
+import { InformationHint } from "./information-hint";
 
 export function SettingsIcon() {
   return (
@@ -254,10 +255,12 @@ export function SettingsModal({
 export function SettingsNameForm({
   name,
   label,
+  hint,
   onSave,
 }: {
   name: string;
   label: string;
+  hint?: string;
   onSave: (name: string) => Promise<void>;
 }) {
   const [value, setValue] = useState(name);
@@ -280,7 +283,10 @@ export function SettingsNameForm({
       }}
     >
       <label>
-        {label}
+        <span className="settingsFieldLabel">
+          {label}
+          {hint && <InformationHint text={hint} />}
+        </span>
         <input
           value={value}
           maxLength={60}

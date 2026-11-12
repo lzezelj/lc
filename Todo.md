@@ -22,6 +22,8 @@ Quick switcher
 Polls
 Server activity log
 Queue for api calls
+Add font color, font size, colours palette changer?
 
 Short term
 fix the signaling error telling the user to check if npm run dev:all is working on deployed website?
+Add zooming in pictures

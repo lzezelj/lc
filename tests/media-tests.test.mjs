@@ -95,6 +95,7 @@ test("settings previews release captures on stop, device change, close, and late
     MicrophoneModeSelector: "MicrophoneModeSelector",
     EchoCancellationToggle: "EchoCancellationToggle",
   };
+  dependencies["./information-hint"] = { InformationHint: "InformationHint" };
   const exports = {};
   vm.runInNewContext(
     ts.transpile(

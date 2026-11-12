@@ -1,4 +1,5 @@
 "use client";
+import { InformationHint } from "./information-hint";
 import {
   cameraCaptureConstraints,
   type CameraResolution,
@@ -164,33 +165,23 @@ export function MediaTests({
   return (
     <div className="mediaTests">
       <section className="mediaSettingsGroup" aria-label="Audio settings">
-        <h4>Audio</h4>
+        <h4 className="settingsFieldLabel">
+          Audio{" "}
+          <InformationHint text="Choose your audio devices, adjust processing and levels, then test your microphone." />
+        </h4>
         {audioDevices}
         <MicrophoneModeSelector />
         {audioLevels}
         <EchoCancellationToggle />
-        <small>
-          Echo cancellation reduces speaker sound returning through the
-          microphone. Try disabling it if it clips speech.
-        </small>
-        <small>
-          Raw bypasses LC noise suppression, echo cancellation, automatic gain
-          and the transmission threshold. Browser uses browser processing;
-          RNNoise uses the neural filter. Volume and mute/deafen apply in every
-          mode.
-        </small>
-        <small>
-          Noise suppression powered by RNNoise. Full third-party notices are
-          available under Licenses in the app footer.
-        </small>
-        <p className="settingsDescription">
-          Browser processing is used if RNNoise is unavailable.{" "}
-          {micTesting &&
-            `Active processing: ${suppression === "rnnoise" ? "RNNoise" : suppression === "raw" ? "Raw" : "Browser"}.`}
-        </p>
-        <label htmlFor="voiceThreshold">
+        {micTesting && (
+          <p className="settingsDescription" role="status">
+            {`Active processing: ${suppression === "rnnoise" ? "RNNoise" : suppression === "raw" ? "Raw" : "Browser"}.`}
+          </p>
+        )}
+        <label htmlFor="voiceThreshold" className="settingsFieldLabel">
           Browser-mode transmission threshold:{" "}
           {threshold <= -80 ? "Off (always transmit)" : `${threshold} dB`}
+          <InformationHint text="Applies in Browser mode. RNNoise runs without an additional loudness cutoff to preserve quiet speech. Start the microphone test, stay quiet, then speak normally. Set the threshold above room noise but below your speaking level. Avoid stacking RNNoise with noise removal from another app." />
         </label>
         <input
           id="voiceThreshold"
@@ -205,16 +196,6 @@ export function MediaTests({
             setThreshold(next);
           }}
         />
-        <small>
-          Applies when using browser suppression. RNNoise runs without an
-          additional loudness cutoff to preserve quiet speech.
-        </small>
-        <small>
-          Start the microphone test, stay quiet, then speak normally. Set the
-          threshold above the room noise level but below your speaking level
-          when using browser suppression. Avoid stacking RNNoise with noise
-          removal from another app.
-        </small>
         <section className="mediaTestSection" ref={microphoneSection}>
           <button
             type="button"

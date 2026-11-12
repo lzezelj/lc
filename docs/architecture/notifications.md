@@ -6,6 +6,13 @@ Typing, unread state, read positions, mentions, notification preferences/sounds 
 
 ## Server and channel activity
 
+Unread and selection styles have separate roles: neutral dots indicate unread
+activity, red counts identify unread DMs/mentions, and neutral fills/outlines
+identify the current destination. Unselected unread rows have no selection fill;
+selected rows can retain an unread badge. Channel, conversation and server selection
+is exposed with `aria-current`. This presentation does not change read tracking,
+authorization, mute preferences or DND suppression.
+
 Direct unread baselines also initialize from stored conversation participants,
 using epoch for a new non-friend conversation so its first incoming message is
 unread. Existing accepted-friend/read baselines remain unchanged. Inbox rows and

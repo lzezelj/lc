@@ -50,6 +50,7 @@ import { PendingServerInvitations } from "./pending-server-invitations.js";
 import { ServerLeaveConfirmation } from "./server-leave-confirmation.js";
 import { SettingsNavigation } from "./settings-navigation.js";
 import { PersonalMessages } from "./personal-messages.js";
+import { SessionCache } from "./conversation-cache.js";
 import { AccountDeletion } from "./account-deletion.js";
 import { SettingsMembers } from "./settings-members.js";
 import { revealSettingsSection } from "./settings-reveal.js";
@@ -1458,11 +1459,12 @@ window.verifyCameraMirror = async () => {
     };
     await waitForColor(false);
     flushSync(() => root.render(h(CameraMirrorControl)));
-    const control = host.querySelector("button");
+    const control = host.querySelector(
+      '.cameraMirrorControl input[type="checkbox"]',
+    );
     check(
-      control.classList.contains("cameraMirrorControl") &&
-        control.textContent.includes("Mirror camera:"),
-      "Mirror camera uses the styled shared control",
+      control && !control.checked,
+      "Mirror camera uses the shared unchecked on/off control",
     );
     control.click();
     await waitForColor(true);
@@ -6183,7 +6185,15 @@ async function verifyPrivacyManagement() {
     await wait();
   };
   try {
-    root.render(h(PersonalMessages, { currentServerId: "server" }));
+    const cache = new SessionCache();
+    cache.scope("fixture-user");
+    root.render(
+      h(PersonalMessages, {
+        currentServerId: "server",
+        accountId: "fixture-user",
+        cache,
+      }),
+    );
     await wait();
     check(
       container.querySelectorAll(".messageDestinationList button").length ===

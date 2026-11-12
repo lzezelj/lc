@@ -14,6 +14,88 @@ const source = await readFile(
   "utf8",
 );
 
+test("shared friendship actions require confirmation, retain errors, and disable pending requests", async () => {
+  const slots = [];
+  let cursor = 0,
+    calls = 0;
+  const exports = {},
+    jsx = (type, props) => ({ type, props });
+  vm.runInNewContext(
+    ts.transpile(
+      await readFile(
+        new URL("../app/friendship-actions.tsx", import.meta.url),
+        "utf8",
+      ),
+      { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+    ),
+    {
+      exports,
+      Error,
+      require(name) {
+        if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
+        return {
+          useState(initial) {
+            const index = cursor++;
+            if (!(index in slots)) slots[index] = initial;
+            return [
+              slots[index],
+              (value) => {
+                slots[index] = value;
+              },
+            ];
+          },
+        };
+      },
+    },
+  );
+  const nodes = (node) =>
+    !node || typeof node !== "object"
+      ? []
+      : Array.isArray(node)
+        ? node.flatMap(nodes)
+        : [node, ...nodes(node.props?.children)];
+  const props = {
+    name: "Alex",
+    onRemoveFriend: async () => {
+      calls++;
+      throw new Error("Try again");
+    },
+  };
+  const render = (value = props) => {
+    cursor = 0;
+    return nodes(exports.FriendshipActions(value));
+  };
+  render()
+    .find((node) => node.type === "button")
+    .props.onClick();
+  assert.equal(calls, 0);
+  const confirmation = render().find(
+    (node) => node.props?.children === "Confirm remove friend",
+  );
+  confirmation.props.onClick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.ok(
+    render().some(
+      (node) =>
+        node.props?.role === "alert" && node.props.children === "Try again",
+    ),
+  );
+  assert.ok(
+    render({ name: "Alex", requestPending: true }).some(
+      (node) => node.type === "button" && node.props.disabled,
+    ),
+  );
+  assert.equal(
+    render({
+      name: "Alex",
+      unavailable: true,
+      onAddFriend: async () => {},
+    }).filter((node) => node.type === "button").length,
+    0,
+  );
+});
+
 test("friend discovery debounces typing and ignores responses after cancellation", async () => {
   const page = await readFile(
     new URL("../app/page.tsx", import.meta.url),

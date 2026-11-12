@@ -88,6 +88,11 @@ mandatory, including the product rules that apply across all topics.
 
 ## Next.js application
 
+The client provider tree also owns account-scoped, in-memory profile/server picture
+resources shared by Avatar and startup preloading; see
+[UI caching](docs/architecture/ui.md#cached-navigation-and-loading) for lifetime,
+authorization and memory limits.
+
 Next.js provides the React interface and server-side API routes. Its server
 responsibilities include:
 

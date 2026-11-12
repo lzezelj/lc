@@ -1,5 +1,39 @@
 # Messaging and conversation history
 
+## Consecutive message presentation
+
+ImagePreview supports pointer-anchored wheel zoom from fit size to 500%, bounded
+drag panning, explicit zoom buttons and Reset. Wheel events are captured only
+inside a ready image preview; resizing clamps pan bounds. The same viewer serves
+sent pictures and local composer previews, retaining existing download and access
+behavior. `image-zoom.ts` owns the tested zoom/pan calculations.
+
+`ChatHistory` uses `message-sequences.ts` to visually join consecutive messages
+from the same author in server and direct histories. Author changes, call events,
+deleted messages, replies and the unread divider interrupt incoming groups.
+Continuation rows omit the repeated visible author/avatar but retain a keyboard
+accessible profile control, timestamp, edit indicators and independent message IDs,
+actions, reactions and attachments. Pagination recalculates groups over loaded
+history. No message data is merged or changed; grouping has no time cutoff.
+Boundary behavior is covered by `tests/message-sequences.test.mjs`.
+
+Consecutive same-author rows in the same actual minute hide repeated visible
+timestamps while retaining their accessible time text and edit indicators.
+Different dates/minutes, authors and unread/group boundaries retain timestamps.
+Reply references use a compact quoted block with neutral author text; composing
+a reply shows an excerpt beside the existing cancel control. Backend reply and
+deletion contracts are unchanged.
+Choosing Reply focuses the composer with the caret after any existing draft,
+including when choosing the same reply again. Disabled/busy composers defer focus
+until editable. Quoted replies retain a left border; selected channels and mentioned
+messages use fills rather than left-edge stripes.
+Clicking a reply reference centers and highlights the original loaded message.
+For older references, the client uses the existing authorized message-search
+context endpoint and offers Jump to present. Repeated clicks refocus the same
+target. New jumps, search selections and conversation changes cancel obsolete
+requests; deleted/inaccessible originals leave the current history intact and
+show an error. No reply API or access rules change.
+
 Composers, drafts, emoji/reactions, edits, search, attachments, persistence, delivery, pagination, caches and deletion.
 
 [Architecture overview](../../ARCHITECTURE.md) · Related: [Authentication and authorization](authentication.md), [Notifications and activity](notifications.md), [Workspace UI and navigation](ui.md), [Database and persistence](database.md).
@@ -51,6 +85,11 @@ Navigation aborts recovery and rejects obsolete responses. No production proxy
 timeout or infrastructure configuration was changed.
 
 ## Conversation drafts
+
+My messages settings reuses a bounded, account-scoped snapshot between visits and
+revalidates on each mount; see [settings cache lifetime](ui.md#cached-navigation-and-loading).
+The history endpoint still returns the account's full sent history; client caching
+does not remove that endpoint's growth limitation.
 
 Pasting clipboard images into either chat composer adds them to the existing
 attachment draft with local previews; Send or Enter submits them. Ordinary text

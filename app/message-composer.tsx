@@ -106,6 +106,8 @@ export function MessageComposer({
   progress,
   children,
   editId,
+  replyId,
+  focusRequest,
   onCancelEdit,
   mentionMembers,
   onTyping,
@@ -120,6 +122,8 @@ export function MessageComposer({
   progress: number | null;
   children?: ReactNode;
   editId?: string;
+  replyId?: string;
+  focusRequest?: number;
   onCancelEdit?: () => void;
   mentionMembers?: MentionMember[];
   onTyping?: (active: boolean) => void;
@@ -195,6 +199,12 @@ export function MessageComposer({
       textarea.current?.setSelectionRange(0, textarea.current.value.length);
     }
   }, [editId]);
+  useLayoutEffect(() => {
+    if (!replyId || disabled || busy) return;
+    const element = textarea.current;
+    element?.focus();
+    element?.setSelectionRange(element.value.length, element.value.length);
+  }, [replyId, focusRequest, disabled, busy]);
   useLayoutEffect(() => {
     const element = textarea.current;
     if (!element) return;

@@ -69,10 +69,12 @@ import {
   SettingsNameForm,
 } from "./settings-modal";
 import { UserProfile, type ProfileUser } from "./user-profile";
+import { FriendshipActions } from "./friendship-actions";
 import { ChannelManager } from "./channel-manager";
 import { useDragReorder, ReorderHandle, ReorderStatus } from "./drag-reorder";
 import type { DropPlacement } from "../lib/list-order";
 import { ChatHistory } from "./chat-history";
+import { resolveReplyTarget } from "./reply-navigation";
 import { ConversationSearch, type SearchMessage } from "./conversation-search";
 import {
   applyMessageEdit,
@@ -97,10 +99,14 @@ import { ServerInvites } from "./server-invites";
 import { ServerLeaveConfirmation } from "./server-leave-confirmation";
 import { useServerInvitations } from "./use-server-invitations";
 import { PendingServerInvitations } from "./pending-server-invitations";
-import { PersonalMessages } from "./personal-messages";
+import { PersonalMessages, type PersonalMessage } from "./personal-messages";
+import { usePictureCache } from "./picture-cache-provider";
 import { AccountDeletion } from "./account-deletion";
 import { SettingsMembers } from "./settings-members";
 import { SettingsNavigation } from "./settings-navigation";
+import { InformationHint } from "./information-hint";
+import { SettingsSection } from "./settings-section";
+import { compareServerMembers } from "./member-order";
 import { SoundManager } from "./sound-manager";
 import { useWorkspaceActivity } from "./use-workspace-activity";
 import { serverVoiceUsers } from "./workspace-activity";
@@ -186,6 +192,7 @@ type ChatMessage = {
   authorImage?: string | null;
   text: string;
   time: string;
+  sentAt?: number;
   deleted: boolean;
   replyTo: { id: string; text: string; author: string } | null;
   kind: "message" | "call";
@@ -407,11 +414,16 @@ export default function Home() {
       20,
     ),
   );
+  const personalMessagesCache = useRef(
+    new SessionCache<PersonalMessage[]>(1024 * 1024, 1),
+  );
+  const pictureCache = usePictureCache();
   const presenceHasConnected = useRef(false);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   useEffect(() => {
     conversationCache.current.scope(session?.user.id);
     serverViewCache.current.scope(session?.user.id);
+    personalMessagesCache.current.scope(session?.user.id);
     presenceHasConnected.current = false;
   }, [session?.user.id]);
   const sessionStatus: string = sessionState.status;
@@ -645,6 +657,7 @@ export default function Home() {
   } | null>(null);
   const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
+  const [replyFocusRequest, setReplyFocusRequest] = useState(0);
   const [messageMenu, setMessageMenu] = useState<{
     message: ChatMessage;
     conversationUserId?: string;
@@ -702,7 +715,23 @@ export default function Home() {
     key: string;
     targetId: string;
     messages: ChatMessage[];
+    reason?: "reply";
   } | null>(null);
+  const replyRequest = useRef<AbortController | null>(null);
+  const replySequence = useRef(0);
+  const [replyTarget, setReplyTarget] = useState<{
+    key: string;
+    id: string;
+    sequence: number;
+  } | null>(null);
+  const [replyLoadingId, setReplyLoadingId] = useState<string | null>(null);
+  const replyFocus = replyTarget?.key === composerKey ? replyTarget : null;
+  useEffect(
+    () => () => {
+      replyRequest.current?.abort();
+    },
+    [composerKey, historyRefreshKey],
+  );
   const activeContext =
     historyContext?.key === composerKey ? historyContext : null;
   useEffect(() => {
@@ -729,11 +758,49 @@ export default function Home() {
       : [],
   );
   function showSearchResult(rows: SearchMessage[], targetId: string) {
+    replyRequest.current?.abort();
+    setReplyTarget(null);
     setHistoryContext({
       key: composerKey,
       targetId,
       messages: rows.map(toChatMessage),
     });
+  }
+  async function jumpToReply(targetId: string) {
+    replyRequest.current?.abort();
+    const controller = new AbortController();
+    replyRequest.current = controller;
+    setReplyLoadingId(targetId);
+    try {
+      const rows = await resolveReplyTarget({
+        targetId,
+        messages: shownChannelMessages,
+        channelId: selectedChannelId,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      if (rows)
+        setHistoryContext({
+          key: composerKey,
+          targetId,
+          messages: rows.map(toChatMessage),
+          reason: "reply",
+        });
+      setReplyTarget({
+        key: composerKey,
+        id: targetId,
+        sequence: ++replySequence.current,
+      });
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "The original message could not be loaded.",
+        );
+    } finally {
+      if (replyRequest.current === controller) setReplyLoadingId(null);
+    }
   }
   function updateContext(edit: MessageEdit, key: string) {
     setHistoryContext((current) =>
@@ -1292,7 +1359,7 @@ export default function Home() {
         if (!Array.isArray(data))
           throw new Error("Servers could not be loaded.");
         if (!active) return;
-        preloadServerPictures(data);
+        preloadServerPictures(data, pictureCache);
         let savedFriend: Friend | undefined;
         if (saved?.view === "friends" && saved.friendId) {
           const friendResponse = await fetch("/api/conversations");
@@ -1334,7 +1401,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [authStatus, session?.user.id]);
+  }, [authStatus, session?.user.id, pictureCache]);
 
   useEffect(() => {
     if (
@@ -4757,15 +4824,11 @@ export default function Home() {
     }
   }
 
-  const visibleMembers = members.filter((member) =>
-    member.name.toLowerCase().includes(memberSearch.trim().toLowerCase()),
-  );
-  const onlineMembers = visibleMembers.filter((member) =>
-    onlineUserIds.includes(member.id),
-  );
-  const offlineMembers = visibleMembers.filter(
-    (member) => !onlineUserIds.includes(member.id),
-  );
+  const visibleMembers = members
+    .filter((member) =>
+      member.name.toLowerCase().includes(memberSearch.trim().toLowerCase()),
+    )
+    .sort(compareServerMembers);
   const activeVoiceChannel = activeVoiceChannelSnapshot;
   const conversationCallActive = conversationHasCall(
     activeVoiceChannel?.id,
@@ -5293,10 +5356,6 @@ export default function Home() {
     <div className="mediaSettings">
       {!mediaPermissionsGranted && (
         <>
-          <p>
-            Grant access once so LC can show device names and use your saved
-            choices when you join.
-          </p>
           <button
             className="permissionButton"
             type="button"
@@ -5487,7 +5546,7 @@ export default function Home() {
       (serverSettingsOpen &&
         servers.some((server) => server.id === selectedServerId))) && (
       <SettingsModal
-        title={accountMenuOpen ? "User settings" : "Server settings"}
+        title="Settings"
         onClose={() => {
           setAccountMenuOpen(false);
           setServerSettingsOpen(false);
@@ -5495,12 +5554,11 @@ export default function Home() {
         }}
         navigation={
           <>
-            <p className="settingsNavLabel">
-              {accountMenuOpen
-                ? session.user.name
-                : servers.find((server) => server.id === selectedServerId)
-                    ?.name}
-            </p>
+            {!accountMenuOpen && (
+              <p className="settingsNavLabel">
+                {servers.find((server) => server.id === selectedServerId)?.name}
+              </p>
+            )}
             <SettingsNavigation
               canUploadSounds={!accountMenuOpen && isSelectedServerModerator}
               account={accountMenuOpen}
@@ -5553,51 +5611,53 @@ export default function Home() {
             {userSettingsSection === "account" && (
               <>
                 <h3>My account</h3>
-                <div className="settingsAccountCard">
-                  <Avatar
-                    name={session.user.name ?? "You"}
-                    image={session.user.image}
-                  />
-                  <div>
-                    <strong>{session.user.name}</strong>
-                    <p>
+                <div className="settingsAccountCard settingsProfileEditor">
+                  <div className="settingsProfileIdentity">
+                    <p className="settingsFieldLabel">
+                      Username:{" "}
                       {session.user.handle
                         ? formatUserHandle(session.user.handle)
-                        : "My account"}
+                        : "Not assigned"}
+                      <InformationHint text="Your username is the identifier other people use to find you." />
                     </p>
-                    <small>{statusLabels[userStatus]}</small>
+                    <small
+                      className="settingsProfileStatus"
+                      data-status={userStatus}
+                    >
+                      {statusLabels[userStatus]}
+                    </small>
                   </div>
+                  <SettingsNameForm
+                    key={session.user.name}
+                    name={session.user.name ?? ""}
+                    label="Display name"
+                    hint="Your display name is visible to friends and server members."
+                    onSave={(name) =>
+                      saveRename(undefined, {
+                        kind: "user",
+                        id: session.user.id,
+                        name,
+                      })
+                    }
+                  />
+                  <ProfilePictureSettings
+                    name={session.user.name ?? "You"}
+                    image={session.user.image}
+                    onSaved={async (image) => {
+                      applyProfilePicture(session.user.id, image);
+                      await updateSession();
+                    }}
+                  />
                 </div>
-                <ProfilePictureSettings
-                  name={session.user.name ?? "You"}
-                  image={session.user.image}
-                  onSaved={async (image) => {
-                    applyProfilePicture(session.user.id, image);
-                    await updateSession();
-                  }}
-                />
-                <SettingsNameForm
-                  key={session.user.name}
-                  name={session.user.name ?? ""}
-                  label="Display name"
-                  onSave={(name) =>
-                    saveRename(undefined, {
-                      kind: "user",
-                      id: session.user.id,
-                      name,
-                    })
-                  }
-                />
-                <p className="settingsDescription">
-                  Your display name is visible to friends and server members.
-                </p>
               </>
             )}
             {userSettingsSection === "media" && (
-              <>
-                <h3>Voice & video</h3>
+              <SettingsSection
+                title="Voice & video"
+                hint="Choose your devices and test your audio and camera. Grant browser access so LC can show device names and use your saved choices when you join."
+              >
                 {mediaSettingsContent}
-              </>
+              </SettingsSection>
             )}
             {userSettingsSection === "notifications" &&
               (notificationInbox.ready ? (
@@ -5613,7 +5673,12 @@ export default function Home() {
                 <p role="status">Loading notification settings…</p>
               ))}
             {userSettingsSection === "messages" && (
-              <PersonalMessages currentServerId={selectedServerId} />
+              <PersonalMessages
+                key={session.user.id}
+                currentServerId={selectedServerId}
+                accountId={session.user.id}
+                cache={personalMessagesCache.current}
+              />
             )}
             {userSettingsSection === "delete-account" && (
               <AccountDeletion
@@ -5631,52 +5696,149 @@ export default function Home() {
             {serverSettingsSection === "overview" && (
               <>
                 <h3>Server overview</h3>
-                <ProfilePictureSettings
-                  key={`picture:${selectedServerId}`}
-                  kind="server"
-                  endpoint={`/api/servers/${selectedServerId}/picture`}
-                  name={
-                    servers.find((server) => server.id === selectedServerId)
-                      ?.name ?? "Server"
-                  }
-                  image={
-                    servers.find((server) => server.id === selectedServerId)
-                      ?.image
-                  }
-                  onSaved={async (image) => {
-                    setServers((current) =>
-                      current.map((server) =>
-                        server.id === selectedServerId
-                          ? { ...server, image }
-                          : server,
-                      ),
-                    );
-                    void serverInvitations.refresh();
-                  }}
-                />
-                <SettingsNameForm
-                  key={selectedServerId}
-                  name={
-                    servers.find((server) => server.id === selectedServerId)
-                      ?.name ?? ""
-                  }
-                  label="Server name"
-                  onSave={(name) =>
-                    saveRename(undefined, {
-                      kind: "server",
-                      id: selectedServerId,
-                      name,
-                    })
-                  }
-                />
-                <p className="settingsDescription">
-                  {members.length} members · {channels.length} channels
-                </p>
+                <div className="settingsAccountCard settingsProfileEditor">
+                  <SettingsNameForm
+                    key={selectedServerId}
+                    name={
+                      servers.find((server) => server.id === selectedServerId)
+                        ?.name ?? ""
+                    }
+                    label="Server name"
+                    onSave={(name) =>
+                      saveRename(undefined, {
+                        kind: "server",
+                        id: selectedServerId,
+                        name,
+                      })
+                    }
+                  />
+                  <ProfilePictureSettings
+                    key={`picture:${selectedServerId}`}
+                    kind="server"
+                    endpoint={`/api/servers/${selectedServerId}/picture`}
+                    name={
+                      servers.find((server) => server.id === selectedServerId)
+                        ?.name ?? "Server"
+                    }
+                    image={
+                      servers.find((server) => server.id === selectedServerId)
+                        ?.image
+                    }
+                    onSaved={async (image) => {
+                      setServers((current) =>
+                        current.map((server) =>
+                          server.id === selectedServerId
+                            ? { ...server, image }
+                            : server,
+                        ),
+                      );
+                      void serverInvitations.refresh();
+                    }}
+                  />
+                  <div className="settingsOverviewLinks">
+                    <button
+                      type="button"
+                      onClick={() => setServerSettingsSection("members")}
+                    >
+                      {members.length} members
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setServerSettingsSection("channels")}
+                    >
+                      {channels.length} channels
+                    </button>
+                  </div>
+                </div>
               </>
             )}
             {serverSettingsSection === "channels" && (
-              <>
-                <h3>Channels</h3>
+              <SettingsSection
+                title="Channels"
+                panel={false}
+                hint="Create, rename and reorder server channels, or choose where inactive voice users are moved."
+              >
+                <section className="settingsSubpanel">
+                  <h4>Create channel</h4>
+                  <form className="settingsNameForm" onSubmit={createChannel}>
+                    <label>
+                      Name
+                      <input
+                        required
+                        maxLength={60}
+                        value={formName}
+                        onChange={(event) => setFormName(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Channel type
+                      <select
+                        value={channelType}
+                        onChange={(event) =>
+                          setChannelType(event.target.value as ChannelType)
+                        }
+                      >
+                        <option value="text">Text</option>
+                        <option value="voice_direct">
+                          Direct voice/video (2 people)
+                        </option>
+                        <option value="voice_group">
+                          Group voice/video (media server)
+                        </option>
+                      </select>
+                    </label>
+                    <button type="submit" className="primary">
+                      Create channel
+                    </button>
+                  </form>
+                </section>
+                <section className="settingsSubpanel">
+                  <h4>Channel list</h4>
+                  <ChannelManager
+                    onReorder={moveChannel}
+                    key={selectedServerId}
+                    channels={channels}
+                    onRename={async (channel, name) => {
+                      await saveRename(undefined, {
+                        kind: "channel",
+                        id: channel.id,
+                        name,
+                      });
+                    }}
+                    onDelete={async (channel) => {
+                      const response = await fetch(
+                        `/api/servers/${selectedServerId}/channels`,
+                        {
+                          method: "DELETE",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ channelId: channel.id }),
+                        },
+                      );
+                      const result = await readJsonResponse<{ error?: string }>(
+                        response,
+                      );
+                      if (!response.ok)
+                        throw new Error(
+                          result?.error ?? "Channel could not be deleted.",
+                        );
+                      if (activeVoiceChannelRef.current === channel.id)
+                        returnToPreviousTextChannel();
+                      const remaining = channels.filter(
+                        (item) => item.id !== channel.id,
+                      );
+                      setChannels(remaining);
+                      setSelectedChannelId((current) =>
+                        current === channel.id
+                          ? (remaining.find((item) => item.type === "text")
+                              ?.id ?? "")
+                          : current,
+                      );
+                      invalidateSignalingToken();
+                      setNoticeMessage("Channel deleted.");
+                    }}
+                  />
+                </section>
+
                 <ServerAfkSettings
                   key={`afk:${selectedServerId}`}
                   serverId={selectedServerId}
@@ -5707,89 +5869,33 @@ export default function Home() {
                       .catch(() => {});
                   }}
                 />
-
-                <h4>Create channel</h4>
-                <form className="settingsNameForm" onSubmit={createChannel}>
-                  <label>
-                    Name
-                    <input
-                      required
-                      maxLength={60}
-                      value={formName}
-                      onChange={(event) => setFormName(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Channel type
-                    <select
-                      value={channelType}
-                      onChange={(event) =>
-                        setChannelType(event.target.value as ChannelType)
-                      }
-                    >
-                      <option value="text">Text</option>
-                      <option value="voice_direct">
-                        Direct voice/video (2 people)
-                      </option>
-                      <option value="voice_group">
-                        Group voice/video (media server)
-                      </option>
-                    </select>
-                  </label>
-                  <button type="submit" className="primary">
-                    Create channel
-                  </button>
-                </form>
-                <h4>Channel list</h4>
-                <ChannelManager
-                  onReorder={moveChannel}
-                  key={selectedServerId}
-                  channels={channels}
-                  onRename={async (channel, name) => {
-                    await saveRename(undefined, {
-                      kind: "channel",
-                      id: channel.id,
-                      name,
-                    });
-                  }}
-                  onDelete={async (channel) => {
-                    const response = await fetch(
-                      `/api/servers/${selectedServerId}/channels`,
-                      {
-                        method: "DELETE",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ channelId: channel.id }),
-                      },
-                    );
-                    const result = await readJsonResponse<{ error?: string }>(
-                      response,
-                    );
-                    if (!response.ok)
-                      throw new Error(
-                        result?.error ?? "Channel could not be deleted.",
-                      );
-                    if (activeVoiceChannelRef.current === channel.id)
-                      returnToPreviousTextChannel();
-                    const remaining = channels.filter(
-                      (item) => item.id !== channel.id,
-                    );
-                    setChannels(remaining);
-                    setSelectedChannelId((current) =>
-                      current === channel.id
-                        ? (remaining.find((item) => item.type === "text")?.id ??
-                          "")
-                        : current,
-                    );
-                    invalidateSignalingToken();
-                    setNoticeMessage("Channel deleted.");
-                  }}
-                />
-              </>
+              </SettingsSection>
             )}
             {serverSettingsSection === "soundboard" && serverSoundSettings}
             {serverSettingsSection === "members" && (
               <SettingsMembers
                 members={members}
+                currentUserId={session.user.id}
+                onKick={async (member) => {
+                  const response = await fetch(
+                    `/api/servers/${selectedServerId}/members`,
+                    {
+                      method: "DELETE",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ userId: member.id }),
+                    },
+                  );
+                  const result = await response.json();
+                  if (!response.ok)
+                    throw new Error(
+                      result.error ?? "The member could not be removed.",
+                    );
+                  if (selectedServerIdRef.current !== selectedServerId) return;
+                  setMembers((current) =>
+                    current.filter((item) => item.id !== member.id),
+                  );
+                  setNoticeMessage(`${member.name} removed from the server.`);
+                }}
                 onRoleChange={async (member, role) => {
                   const response = await fetch(
                     `/api/servers/${selectedServerId}/members`,
@@ -6278,6 +6384,7 @@ export default function Home() {
           onClick={() => {
             setEditingMessage(null);
             setReplyingTo(messageMenu.message);
+            setReplyFocusRequest((current) => current + 1);
             setMessageMenu(null);
           }}
         >
@@ -6421,14 +6528,16 @@ export default function Home() {
               />
             </label>
             {form === "server" && (
-              <label>
+              <label className="inlineCheckbox">
                 <input
                   type="checkbox"
                   checked={createAfk}
                   onChange={(event) => setCreateAfk(event.target.checked)}
                 />
-                Create an AFK voice channel (move inactive users after 15
-                minutes)
+                <span>
+                  Create an AFK voice channel (move inactive users after 15
+                  minutes)
+                </span>
               </label>
             )}
             {form === "channel" && (
@@ -6568,7 +6677,11 @@ export default function Home() {
 
   const searchContextNotice = activeContext && (
     <div className="searchContextNotice">
-      <span>Viewing surrounding messages from a search result</span>
+      <span>
+        {activeContext.reason === "reply"
+          ? "Viewing the original message and surrounding conversation"
+          : "Viewing surrounding messages from a search result"}
+      </span>
     </div>
   );
 
@@ -6695,6 +6808,9 @@ export default function Home() {
             {recentFriends.map((friend) => (
               <button
                 className={`channel ${selectedFriend?.id === friend.id ? "active" : ""} ${notificationsEnabled && (visibleDirectCounts[friend.id] ?? 0) > 0 ? "unread" : ""}`}
+                aria-current={
+                  selectedFriend?.id === friend.id ? "page" : undefined
+                }
                 key={friend.id}
                 onClick={() => openFriend(friend)}
                 onContextMenu={(event) =>
@@ -6732,6 +6848,7 @@ export default function Home() {
                 {notificationsEnabled &&
                   (visibleDirectCounts[friend.id] ?? 0) > 0 && (
                     <span className="conversationUnreadBadge">
+                      <span className="srOnly">Unread messages: </span>
                       {visibleDirectCounts[friend.id]}
                     </span>
                   )}
@@ -7339,23 +7456,72 @@ export default function Home() {
           </header>
           <div className="memberScroll">
             {selectedFriend ? (
-              <button
-                type="button"
-                className="friendProfileCard"
-                onClick={() => setProfileUser(selectedFriend)}
-              >
-                <Avatar
-                  name={selectedFriend.name}
-                  image={userImage(selectedFriend.id, selectedFriend.image)}
-                />
-                <strong>{selectedFriend.name}</strong>
-                <small>
-                  {onlineUserIds.includes(selectedFriend.id)
-                    ? statusLabels[userStatuses[selectedFriend.id] ?? "online"]
-                    : "Offline"}
-                </small>
-                <small>{formatUserHandle(selectedFriend.handle)}</small>
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="friendProfileCard"
+                  onClick={() => setProfileUser(selectedFriend)}
+                >
+                  <Avatar
+                    name={selectedFriend.name}
+                    image={userImage(selectedFriend.id, selectedFriend.image)}
+                  />
+                  <strong>{selectedFriend.name}</strong>
+                  <small>
+                    {onlineUserIds.includes(selectedFriend.id)
+                      ? statusLabels[
+                          userStatuses[selectedFriend.id] ?? "online"
+                        ]
+                      : "Offline"}
+                  </small>
+                  <small>{formatUserHandle(selectedFriend.handle)}</small>
+                </button>
+                <div className="friendSidebarActions">
+                  <FriendshipActions
+                    key={selectedFriend.id}
+                    name={selectedFriend.name}
+                    unavailable={session.user.role === "demo"}
+                    requestPending={
+                      selectedFriend.status === "pending" &&
+                      !selectedFriend.incoming
+                    }
+                    onAddFriend={
+                      selectedFriend.status !== "accepted" &&
+                      selectedFriend.status !== "pending"
+                        ? async () => {
+                            if (
+                              !(await friendAction("request", selectedFriend))
+                            )
+                              throw new Error(
+                                "The friend request could not be sent.",
+                              );
+                          }
+                        : undefined
+                    }
+                    onAcceptFriend={
+                      selectedFriend.status === "pending" &&
+                      selectedFriend.incoming
+                        ? async () => {
+                            if (!(await friendAction("accept", selectedFriend)))
+                              throw new Error(
+                                "The friend request could not be accepted.",
+                              );
+                          }
+                        : undefined
+                    }
+                    onRemoveFriend={
+                      selectedFriend.status === "accepted"
+                        ? async () => {
+                            if (!(await friendAction("remove", selectedFriend)))
+                              throw new Error(
+                                "The friend could not be removed.",
+                              );
+                          }
+                        : undefined
+                    }
+                  />
+                </div>
+              </>
             ) : (
               <p className="empty">Select a friend to view their profile.</p>
             )}
@@ -7606,6 +7772,11 @@ export default function Home() {
                 <button
                   {...channelDrag.pointerProps(channel.id)}
                   className={`channel ${!callViewOpen && channel.id === selectedChannelId ? "active" : ""}`}
+                  aria-current={
+                    !callViewOpen && channel.id === selectedChannelId
+                      ? "page"
+                      : undefined
+                  }
                   title={channel.name}
                   onClick={() => selectTextChannel(channel.id)}
                 >
@@ -7963,13 +8134,22 @@ export default function Home() {
               key={`${selectedChannelId}:${activeContext?.targetId ?? "latest"}`}
               threadId={`${selectedChannelId}:${activeContext?.targetId ?? "latest"}`}
               focusMessageId={
-                activeContext?.targetId ?? conversationUnreadId ?? undefined
+                replyFocus?.id ??
+                activeContext?.targetId ??
+                conversationUnreadId ??
+                undefined
               }
+              focusSequence={replyFocus?.sequence}
               firstUnreadId={!activeContext ? conversationUnreadId : undefined}
               onLatestVisibilityChange={updateLatestVisibility}
               contextNotice={searchContextNotice}
               onJumpToPresent={
-                activeContext ? () => setHistoryContext(null) : undefined
+                activeContext
+                  ? () => {
+                      setReplyTarget(null);
+                      setHistoryContext(null);
+                    }
+                  : undefined
               }
               messages={shownChannelMessages}
               ready={
@@ -8008,7 +8188,8 @@ export default function Home() {
                     undefined
                   }
                   data-search-match={
-                    activeContext?.targetId === message.id || undefined
+                    (replyFocus?.id ?? activeContext?.targetId) ===
+                      message.id || undefined
                   }
                   onContextMenu={(event) => {
                     event.preventDefault();
@@ -8023,10 +8204,19 @@ export default function Home() {
                   }}
                 >
                   {message.replyTo && (
-                    <div className="replyPreview">
+                    <button
+                      type="button"
+                      className="replyPreview"
+                      disabled={replyLoadingId === message.replyTo.id}
+                      aria-label={`Jump to message from ${message.replyTo.author}`}
+                      onClick={() => void jumpToReply(message.replyTo!.id)}
+                    >
+                      <span className="replyPreviewLabel">Reply to</span>
                       <strong>{message.replyTo.author}</strong>
-                      <span>{message.replyTo.text}</span>
-                    </div>
+                      <span className="replyPreviewText">
+                        {message.replyTo.text || "Attachment"}
+                      </span>
+                    </button>
                   )}
                   <MessageHeader
                     name={message.author}
@@ -8085,6 +8275,8 @@ export default function Home() {
                 value={activeEdit ? editDraft : draft}
                 onChange={activeEdit ? setEditDraft : setDraft}
                 editId={activeEdit?.message.id}
+                replyId={replyingTo?.id}
+                focusRequest={replyFocusRequest}
                 onCancelEdit={() => setEditingMessage(null)}
                 files={activeEdit ? [] : files}
                 onFiles={changeFiles}
@@ -8101,6 +8293,9 @@ export default function Home() {
                   <div className="replyingTo">
                     <span>
                       Replying to <strong>{replyingTo.author}</strong>
+                      <span className="replyDraftText">
+                        {replyingTo.text || "Attachment"}
+                      </span>
                     </span>
                     <button
                       type="button"
@@ -8150,12 +8345,12 @@ export default function Home() {
           aria-label="Search users"
         />
         <div className="memberScroll">
-          <p className="sectionLabel">ONLINE — {onlineMembers.length}</p>
-          {onlineMembers.map((member) => (
+          <p className="sectionLabel">MEMBERS — {visibleMembers.length}</p>
+          {visibleMembers.map((member) => (
             <button
               type="button"
-              className="member online"
-              data-status={userStatuses[member.id] ?? "online"}
+              className={`member ${onlineUserIds.includes(member.id) ? "online" : "offline"}`}
+              data-status={userStatuses[member.id] ?? "offline"}
               key={member.id}
               onClick={() => setProfileUser(member)}
               onContextMenu={(event) => {
@@ -8178,51 +8373,18 @@ export default function Home() {
               <StatusAvatar
                 name={member.name}
                 image={member.image}
-                status={userStatuses[member.id] ?? "online"}
+                status={userStatuses[member.id] ?? "offline"}
                 className={`role-${member.role}`}
               />
               <span className="memberIdentity">
-                <strong>{member.name}</strong>
+                <strong>
+                  {member.name}
+                  {member.id === session.user.id ? " (You)" : ""}
+                </strong>
                 <small>
-                  {statusLabels[userStatuses[member.id] ?? "online"]} ·{" "}
+                  {statusLabels[userStatuses[member.id] ?? "offline"]} ·{" "}
                   {member.role}
                 </small>
-              </span>
-            </button>
-          ))}
-          <p className="sectionLabel">OFFLINE — {offlineMembers.length}</p>
-          {offlineMembers.map((member) => (
-            <button
-              type="button"
-              className="member offline"
-              key={member.id}
-              onClick={() => setProfileUser(member)}
-              onContextMenu={(event) => {
-                if (
-                  !(isSelectedServerOwner && member.role !== "owner") &&
-                  !friends.some(
-                    (friend) =>
-                      friend.id === member.id && friend.status === "accepted",
-                  )
-                )
-                  return;
-                event.preventDefault();
-                setMemberMenu({
-                  member,
-                  x: Math.min(event.clientX, window.innerWidth - 190),
-                  y: Math.min(event.clientY, window.innerHeight - 70),
-                });
-              }}
-            >
-              <StatusAvatar
-                name={member.name}
-                image={member.image}
-                status="offline"
-                className={`role-${member.role}`}
-              />
-              <span className="memberIdentity">
-                <strong>{member.name}</strong>
-                <small>{member.role}</small>
               </span>
             </button>
           ))}
@@ -8467,6 +8629,9 @@ function toChatMessage(message: {
           minute: "2-digit",
         })
       : time(),
+    sentAt: message.createdAt
+      ? new Date(message.createdAt).getTime()
+      : undefined,
   };
 }
 

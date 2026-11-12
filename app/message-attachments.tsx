@@ -4,6 +4,7 @@ import type { MessageAttachment } from "./attachment-types";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { SettingsModal } from "./settings-modal";
+import { clampImageView, initialImageView, zoomImageView } from "./image-zoom";
 
 function DownloadAttachment({ file }: { file: MessageAttachment }) {
   return (
@@ -63,6 +64,58 @@ export function ImagePreview({
   onContextMenu?: (event: React.MouseEvent<HTMLImageElement>) => void;
 }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [view, setView] = useState(initialImageView);
+  const stage = useRef<HTMLDivElement>(null);
+  const pan = useRef<{ id: number; x: number; y: number } | null>(null);
+  useEffect(() => {
+    const element = stage.current;
+    if (!element || state !== "ready") return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const bounds = element.getBoundingClientRect();
+      const delta =
+        event.deltaY *
+        (event.deltaMode === 1
+          ? 16
+          : event.deltaMode === 2
+            ? bounds.height
+            : 1);
+      setView((current) =>
+        zoomImageView(
+          current,
+          current.scale *
+            Math.exp(-Math.max(-300, Math.min(300, delta)) * 0.002),
+          bounds.width,
+          bounds.height,
+          event.clientX - bounds.left - bounds.width / 2,
+          event.clientY - bounds.top - bounds.height / 2,
+        ),
+      );
+    };
+    element.addEventListener("wheel", wheel, { passive: false });
+    const resize = new ResizeObserver(() =>
+      setView((current) =>
+        clampImageView(current, element.clientWidth, element.clientHeight),
+      ),
+    );
+    resize.observe(element);
+    return () => {
+      element.removeEventListener("wheel", wheel);
+      resize.disconnect();
+    };
+  }, [state, src]);
+  function zoom(factor: number) {
+    const element = stage.current;
+    if (element)
+      setView((current) =>
+        zoomImageView(
+          current,
+          current.scale * factor,
+          element.clientWidth,
+          element.clientHeight,
+        ),
+      );
+  }
   return (
     <SettingsModal
       title="Image preview"
@@ -70,7 +123,47 @@ export function ImagePreview({
       closeLabel="Close image preview"
       onClose={onClose}
     >
-      <div className="attachmentPreviewStage" aria-busy={state === "loading"}>
+      <div
+        ref={stage}
+        className={`attachmentPreviewStage imageZoomStage ${view.scale > 1 ? "imageZoomed" : ""}`}
+        aria-busy={state === "loading"}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || view.scale <= 1) return;
+          event.preventDefault();
+          pan.current = {
+            id: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const current = pan.current;
+          if (!current || current.id !== event.pointerId) return;
+          const dx = event.clientX - current.x,
+            dy = event.clientY - current.y;
+          current.x = event.clientX;
+          current.y = event.clientY;
+          const width = event.currentTarget.clientWidth,
+            height = event.currentTarget.clientHeight;
+          setView((value) =>
+            clampImageView(
+              { ...value, x: value.x + dx, y: value.y + dy },
+              width,
+              height,
+            ),
+          );
+        }}
+        onPointerUp={() => {
+          pan.current = null;
+        }}
+        onPointerCancel={() => {
+          pan.current = null;
+        }}
+        onLostPointerCapture={() => {
+          pan.current = null;
+        }}
+      >
         {state !== "ready" && (
           <p role={state === "error" ? "alert" : "status"}>
             {state === "error"
@@ -84,11 +177,39 @@ export function ImagePreview({
           src={src}
           alt={name}
           hidden={state !== "ready"}
+          draggable={false}
+          style={{
+            transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+          }}
           onLoad={() => setState("ready")}
           onError={() => setState("error")}
           onContextMenu={onContextMenu}
         />
       </div>
+      {state === "ready" && (
+        <div className="imageZoomControls" role="group" aria-label="Image zoom">
+          <button
+            type="button"
+            aria-label="Zoom out"
+            disabled={view.scale <= 1}
+            onClick={() => zoom(1 / 1.25)}
+          >
+            −
+          </button>
+          <output aria-live="polite">{Math.round(view.scale * 100)}%</output>
+          <button
+            type="button"
+            aria-label="Zoom in"
+            disabled={view.scale >= 5}
+            onClick={() => zoom(1.25)}
+          >
+            +
+          </button>
+          <button type="button" onClick={() => setView(initialImageView)}>
+            Reset
+          </button>
+        </div>
+      )}
     </SettingsModal>
   );
 }

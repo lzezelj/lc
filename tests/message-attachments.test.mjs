@@ -6,6 +6,24 @@ import vm from "node:vm";
 import ts from "typescript";
 import * as limits from "../app/attachment-types.ts";
 import { attachmentRange } from "../server/attachment-range.ts";
+import {
+  initialImageView,
+  clampImageView,
+  zoomImageView,
+} from "../app/image-zoom.ts";
+
+test("image zoom preserves the pointer anchor, clamps panning and resets at fit size", () => {
+  const zoomed = zoomImageView(initialImageView, 2, 800, 600, 100, 50);
+  assert.deepEqual(zoomed, { scale: 2, x: -100, y: -50 });
+  assert.equal((100 - zoomed.x) / zoomed.scale, 100);
+  assert.deepEqual(clampImageView({ scale: 2, x: 900, y: -900 }, 800, 600), {
+    scale: 2,
+    x: 400,
+    y: -300,
+  });
+  assert.deepEqual(zoomImageView(zoomed, 0.1, 800, 600), initialImageView);
+  assert.equal(zoomImageView(zoomed, 20, 800, 600).scale, 5);
+});
 
 test("delete confirmations identify attachment-only messages and retain captions and all filenames", () => {
   const photo = {

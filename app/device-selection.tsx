@@ -1,6 +1,7 @@
 "use client";
 
 import type { MediaDeviceOption } from "./device-menu";
+import { InformationHint } from "./information-hint";
 
 export function DeviceSelection({
   label,
@@ -20,7 +21,10 @@ export function DeviceSelection({
   return (
     <div className="deviceSelection">
       <label>
-        {label}
+        <span className="settingsFieldLabel">
+          {label}
+          {note && <InformationHint text={note} />}
+        </span>
         <select
           value={selectedId}
           disabled={disabled}
@@ -34,7 +38,6 @@ export function DeviceSelection({
           ))}
         </select>
       </label>
-      {note && <small className="deviceSelectionNote">{note}</small>}
     </div>
   );
 }

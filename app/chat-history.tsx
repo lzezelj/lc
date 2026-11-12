@@ -1,5 +1,6 @@
 "use client";
 import { LoadingSkeleton } from "./loading-skeleton";
+import { messageSequences, repeatedMessageTimes } from "./message-sequences";
 
 import {
   Children,
@@ -23,13 +24,21 @@ export function ChatHistory({
   ownUserId,
   children,
   focusMessageId,
+  focusSequence,
   contextNotice,
   onJumpToPresent,
   firstUnreadId,
   onLatestVisibilityChange,
 }: {
   threadId: string;
-  messages: { id: string; authorId: string }[];
+  messages: {
+    id: string;
+    authorId: string;
+    kind?: string;
+    deleted?: boolean;
+    replyTo?: unknown;
+    sentAt?: number;
+  }[];
   ready: boolean;
   hasMore: boolean;
   loadingOlder: boolean;
@@ -37,6 +46,7 @@ export function ChatHistory({
   ownUserId: string;
   children: ReactNode;
   focusMessageId?: string;
+  focusSequence?: number;
   contextNotice?: ReactNode;
   onJumpToPresent?: () => void;
   firstUnreadId?: string | null;
@@ -53,6 +63,8 @@ export function ChatHistory({
     visibilityCallback.current = onLatestVisibilityChange;
   }, [onLatestVisibilityChange]);
   const tones = new Map<string, number>();
+  const sequences = messageSequences(messages, firstUnreadId);
+  const repeatedTimes = repeatedMessageTimes(messages, firstUnreadId);
   let tone = 0;
   messages.forEach((message, index) => {
     if (index > 0 && message.authorId !== messages[index - 1].authorId)
@@ -198,7 +210,7 @@ export function ChatHistory({
           !hasExternalJump &&
           node.scrollHeight - node.clientHeight - node.scrollTop <= 4,
       );
-  }, [focusMessageId, ready, threadId, hasExternalJump]);
+  }, [focusMessageId, focusSequence, ready, threadId, hasExternalJump]);
   async function loadOlder() {
     if (!ready || !hasMore || loadingOlder || pending.current) return;
     pending.current = true;
@@ -257,13 +269,23 @@ export function ChatHistory({
                 !isValidElement<{
                   "data-message-id"?: string;
                   "data-message-tone"?: number;
+                  "data-message-continuation"?: boolean;
+                  "data-message-continues"?: boolean;
+                  "data-repeated-time"?: boolean;
                 }>(child)
               )
                 return child;
               const id = child.props["data-message-id"];
               const content =
                 id && tones.has(id)
-                  ? cloneElement(child, { "data-message-tone": tones.get(id) })
+                  ? cloneElement(child, {
+                      "data-message-tone": tones.get(id),
+                      "data-repeated-time": repeatedTimes.get(id) || undefined,
+                      "data-message-continuation":
+                        sequences.get(id)?.continuation || undefined,
+                      "data-message-continues":
+                        sequences.get(id)?.continues || undefined,
+                    })
                   : child;
               return id === firstUnreadId ? (
                 <Fragment key={id}>

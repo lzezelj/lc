@@ -1,3 +1,17 @@
+.designPlaygroundLauncher { position: fixed; right: 16px; bottom: 90px; z-index: 100; padding: 10px 14px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 20px #0005; }
+.designPlayground { position: fixed; inset: 12px 12px auto auto; margin: 0; width: min(350px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 20px; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 48px #0008; font-size: 13px; }
+.designPlayground header, .designPlayground footer, .designPlayground label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.designPlayground p { color: var(--muted); line-height: 1.5; }
+.designPlayground fieldset { min-width: 0; margin: 18px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.designPlayground legend { padding: 0 5px; font-weight: 600; }
+.designPlayground label { margin: 10px 0; }
+.designPlayground .designPlaygroundToggle { justify-content: flex-start; }
+.designPlayground .designPlaygroundRange { display: block; }
+.designPlaygroundRange span { display: flex; justify-content: space-between; gap: 8px; }
+.designPlayground input[type="range"] { width: 100%; margin: 10px 0; accent-color: var(--accent); }
+.designPlayground input[type="color"] { width: 44px; height: 30px; padding: 2px; flex-shrink: 0; border: 1px solid var(--line); background: var(--deep); cursor: pointer; }
+.designPlayground button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); color: var(--ink); }
+.designPlayground :is(button, input):focus-visible, .designPlaygroundLauncher:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 :root {
   --ink: #f5f7fb;
   --muted: #98a1b2;
@@ -7,6 +21,36 @@
   --accent: #78a4ff;
   --accent-ink: #0d182b;
   --button-hover-duration: 140ms;
+  --selection-background: #303748;
+  --selection-indicator: #b8c4d8;
+  --activity: var(--ink);
+  --activity-ink: var(--panel);
+  --mention-background: #a83e53;
+  --font-ui: Inter, ui-sans-serif, system-ui, sans-serif;
+  --text-badge: 10px;
+  --text-meta: 12px;
+  --text-body: 14px;
+  --text-section: 16px;
+  --text-title: 20px;
+  --text-page: 24px;
+  --weight-normal: 400;
+  --weight-label: 600;
+  --weight-heading: 700;
+  --leading-body: 1.5;
+  --leading-heading: 1.3;
+  --text-primary: var(--ink);
+  --text-secondary: var(--muted);
+  --danger-text: #ff899c;
+  --danger-surface: #85283b22;
+  --control-radius: 7px;
+  --card-radius: 10px;
+  --dialog-radius: 16px;
+  --focus-ring: var(--accent);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
   color-scheme: dark;
 }
 
@@ -26,11 +70,15 @@ body {
   margin: 0;
   background: var(--deep);
   color: var(--ink);
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-ui);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -68,7 +116,7 @@ button {
 .workspace:has(.sidebarResizer:is(:focus, [data-dragging])) { transition: none; }
 .workspace > :is(.workspaceRail, .channelSidebar, .memberSidebar) { opacity: 1; visibility: visible; transition: opacity var(--panel-duration) ease, visibility 0s var(--panel-hide-delay, 0ms), translate var(--panel-duration) ease; }
 
-.workspace > .workspaceRail { grid-column: 1; grid-row: 1; overflow: hidden; }
+.workspace > .workspaceRail { grid-column: 1; grid-row: 1; overflow-x: hidden; overflow-y: auto; }
 .workspace > .channelSidebar { grid-column: 2; grid-row: 1; }
 .workspace > .room { grid-column: 3; grid-row: 1; }
 .workspace > .memberSidebar { grid-column: 4; grid-row: 1; }
@@ -180,13 +228,16 @@ button {
 .closeUserList { display: none; margin-left: auto; }
 
 .workspaceRail {
+  --server-gap: 14px;
   min-height: 0;
   display: flex;
   align-items: center;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--server-gap);
   padding: 58px 0 14px;
   background: #090b11;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable both-edges;
 }
 
 .workspaceRail > .workspaceLogo,
@@ -195,19 +246,18 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
-  padding-block: 4px;
-  margin-block: -4px;
+  gap: var(--server-gap);
+  padding-block: 8px 12px;
+  margin-block: -8px -12px;
   width: 100%;
-  min-height: 0;
-  flex: 0 1 auto;
-  overflow-x: hidden;
-  overflow-y: auto;
+  min-height: auto;
+  flex: 0 0 auto;
+  overflow: visible;
   overscroll-behavior-y: contain;
 }
-.serverScroller > .serverButtonWrap { flex: 0 0 46px; }
+.serverScroller > .serverButtonWrap { flex: 0 0 46px; width: 46px; }
 .serverScroller:empty { display: none; }
-.workspaceRail > .addServerButton { margin-top: 0; }
+.workspaceRail > .addServerButton { margin-top: 8px; }
 
 .workspaceLogo,
 .workspaceButton {
@@ -386,7 +436,7 @@ button {
 }
 
 button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; border-color: #91a7c4; outline: none; }
-.friendRow b { color: #78a4ff; }
+.friendRow b { color: var(--text-primary); }
 .friendRow > span { min-width: 0; gap: 4px; }
 .friendRow b, .friendRow small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .friendRow .friendListAvatar { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border-radius: 12px; color: #d4e2ff; background: #233b60; font-weight: 800; }
@@ -426,8 +476,9 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .friendConversationTitle b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .friendConversationTitle time { margin-left: auto; color: var(--muted); font-size: 10px; }
 .friendsSidebar .channel > small { display: block; width: 100%; margin-top: 3px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.friendsSidebar .channel.unread { color: var(--ink); background: #242b3d; }
-.friendsSidebar .channel.unread > small { color: #d6daea; font-weight: 700; }
+.friendsSidebar .channel.unread { color: var(--text-primary); }
+.friendsSidebar .channel.unread:not(.active) { background: transparent; }
+.friendsSidebar .channel.unread > small { color: var(--text-secondary); font-weight: var(--weight-normal); }
 .conversationUnreadBadge { position: absolute; right: 8px; bottom: 8px; display: grid; min-width: 18px; height: 18px; place-items: center; border-radius: 999px; background: #ed4245; color: white; font-size: 10px; font-weight: 800; }
 .friendsHomeButton { border: 0; background: transparent; color: var(--ink); font-weight: 800; }
 .friendsHomeButton:hover { color: #78a4ff; }
@@ -1334,8 +1385,8 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .videoCard:fullscreen > .streamInfo { top: 12px; right: 12px; left: auto; }
 .videoCard:fullscreen .streamSummary { display: none; }
 .fullscreenExit { display: none; }
-.cameraMirrorControl, .videoCard:fullscreen .fullscreenExit { align-items: center; justify-content: center; padding: 7px 12px; border: 1px solid #71829d; border-radius: 6px; background: #23344f; color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
-.cameraMirrorControl[aria-pressed="true"] { background: #345780; border-color: #91b5ed; }
+.videoCard:fullscreen .fullscreenExit { align-items: center; justify-content: center; padding: 7px 12px; border: 1px solid #71829d; border-radius: 6px; background: #23344f; color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
+.deviceToggleSettings > .cameraMirrorControl { width: 100%; cursor: pointer; }
 .videoCard:fullscreen > .streamInfo { display: flex; align-items: center; gap: 12px; }
 .friendRow > .statusAvatar { display: inline-flex; flex: 0 0 36px; width: 36px; height: 36px; }
 .friendRow .statusAvatar > .userAvatar { flex: 0 0 36px; width: 36px; height: 36px; }
@@ -1402,12 +1453,12 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .settingsModal button:focus-visible { outline: 2px solid #91a7c4; outline-offset: 2px; }
 
 .settingsModal.settingsWorkspace { width: min(1080px, calc(100vw - 40px)); height: min(820px, calc(100dvh - 48px)); padding: 0; overflow: hidden; display: flex; flex-direction: column; }
-.settingsWorkspace > header { padding: 24px 28px; margin: 0; border-bottom: 1px solid var(--line); }
+.settingsWorkspace > header { padding: 24px 28px; margin: 0; border-bottom: 1px solid var(--line); background: var(--deep); }
 .settingsLayout { display: grid; grid-template-columns: 220px minmax(0, 1fr); flex: 1; min-height: 0; }
 .settingsNavigation { display: flex; flex-direction: column; gap: 5px; padding: 24px 16px; background: #151925; overflow-y: auto; border-right: 1px solid var(--line); }
 .settingsNavLabel { color: var(--muted); font-size: 12px; font-weight: 700; overflow-wrap: anywhere; margin: 0 10px 12px; }
 .settingsNavigation button { text-align: left; border: 0; background: transparent; color: var(--muted); padding: 11px 14px; border-radius: 6px; }
-.settingsNavigation button.active, .settingsNavigation button:hover { background: #303748; color: var(--ink); }
+.settingsNavigation button.active, .settingsNavigation button:hover { background: var(--selection-background); color: var(--ink); }
 .settingsNavigation button.danger { color: #ff899c; margin-top: 16px; }
 .settingsNavigation button.danger:hover, .settingsNavigation button.danger.active { color: #ff899c; background: #85283b33; }
 .settingsNavGroup { display: flex; flex-direction: column; gap: 4px; padding: 16px 0 8px; border-top: 1px solid var(--line); }
@@ -1434,7 +1485,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .serverMessageGroup > .messageBulkDelete { margin: 12px; }
 .messageBulkDelete > button.danger { color: #ff899c; border: 1px solid #a44455; background: #85283b22; padding: 10px 16px; border-radius: 6px; }
 @media (max-width: 680px) { .managedChannelHeading { align-items: flex-start; flex-direction: column; } }
-.settingsContent { padding: 30px 36px; overflow-y: auto; min-width: 0; }
+.settingsContent { padding: 30px 36px; overflow-y: auto; min-width: 0; background: color-mix(in srgb, var(--panel), var(--ink) 3%); }
 .settingsContent h3 { margin: 0 0 24px; font-size: 23px; }
 .settingsContent h4 { margin: 28px 0 16px; }
 .settingsMemberList { display: grid; gap: 6px; margin-top: 16px; }
@@ -1464,7 +1515,9 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .personalMessageWindow article:nth-of-type(even) { background: #242d3e; }
 .personalMessageWindow article p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .personalMessageWindow article small { color: var(--muted); }
-.settingsContent .inlineCheckbox { display: flex; align-items: flex-start; gap: 10px; margin: 16px 0; line-height: 1.5; }
+.inlineCheckbox, .settingsContent .inlineCheckbox, .modalCard .inlineCheckbox { display: flex; align-items: flex-start; gap: 10px; margin: 16px 0; line-height: 1.5; }
+.inlineCheckbox > input[type="checkbox"] { flex: 0 0 16px; width: 16px; height: 16px; margin: 3px 0 0; padding: 0; accent-color: var(--accent); }
+.inlineCheckbox > span { min-width: 0; }
 .accountDeletion button.danger { border: 1px solid #aa5266; padding: 10px 14px; color: #ffb2c0; background: #5b2634; }
 .accountDeletion button:disabled { opacity: .5; cursor: not-allowed; }
 .mediaTestSection { display: grid; gap: 12px; }
@@ -1506,10 +1559,29 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
 .settingsNameForm > button { justify-self: start; }
 .settingsAccountCard { display: flex; align-items: center; gap: 18px; padding: 24px; border: 1px solid var(--line); background: #151925; border-radius: 10px; margin-bottom: 28px; }
 .settingsAccountCard p { color: var(--muted); margin: 6px 0; }
+.settingsAccountCard.settingsProfileEditor { display: grid; gap: 24px; padding: clamp(18px, 4vw, 32px); background: var(--panel); }
+.settingsProfileIdentity { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.settingsProfileIdentity p { margin: 0; color: var(--ink); font-size: inherit; font-weight: 400; }
+.settingsProfileStatus { color: #43b581; }
+.settingsProfileStatus[data-status="away"] { color: #edb74b; }
+.settingsProfileStatus[data-status="dnd"] { color: #ed5965; }
+.settingsProfileStatus:is([data-status="invisible"], [data-status="offline"]) { color: #8c96a8; }
+.settingsProfileEditor .profilePictureSettings { padding: 0 0 24px; margin: 0; }
+.settingsProfileEditor .profilePictureRow > .userAvatar { width: 96px; height: 96px; flex-basis: 96px; font-size: 36px; }
+.settingsProfileEditor .settingsDescription { margin: 0; }
+.settingsFieldLabel { position: relative; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.informationHint { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; flex: 0 0 17px; border: 1px solid var(--muted); border-radius: 50%; color: var(--muted); font-size: 11px; cursor: help; }
+.informationHint:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.informationHintText { display: none; position: absolute; top: calc(100% + 8px); left: 0; z-index: 10; width: min(240px, 100%); padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--deep); color: var(--ink); font-size: 12px; font-weight: 400; line-height: 1.5; box-shadow: 0 4px 16px #0005; }
+.informationHint:is(:hover, :focus) .informationHintText { display: block; }
+.settingsOverviewLinks { display: flex; flex-wrap: wrap; gap: 10px; }
+@media (max-width: 650px) {
+  .settingsProfileEditor .profilePictureRow { flex-wrap: wrap; }
+}
 .settingsDangerZone { border: 1px solid #a44455; padding: 24px; border-radius: 8px; }
 .settingsFeedback { padding: 12px; background: #252d3d; border-radius: 6px; overflow-wrap: anywhere; }
 button.profileLink { display: inline; width: auto; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
-button.profileLink:hover { color: var(--accent); text-decoration: underline; }
+button.profileLink:hover { color: var(--ink); text-decoration: underline; }
 .memberIdentity .profileLink { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settingsModal.userProfileModal { width: min(440px, calc(100vw - 32px)); padding: 0; overflow-x: hidden; }
 .userProfileModal > header { padding: 20px 24px; margin: 0; }
@@ -1747,7 +1819,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   background: #1c2231;
 }
 
-.chat article:hover {
+.chat article:hover:not(:has(.replyPreview:hover)) {
   border-color: #71829d;
   background: #22283a;
   box-shadow: 0 7px 18px rgb(0 0 0 / 24%);
@@ -1760,19 +1832,25 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 .replyPreview {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
-  max-width: 100%;
-  gap: 8px;
-  margin-bottom: 5px;
-  overflow: hidden;
+  width: fit-content;
+  max-width: min(520px, 100%);
+  gap: 3px 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--muted);
+  border-radius: 6px;
+  background: #ffffff06;
+  text-align: left;
   color: var(--muted);
   font-size: 12px;
 }
 
 .replyPreview strong {
   flex: 0 0 auto;
-  color: #78a4ff;
+  color: var(--ink);
 }
 
 .replyPreview span {
@@ -1782,8 +1860,19 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 }
 
 .chat b {
-  color: #78a4ff;
+  color: var(--ink);
 }
+.messageOwn .replyPreview { margin-left: auto; }
+.chat button.replyPreview { border: 0; border-left: 3px solid var(--muted); color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.chat button.replyPreview:hover { background: #ffffff0d; }
+.chat button.replyPreview:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.chat button.replyPreview:disabled { cursor: progress; }
+.replyPreview .replyPreviewLabel { font-size: 11px; }
+.replyPreview .replyPreviewText { grid-column: 1 / -1; max-width: 100%; }
+.replyDraftText { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.replyingTo > span { min-width: 0; }
+.chat .messageHeader .profileLink { color: var(--ink); }
+.chat article[data-repeated-time] .messageHeader > time { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
 
 .chat time {
   padding-left: 7px;
@@ -1830,12 +1919,12 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .mentionSuggestions .avatar { flex: 0 0 30px; width: 30px; height: 30px; }
 .chat .messageMention { display: inline; padding: 1px 4px; border: 0; border-radius: 4px; background: #78a4ff26; color: #b5cdff; font: inherit; font-weight: 600; cursor: pointer; }
 .chat .messageMention:hover { background: #78a4ff40; }
-.chatLog article[data-mentioned] { box-shadow: inset 3px 0 var(--accent); }
+.chatLog article[data-mentioned] { background: color-mix(in srgb, var(--panel), var(--accent) 8%); }
 .newMessagesDivider { display: flex; align-items: center; gap: 10px; margin: 12px 0; color: var(--accent); font-size: 11px; font-weight: 700; }
 .newMessagesDivider::before, .newMessagesDivider::after { content: ""; flex: 1; height: 1px; background: #78a4ff80; }
 .chat .unreadOutsidePage { margin: 8px 0 12px; color: var(--accent); font-size: 11px; text-align: center; }
 .activityIndicator { position: relative; display: inline-grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; margin-left: auto; }
-.activityDot { position: absolute; width: 11px; height: 11px; border-radius: 50%; background: var(--ink); }
+.activityDot { position: absolute; width: 9px; height: 9px; border-radius: 50%; background: var(--activity); box-shadow: 0 0 0 2px var(--panel); }
 .activityMentionCount { position: relative; z-index: 1; display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid #101420; border-radius: 10px; background: #d65065; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; }
 .serverActivityIndicator { position: absolute; top: -2px; right: -2px; margin: 0; }
 .notificationSettings, .personalMessages, .settingsDestinations { display: grid; gap: 10px; }
@@ -1958,6 +2047,16 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .attachmentPreviewStage { display: grid; place-items: center; min-height: min(240px, 40dvh); border: 1px solid var(--line); border-radius: 10px; background: #0d111b; overflow: hidden; }
 .attachmentPreviewStage img { display: block; width: 100%; height: min(64dvh, 680px); object-fit: contain; }
 .attachmentPreviewStage img[hidden] { display: none; }
+.imageZoomStage { touch-action: none; user-select: none; }
+.imageZoomStage.imageZoomed { cursor: grab; }
+.imageZoomStage.imageZoomed:active { cursor: grabbing; }
+.imageZoomControls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
+.imageZoomControls output { min-width: 48px; color: var(--muted); text-align: center; font-size: 13px; }
+.friendSidebarActions { margin: 0 12px 16px; }
+.friendshipActions button { padding: 10px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--ink); font: inherit; }
+.friendshipActions button.danger { color: #ff899c; border-color: #a44455; background: #85283b22; }
+.friendshipActions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.friendshipActions button:disabled { opacity: .6; cursor: not-allowed; }
 .attachmentPreviewStage p { max-width: 44ch; margin: 0; padding: 24px; color: var(--muted); font-size: 14px; text-align: center; }
 .messageAttachment { width: min(360px, 100%); }
 .messageOwn .messageAttachment { justify-self: end; }
@@ -2989,3 +3088,142 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   :root input:not(:disabled)::file-selector-button:hover,
   :root button.soundboardPlaceholder:is(:hover, :focus-visible) { translate: none; }
 }
+
+/* Shared selected navigation state; focus remains a separate keyboard cue. */
+.friendTabs button.active, .settingsContent .friendTabs button.active,
+.workspaceButton.active, .channel.active, .workspaceName .friendsHomeButton.active,
+.settingsNavigation button.active:not(.danger), .deviceDropdown button.selected {
+  background: var(--selection-background); color: var(--ink); border-color: transparent;
+  border-radius: 6px;
+}
+
+/* Keep individual message targets while visually joining consecutive messages. */
+:root .chat .chatLog > article[data-message-continues] {
+  margin-bottom: 0; border-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+  padding-bottom: 4px; box-shadow: none;
+}
+:root .chat .chatLog > article[data-message-continuation] {
+  margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;
+  padding-top: 4px; box-shadow: none;
+}
+.chat article[data-message-continuation] .messageHeader .profileLink {
+  position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%);
+}
+.chat article[data-message-continuation] .messageHeader .profileLink:focus-visible {
+  position: static; width: auto; height: auto; overflow: visible; clip-path: none;
+}
+.chat article:is([data-message-continuation], [data-message-continues]):hover { transform: none; }
+
+/* Shared settings page rhythm and typography across account and server sections. */
+.settingsWorkspace .settingsContent {
+  --settings-gap: 20px;
+  --settings-card-padding: 16px;
+  --settings-card-radius: 9px;
+  display: flex; flex-direction: column; gap: var(--settings-gap);
+  font-family: inherit; font-size: 14px; line-height: 1.5;
+}
+.settingsContent > * { flex-shrink: 0; }
+.settingsContent :is(.notificationSettings, .personalMessages, .serverInvites, .soundManager, .settingsMembers, .mediaSettings, .settingsDestinations) {
+  display: grid; gap: var(--settings-gap); min-width: 0; align-content: start;
+}
+.settingsWorkspace .settingsContent h3 { margin: 0; font-size: 23px; font-weight: 700; line-height: 1.3; }
+.settingsWorkspace .settingsContent h4 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4; }
+.settingsContent > h4 { padding-top: 8px; }
+.settingsContent :is(.settingsDescription, .mediaSettings p, .soundManager > p, .serverInvites > p) { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
+.settingsContent :is(button, input, select, textarea) { font-family: inherit; font-size: 14px; line-height: 1.5; }
+.settingsContent :is(label, .notificationPreference label, .deviceSelectionLabel) { font-size: 14px; line-height: 1.5; }
+.settingsContent :is(small, .deviceSelectionNote, .invitePersonIdentity > small) { font-size: 12px; line-height: 1.5; }
+.settingsContent :is(.managedChannel, .notificationPreference, .mediaSettingsGroup, .settingsMemberRow, .soundManagerRow, .messageDestinationList > button, .serverInvites .friendPickerRow) {
+  padding: var(--settings-card-padding); border: 1px solid var(--line);
+  border-radius: var(--settings-card-radius); background: var(--panel);
+}
+.settingsContent :is(.channelManager, .settingsMemberList, .soundManagerList, .messageDestinationList, .serverInvites .friendPickerList) { gap: 12px; margin: 0; }
+.settingsContent :is(.managedChannelHeading strong, .notificationPreference > strong, .settingsMemberRow > strong, .messageDestinationList strong, .invitePersonIdentity > b, .soundName) { font-size: 14px; font-weight: 600; }
+.settingsContent :is(.settingsDestinations > .friendTabs, .serverInvites > label) { margin: 0; }
+.settingsContent .settingsDestinations > input,
+.settingsContent input:not([type="checkbox"]):not([type="range"]):not([type="file"]),
+.settingsContent select, .settingsContent .deviceSelection select {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--ink);
+}
+.settingsContent :is(input, select, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settingsContent .mediaSettingsGroup { gap: 12px; }
+.settingsContent .settingsSection { display: grid; gap: var(--settings-gap); min-width: 0; }
+.settingsSectionPanel { display: grid; gap: var(--settings-gap); min-width: 0; padding: var(--settings-card-padding); border: 1px solid var(--line); border-radius: var(--settings-card-radius); background: var(--panel); }
+.settingsContent .settingsSectionPanel .mediaTests { padding-top: 0; border-top: 0; }
+.settingsContent .settingsSectionPanel .friendTabs { border-bottom: 0; }
+.settingsContent .settingsSectionPanel .mediaSettingsGroup { border: 0; padding: 0; }
+.settingsContent .settingsFieldLabel { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.settingsContent .settingsSectionPanel > .settingsNameForm { margin: 0; }
+.managedChannelGroup { display: grid; gap: 12px; min-width: 0; }
+.managedChannelGroup[hidden] { display: none; }
+.channelTypePanel, .settingsSubpanel { padding: 16px; border: 1px solid var(--line); border-radius: 9px; display: grid; gap: 20px; min-width: 0; background: var(--panel); }
+.informationHintOverlay { position: fixed; inset: auto; margin: 0; width: min(320px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow-y: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--deep); color: var(--ink); font: 400 12px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; white-space: normal; overflow-wrap: anywhere; box-shadow: 0 6px 24px #0007; }
+.informationHintOverlay::backdrop { background: transparent; pointer-events: none; }
+.promotionMenu { position: fixed; inset: auto; margin: 0; width: min(240px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--ink); box-shadow: 0 12px 32px #0008; font: inherit; }
+.promotionMenu:popover-open { display: grid; gap: 4px; }
+.settingsSectionBody { display: grid; gap: var(--settings-gap); min-width: 0; }
+.settingsContent .promotionTrigger { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.promotionTrigger svg { display: block; flex-shrink: 0; }
+.promotionOption { display: flex; align-items: center; gap: 10px; }
+.promotionMenu button { flex: 1; min-width: 0; padding: 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; font: inherit; }
+.promotionMenu button:hover { background: var(--selection-background); }
+.promotionMenu button:disabled { opacity: .5; cursor: not-allowed; }
+.promotionMenu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.managedChannel[data-reorder-handle]:not([data-reorder-disabled="true"]) { cursor: grab; touch-action: none; }
+.managedChannel[data-reorder-dragging] { cursor: grabbing; }
+.managedChannel:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.settingsContent .settingsDestinations .friendTabs button:not(.active):not(:hover) { border-color: transparent; background: transparent; color: var(--muted); }
+.settingsContent .settingsMemberRow { grid-template-columns: 34px minmax(0, 1fr) auto; }
+.settingsContent .settingsMemberActions { flex-direction: row; flex-wrap: nowrap; align-items: center; justify-content: flex-end; }
+.settingsMemberRow > strong > small { color: var(--muted); font-weight: 400; }
+.settingsMemberActions .settingsFieldLabel { margin: 0; }
+@media (max-width: 650px) { .settingsContent .settingsMemberActions { grid-column: 2 / -1; justify-content: flex-start; } }
+.settingsContent .serverInvites .friendPickerRow:hover { background: color-mix(in srgb, var(--panel), var(--ink) 5%); }
+.settingsContent .serverInvites .friendPickerRow[data-selected="true"] { background: var(--selection-background); border-color: var(--accent); }
+.settingsContent .serverInvites .friendPickerRow[data-existing="true"] { background: var(--deep); }
+@media (max-width: 650px) {
+  .settingsWorkspace .settingsContent { --settings-gap: 16px; --settings-card-padding: 12px; }
+  .settingsContent .notificationPreference label { flex-wrap: wrap; }
+  .settingsContent .notificationPreference select { max-width: 100%; }
+}
+
+/* Shared typography and interaction roles. See docs/architecture/ui.md. */
+.workspace, .settingsModal { font-family: var(--font-ui); font-size: var(--text-body); line-height: var(--leading-body); }
+.settingsModal h2 { font-size: var(--text-page); font-weight: var(--weight-heading); line-height: var(--leading-heading); }
+.settingsWorkspace .settingsContent h3 { font-size: var(--text-page); font-weight: var(--weight-heading); line-height: var(--leading-heading); }
+.settingsWorkspace .settingsContent h4, .contentEmptyState strong { font-size: var(--text-section); font-weight: var(--weight-label); line-height: var(--leading-heading); }
+.settingsContent :is(button, input, select, textarea, label, .notificationPreference label, .deviceSelectionLabel, .settingsDescription, .mediaSettings p, .soundManager > p, .serverInvites > p) { font-size: var(--text-body); line-height: var(--leading-body); }
+.settingsContent :is(small, .deviceSelectionNote, .invitePersonIdentity > small),
+.workspace :is(.sectionLabel, .friendRow small, .member small, .friendProfileCard small, .friendConversationTitle time, .friendsSidebar .channel > small),
+.settingsNavCategory, .settingsNavLabel, .chat time, .messageEdited, .profileActions small, .deviceSelection .deviceSelectionNote {
+  font-size: var(--text-meta); font-weight: var(--weight-normal); line-height: var(--leading-body);
+}
+.workspace .sectionLabel, .settingsNavCategory { font-weight: var(--weight-label); color: var(--text-secondary); }
+.messageAuthorName, .friendRow b, .memberIdentity strong, .friendConversationTitle b, .friendProfileCard strong {
+  font-size: var(--text-body); font-weight: var(--weight-label); color: var(--text-primary);
+}
+.roomHeader > strong, .workspaceName > strong, .memberSidebarHeader { font-size: var(--text-body); font-weight: var(--weight-label); }
+.chatLog > article > p { font-size: var(--text-body); line-height: var(--leading-body); }
+.chat time, .messageEdited, .profileActions small, .contentEmptyState p { color: var(--text-secondary); }
+.contentEmptyState p { font-size: var(--text-body); line-height: var(--leading-body); }
+.workspaceButton.active { border-radius: 17px; outline: 2px solid var(--selection-indicator); outline-offset: 2px; }
+.channel.active { background: var(--selection-background); color: var(--text-primary); }
+.channel .channelUnread { font-weight: var(--weight-label); color: var(--text-primary); }
+.conversationUnreadBadge { background: var(--mention-background); color: #fff; font-size: var(--text-badge); font-weight: var(--weight-heading); }
+.activityMentionCount { background: var(--mention-background); color: #fff; font-size: var(--text-badge); }
+.newMessagesDivider, .chat .unreadOutsidePage { color: var(--activity); font-size: var(--text-meta); }
+.newMessagesDivider::before, .newMessagesDivider::after { background: color-mix(in srgb, var(--activity), transparent 45%); }
+.settingsModal, .contentEmptyState { border-radius: var(--dialog-radius); }
+.settingsContent :is(input:not([type="checkbox"]):not([type="range"]):not([type="file"]), select),
+.deviceSelection select, .settingsDestinations > input { border-radius: var(--control-radius); font-size: var(--text-body); font-family: var(--font-ui); }
+.deviceSelection > label { font-size: var(--text-body); line-height: var(--leading-body); }
+.deviceSelection select { padding: 10px 12px; background: var(--panel); border-color: var(--line); }
+.profileDetails h3 { font-size: var(--text-title); font-weight: var(--weight-heading); line-height: var(--leading-heading); }
+.accountMenuDropdown, .deviceDropdown, .promotionMenu, .notificationMuteMenu { border: 1px solid var(--line); border-radius: var(--card-radius); background: var(--panel); color: var(--text-primary); font-size: var(--text-body); }
+.accountMenuDropdown :is(button, a), .deviceDropdown button, .promotionMenu button { border-radius: var(--control-radius); padding: var(--space-2) var(--space-3); font-size: var(--text-body); }
+.workspace :is(button, a, input, select, textarea):focus-visible,
+.settingsModal :is(button, a, input, select, textarea):focus-visible,
+.promotionMenu button:focus-visible, .informationHint:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.informationHintOverlay { font-family: var(--font-ui); font-size: var(--text-meta); line-height: var(--leading-body); }
+.settingsModal button.danger, .friendshipActions button.danger { color: var(--danger-text); }

@@ -30,13 +30,14 @@ Targeted `server-picture-updated` events update members and invitation recipient
 without clearing history, refreshing signaling authorization or restarting calls;
 invitation focus refreshes and server-list reload/reconnects recover missed updates.
 
-On reload, the authorized server-list response starts low-priority image preloads
-before saved conversation/channel restoration finishes. Rendering never waits for
-image requests. Server pictures retain their initials in a fixed-size icon until
+On reload, the authorized server-list response starts shared in-memory picture-cache
+downloads before saved conversation/channel restoration finishes. Rendering never
+waits for image requests. Server pictures retain their initials in a fixed-size icon until
 the image loads and decodes, then fade in with reduced-motion support. Failed
 loads keep initials; obsolete decodes cannot reveal a replaced image. Preloads
-use the same no-referrer policy as rendered images and keep the existing private,
-no-store authorization checks; no persistent image cache is introduced.
+use the same account-scoped picture resources as rendered avatars and keep the
+existing private/no-store authorization checks; no persistent image cache is
+introduced. See [picture cache lifetime and bounds](ui.md#cached-navigation-and-loading).
 
 ## Online status, automatic Away and AFK
 
@@ -101,6 +102,15 @@ legacy single-server presence subscription remains available to older clients.
 Input and output menus share the same compact labeled device selector.
 
 ## Server invitations
+
+Server settings member management reuses the owner-authorized membership DELETE
+API for confirmed kicks. Promote groups moderator assignment and confirmed owner
+transfer in one selector; existing moderators retain demotion. Channel settings
+separate Text/Voice reorder groups behind category tabs and make the row surface
+draggable, preserving keyboard reordering and excluding nested action controls.
+Creation appears first, followed by the channel list and AFK configuration.
+Members and All users share owner-first, then alphabetical sorting; All users
+retains per-user status in one list. These are presentation changes to existing APIs.
 
 Server owners have an Invite to server shortcut between these buttons, opening
 Invite friends settings. Invite friends lists accepted friends alphabetically

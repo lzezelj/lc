@@ -1,4 +1,5 @@
 "use client";
+import { InformationHint } from "./information-hint";
 import { useState } from "react";
 
 export function ServerAfkSettings({
@@ -41,8 +42,11 @@ export function ServerAfkSettings({
     }
   }
   return (
-    <section className="mediaSettings">
-      <h4>AFK channel</h4>
+    <section className="mediaSettings settingsSubpanel">
+      <h4 className="settingsFieldLabel">
+        AFK channel{" "}
+        <InformationHint text="After 15 minutes without activity, users in voice are moved to the selected group voice channel. Disable this or choose Create an AFK channel to add one." />
+      </h4>
       <label>
         Move inactive users (after 15 minutes) to
         <select

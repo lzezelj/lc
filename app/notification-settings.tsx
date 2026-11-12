@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { SettingsDestinations } from "./settings-destinations";
+import { SettingsSection } from "./settings-section";
 import type {
   NotificationKind,
   NotificationPreference,
@@ -185,13 +186,11 @@ export function NotificationSettings({
       .includes(queries[category].trim().toLocaleLowerCase()),
   );
   return (
-    <section className="notificationSettings">
-      <h3>Notifications</h3>
-      <p className="settingsDescription">
-        Choose alerts for each server and direct conversation. Reading still
-        marks messages as seen when notifications are disabled. Do not disturb
-        silences all alerts.
-      </p>
+    <SettingsSection
+      title="Notifications"
+      className="notificationSettings"
+      hint="Choose alerts for each server and direct conversation. Reading still marks messages as seen when notifications are disabled. Do not disturb silences all alerts."
+    >
       <SettingsDestinations
         label="Notification"
         category={category}
@@ -217,6 +216,6 @@ export function NotificationSettings({
           onSave={onSave}
         />
       ))}
-    </section>
+    </SettingsSection>
   );
 }

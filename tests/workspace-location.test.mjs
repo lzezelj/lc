@@ -153,6 +153,7 @@ function fixture({
     saveWorkspaceLocation,
     restoredTextChannel,
     preloadServerPictures: () => {},
+    pictureCache: null,
     fetch: async (url) => ({
       ok: true,
       json: async () =>

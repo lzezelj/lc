@@ -6,10 +6,91 @@ Workspace restoration/caching, profiles, settings, help, loading, panels, resizi
 
 ## Shared controls and search behavior
 
+### Visual rules and consistency
+
+`app/globals.css` owns the workspace/settings typography and interaction tokens.
+Use `--font-ui` rather than introducing another font stack. The type scale is:
+
+| Role | Token | Size / weight | Color |
+| --- | --- | --- | --- |
+| Page/dialog title | `--text-page` | 24px / 700 | `--text-primary` |
+| Profile title | `--text-title` | 20px / 700 | `--text-primary` |
+| Subsection/empty-state heading | `--text-section` | 16px / 600 | `--text-primary` |
+| Message, field, control, name | `--text-body` | 14px / 400; names 600 | `--text-primary` |
+| Timestamp, role, helper, section label | `--text-meta` | 12px / 400; labels 600 | `--text-secondary` |
+| Compact count badge | `--text-badge` | 10px / 700 | Semantic badge foreground |
+
+Body line height uses `--leading-body` (1.5), headings `--leading-heading` (1.3).
+Names remain neutral white; accent colors identify actions, links and focus.
+Status colors and destructive controls retain their semantic colors. Shared
+control/card/dialog radii, focus color and 4/8/12/16/24px spacing tokens define
+equivalent controls. DeviceSelection owns equivalent device field styling.
+
+Selection uses neutral `--selection-background` for channels and an outline for
+server icons, plus `aria-current`, without left-edge stripes. Generic unread
+activity uses neutral `--activity` dots without filling unselected rows; numeric
+DM/mention counts use `--mention-background` red. Selection and activity can appear together. Read state,
+mute/DND behavior and backend notification handling are unchanged.
+
+The source consistency pass covers workspace navigation, names/metadata, chat,
+settings/profile headings, standard form fields, menus, tooltips, empty states and
+focus rings. Icon/avatar glyph sizing and purpose-specific media layouts retain
+their dimensions. Message-action placement and responsive layout are unchanged.
+
+Settings searches include destination-specific placeholders. In Notifications and
+My messages, unselected category tabs are borderless within the shared panel.
+Channel settings show creation first, then a list with Text/Voice category tabs
+and separate list panels, followed by AFK configuration. Each block has its own panel.
+Whole channel rows act as pointer/keyboard reorder targets, excluding nested
+controls, with movement constrained to their channel group. Member roles appear
+beside names; Promote offers moderator/owner choices (and demotion for moderators),
+while red Kick uses an inline confirmation. Existing owner-only APIs authorize
+role, ownership and membership changes; server owners have no self-kick control.
+Members and All users share owner-first ordering followed by alphabetical names,
+with stable ID ties and a `(You)` label for the signed-in account. All users uses
+one sorted list rather than online/offline sections, retaining individual statuses.
+Promote opens a native popover styled like the device menus, with information hints
+beside Moderator/Owner; Promote and Kick remain adjacent even on narrow screens.
+Information hints use viewport-clamped manual popovers in the browser top layer,
+avoiding clipping by device-menu or settings scroll containers. Hover/focus shows
+them; tapping/clicking or Enter/Space pins/toggles them for touch and keyboard use.
+Pinned hints stay open on pointer leave. Outside taps, blur, Escape, scrolling or
+resizing dismiss them. Trigger clicks prevent surrounding labels changing inputs.
+
+Selected navigation buttons (settings sections, category/Friends tabs, channels,
+workspaces and device options) share `--selection-background`, following the
+Notifications section's filled treatment. Keyboard focus remains independent;
+danger actions retain their semantic colors.
+
+### Local design playground
+
+In development only, the root layout mounts `app/design-playground.tsx` beside
+the application. Design lab opens a nonmodal native popover with live color and
+message spacing controls. Preview CSS uses shared color variables plus scoped
+overrides for workspace surfaces, messages and dialog corners; fixed-color controls
+are not fully themed. It does not change navigation, media ownership or APIs.
+Changes live in component memory, survive closing the panel, and disappear on reload.
+Preview can be disabled for comparison; Reset removes all overrides. Export CSS
+downloads the current experiment for review and manual integration, not an automatic
+project update. The playground is not mounted in production builds.
+
 New visible features reuse the website's existing components, CSS variables,
 typography, spacing, colors, borders and interaction states. Buttons, dropdowns,
 search fields, panels and dialogs follow equivalent existing controls, including
 shared button hover animation, keyboard focus, disabled and reduced-motion states.
+
+Account and server settings share a scoped content rhythm in `app/globals.css`:
+14px body/controls, 12px supporting text, 23px page headings, 16px subsection
+headings, and common section gaps, form fields, card padding and surfaces.
+Notifications, personal messages, media, channels, sounds, members and invitations
+reuse these rules while retaining their control-specific responsive layouts.
+Device controls continue using the shared DeviceSelection styles.
+`SettingsSection` gives media, notifications, personal messages, channels, sounds,
+members and invitations a common heading-to-panel gap and bordered content panel.
+Introductory guidance lives in shared hover/focus information hints; empty results,
+live feedback, errors and destructive-action confirmations stay visible. Media
+guidance is attached to Audio and transmission-threshold labels; device notes use
+the same hint through DeviceSelection. Decorative tab/media divider lines are removed.
 
 Searches that trigger API requests wait 500 ms after the last edit before
 requesting results. `app/use-search-debounce.ts` owns the shared delay and
@@ -50,6 +131,31 @@ Forced group-room disconnections clear the active voice selection and call UI.
 
 ## Cached navigation and loading
 
+My messages retains its last successful history snapshot in a workspace-owned,
+account-scoped SessionCache (one entry, 1 MiB). Reopening restores destinations
+immediately and revalidates in the background. Deletions update the snapshot and
+reject an older in-flight history response; unauthorized responses clear it.
+Network errors retain the last snapshot with an error. Oversized histories remain
+usable but are not retained. Account changes, workspace teardown and reload clear
+the memory cache; message bodies are never written to browser storage.
+
+`PictureCacheProvider` owns a separate in-memory `PictureCache` for each signed-in
+account. Shared Avatar instances acquire the same pending/completed download for
+each versioned local profile/server picture URL, then render the shared blob URL.
+Server-picture startup preloads use that same cache. External URLs keep normal
+browser loading; file/crop/attachment previews are outside this cache.
+Downloads still pass existing API authorization and private/no-store headers;
+only PNG responses up to 512 KiB are accepted. New version URLs load new images.
+The LRU cache targets 64 entries / 8 MiB of image bytes, evicting unused entries
+and revoking their blob URLs. Active consumers pin entries, so active images may
+temporarily exceed the target. Unmounting one avatar does not discard another's
+image. Account changes, logout, provider teardown and reload clear the cache,
+abort pending downloads and revoke all retained URLs. No disk/browser-storage
+cache is added; a picture can be downloaded again after eviction or reload.
+Already authorized pictures may remain cached for that account's page session;
+new downloads always recheck backend access. The earlier settings-only self-avatar
+cache is replaced by this shared path. Tests live in `tests/settings-cache.test.mjs`.
+
 Server selection updates the visible workspace immediately. Visited servers
 restore their own cached channel/member snapshots and message history in the
 navigation state update, before a loading frame can paint. An account-scoped
@@ -67,6 +173,11 @@ previously loaded message pages restore from the page-session cache, while an
 uncached channel shows loading until its authorized history arrives.
 
 ## Avatars, profiles and identity updates
+
+The selected Messages profile sidebar and UserProfile modal share FriendshipActions
+for requests, incoming acceptance, sent-request state and confirmed removal.
+Demo restrictions, busy/error feedback and preserved message history follow the
+existing friendship API. Switching the selected person resets confirmation state.
 
 Accepted friends' profiles offer Remove friend with inline confirmation and a
 busy/error state using existing danger-button styles. POST `/api/friends` with
@@ -97,7 +208,15 @@ and server moderation suppress affected highlights without modifying presence
 broadcasts. The shared status avatar places an online/away/do-not-disturb/offline
 dot outside the picture in Friends and All users, including image fallbacks.
 
-My account groups the profile picture before display-name controls.
+My account and server overview place name editing before picture controls.
+Username and display-name explanations use shared hover/focus information hints.
+Server overview member/channel counts open their respective settings sections.
+The identity handle/status, enlarged avatar and picture controls, and display-name
+form share one profile editor card rather than a duplicate read-only summary.
+Picture and name changes retain their separate explicit save operations.
+Server overview reuses the same editor card for its enlarged picture, server-name
+form and member/channel counts. Both account and server dialogs are titled Settings;
+server identity remains visible in the server navigation.
 `ProfilePictureSettings` accepts PNG/JPEG/WebP up to 2 MiB and opens a local crop
 editor with drag positioning, zoom/position sliders and a live circular preview.
 Selection and cancellation do not upload. Explicit Save picture re-encodes the
@@ -141,6 +260,17 @@ A compact footer keeps these actions available when the member sidebar is hidden
 including mobile, without covering the composer or unmounting calls.
 
 ## Workspace panel transitions
+
+Server-rail gaps use the original 14px spacing. The scrolling list uses 8px top
+and 4px bottom padding offset by matching negative margins, providing clearance
+for the outer selection outline and shared hover movement. Selected server icons
+retain their 17px corner radius rather than the shared navigation-button radius.
+The whole rail owns vertical scrolling, with a visible thin scrollbar when its
+contents exceed the viewport. The inner server list does not shrink or clip the
+last icon above Create server. Symmetric scrollbar gutters keep icons centered;
+LC and Create server scroll with the rail when needed.
+`node tests/server-rail.browser.mjs` checks two-server fit and long-list centering
+at desktop, short and mobile viewport sizes.
 
 Both workspaces have controls to toggle the server rail, channel/conversation
 sidebar, and user/profile sidebar. These controls remain visible on desktop and

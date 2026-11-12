@@ -3,6 +3,21 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { compareServerMembers } from "../app/member-order.ts";
+
+test("member lists place the owner first then sort names with stable ID ties", () => {
+  const rows = [
+    { id: "z", name: "zara", role: "member" },
+    { id: "b", name: "Alex", role: "mod" },
+    { id: "owner", name: "Zoe", role: "owner" },
+    { id: "a", name: "alex", role: "member" },
+  ];
+  assert.deepEqual(
+    [...rows].sort(compareServerMembers).map((row) => row.id),
+    ["owner", "a", "b", "z"],
+  );
+  assert.equal(rows[0].id, "z");
+});
 
 const actor = "11111111-1111-4111-8111-111111111111",
   target = "22222222-2222-4222-8222-222222222222",

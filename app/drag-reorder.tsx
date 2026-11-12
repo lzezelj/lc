@@ -160,12 +160,17 @@ export function useDragReorder(options: Options) {
       settling.current = null;
     }
     if (!busy && focusAfterDrop.current) {
-      if (focusAfterDrop.current.scope === options.scope)
-        findRow(focusAfterDrop.current.id)
-          ?.querySelector<HTMLElement>(
-            "[data-reorder-handle], [data-reorder-icon]",
-          )
-          ?.focus({ preventScroll: true });
+      if (focusAfterDrop.current.scope === options.scope) {
+        const row = findRow(focusAfterDrop.current.id);
+        const target = row?.matches(
+          "[data-reorder-handle], [data-reorder-icon]",
+        )
+          ? row
+          : row?.querySelector<HTMLElement>(
+              "[data-reorder-handle], [data-reorder-icon]",
+            );
+        target?.focus({ preventScroll: true });
+      }
       focusAfterDrop.current = null;
     }
     // Settle only this drop, after React commits the order (or a failed save).

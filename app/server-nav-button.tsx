@@ -1,13 +1,20 @@
 "use client";
 import { useId, type MouseEvent } from "react";
 import { preload } from "react-dom";
+import { isLocalPicture, type PictureCache } from "./picture-cache";
 import { UnreadIndicator } from "./unread-indicator";
 import { Avatar } from "./avatar";
 import type { DragReorder } from "./drag-reorder";
 
-export function preloadServerPictures(servers: { image?: string | null }[]) {
+export function preloadServerPictures(
+  servers: { image?: string | null }[],
+  cache?: PictureCache | null,
+) {
   for (const server of servers) {
-    if (server.image)
+    if (server.image && cache && isLocalPicture(server.image)) {
+      const resource = cache.acquire(server.image);
+      void resource.promise.catch(() => {}).finally(resource.release);
+    } else if (server.image)
       preload(server.image, {
         as: "image",
         referrerPolicy: "no-referrer",
@@ -57,6 +64,7 @@ export function ServerNavButton({
       <button
         {...drag?.iconProps(server.id)}
         className={`workspaceButton ${active ? "active" : ""}`}
+        aria-current={active ? "page" : undefined}
         aria-label={`${server.name}${unread ? ", unread messages" : ""}${mentions ? `, ${mentions} unread mentions` : ""}${voiceUsers.length ? `, ${voiceUsers.length} in voice` : ""}`}
         aria-describedby={drag ? `${tooltip} ${drag.instructionsId}` : tooltip}
         onClick={onClick}

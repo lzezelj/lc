@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { InformationHint } from "./information-hint";
 import {
   readMicrophoneMode,
   saveMicrophoneMode,
@@ -22,7 +23,10 @@ export function MicrophoneModeSelector() {
   return (
     <div className="deviceSelection">
       <label>
-        Microphone processing
+        <span className="settingsFieldLabel">
+          Microphone processing{" "}
+          <InformationHint text="Raw bypasses noise suppression, echo cancellation, automatic gain and the transmission threshold. Browser uses browser processing; RNNoise uses a neural filter and falls back to browser processing if unavailable. Volume and mute/deafen apply in every mode. RNNoise notices are under Licenses in the app footer." />
+        </span>
         <select
           aria-label="Microphone processing mode"
           value={mode}
@@ -63,7 +67,10 @@ export function EchoCancellationToggle() {
         disabled={mode === "raw"}
         onChange={(event) => saveEchoCancellationEnabled(event.target.checked)}
       />
-      <span>Echo cancellation</span>
+      <span className="settingsFieldLabel">
+        Echo cancellation{" "}
+        <InformationHint text="Reduces speaker sound returning through your microphone. Try disabling it if it clips speech. Unavailable in Raw mode." />
+      </span>
     </label>
   );
 }

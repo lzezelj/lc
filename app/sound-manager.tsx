@@ -1,4 +1,6 @@
 "use client";
+import { SettingsSection } from "./settings-section";
+import { InformationHint } from "./information-hint";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsModal } from "./settings-modal";
@@ -696,17 +698,22 @@ export function SoundManager({
   );
   const selectedSounds = sounds.filter((sound) => sound.id === joinSoundId);
   return (
-    <section className="soundManager" aria-label="Manage soundboard">
-      <h3>{joinSoundOnly ? "Voice channel sounds" : "Soundboard"}</h3>
-      <p>
-        {joinSoundOnly
+    <SettingsSection
+      className="soundManager"
+      title={joinSoundOnly ? "Voice channel sounds" : "Soundboard"}
+      hint={
+        joinSoundOnly
           ? "Choose the soundboard sound everyone hears when you join a voice channel in this server. Previews play only for you."
-          : "Add sounds for everyone in this server. Previews play only for you."}
-      </p>
+          : "Add sounds for everyone in this server. Previews play only for you."
+      }
+    >
       {!loading && (
         <div className="deviceSelection">
           <label>
-            Your voice channel join sound
+            <span className="settingsFieldLabel">
+              Your voice channel join sound{" "}
+              <InformationHint text="This choice is yours for this server only. Everyone in the channel hears your chosen sound when you join. Removing a selected sound restores Default." />
+            </span>
             <select
               aria-label="Voice channel join sound"
               value={joinSoundId ?? ""}
@@ -721,11 +728,6 @@ export function SoundManager({
               ))}
             </select>
           </label>
-          <small className="deviceSelectionNote">
-            This choice is yours for this server only. Everyone in the channel
-            hears your chosen sound through the soundboard when you join.
-            Removing a selected sound restores Default.
-          </small>
           {joinSoundSaved && (
             <small role="status">Join sound changed successfully</small>
           )}
@@ -818,6 +820,6 @@ export function SoundManager({
           onSaved={(sound) => setSounds((current) => [...current, sound])}
         />
       )}
-    </section>
+    </SettingsSection>
   );
 }

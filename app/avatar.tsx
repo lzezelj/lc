@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { usePictureSource } from "./picture-cache-provider";
 
 export function Avatar({
   name,
@@ -15,6 +16,7 @@ export function Avatar({
   showPlaceholder?: boolean;
 }) {
   const [failed, setFailed] = useState<string | null>(null);
+  const source = usePictureSource(image);
   const [decoded, setDecoded] = useState<string | null>(null);
   const hasImage = !!image && failed !== image;
   const ready = hasImage && decoded === image;
@@ -25,11 +27,11 @@ export function Avatar({
       aria-hidden="true"
     >
       {showPlaceholder && <span className="avatarInitial">{initial}</span>}
-      {hasImage ? (
+      {hasImage && source ? (
         // External profile images retain their existing source; no optimizer proxy.
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={image}
+          src={source}
           alt=""
           referrerPolicy="no-referrer"
           decoding="async"
@@ -37,20 +39,20 @@ export function Avatar({
             showPlaceholder
               ? async (event) => {
                   const element = event.currentTarget;
-                  const source = image;
+                  const loadedSource = source;
                   try {
                     await element.decode();
                     if (
                       element.isConnected &&
-                      element.getAttribute("src") === source
+                      element.getAttribute("src") === loadedSource
                     )
-                      setDecoded(source);
+                      setDecoded(image!);
                   } catch {
                     if (
                       element.isConnected &&
-                      element.getAttribute("src") === source
+                      element.getAttribute("src") === loadedSource
                     )
-                      setFailed(source);
+                      setFailed(image!);
                   }
                 }
               : undefined

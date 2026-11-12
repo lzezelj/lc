@@ -1,10 +1,16 @@
 "use client";
+import { SettingsSection } from "./settings-section";
 import { useState } from "react";
+import { PromotionMenu } from "./promotion-menu";
+import { compareServerMembers } from "./member-order";
 export function SettingsMembers({
   members,
+  currentUserId,
   onTransfer,
   onRoleChange,
+  onKick,
 }: {
+  currentUserId: string;
   members: {
     id: string;
     name: string;
@@ -20,23 +26,35 @@ export function SettingsMembers({
     member: { id: string; name: string; role: string },
     role: "member" | "mod",
   ) => Promise<void>;
+  onKick?: (member: {
+    id: string;
+    name: string;
+    role: string;
+  }) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [candidate, setCandidate] = useState("");
+  const [kicking, setKicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const visible = members.filter((member) =>
-    `${member.name} ${member.role === "mod" ? "moderator mod" : member.role}`
-      .toLowerCase()
-      .includes(query.trim().toLowerCase()),
-  );
+  const visible = members
+    .filter((member) =>
+      `${member.name} ${member.role === "mod" ? "moderator mod" : member.role}`
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
+    )
+    .sort(compareServerMembers);
   return (
-    <section>
-      <h3>Members</h3>
+    <SettingsSection
+      title="Members"
+      className="settingsMembers"
+      hint="Search server members and manage their access and roles."
+    >
       <label>
         Search members
         <input
           type="search"
+          placeholder="Search members"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
@@ -48,62 +66,79 @@ export function SettingsMembers({
             <span className="inviteAvatar" aria-hidden="true">
               {member.name[0]?.toUpperCase()}
             </span>
-            <strong>{member.name}</strong>
-            <small>{member.role === "mod" ? "moderator" : member.role}</small>
+            <strong>
+              {member.name}
+              {member.id === currentUserId ? " (You)" : ""}{" "}
+              <small>
+                ({member.role === "mod" ? "moderator" : member.role})
+              </small>
+            </strong>
             <div className="settingsMemberActions">
-              {onRoleChange &&
-                member.role !== "owner" &&
-                member.canBeModerator !== false && (
-                  <button
-                    type="button"
-                    className="transferOwnershipButton"
-                    disabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
+              {(onRoleChange || onTransfer) && member.role !== "owner" && (
+                <PromotionMenu
+                  name={member.name}
+                  disabled={busy}
+                  moderatorDisabled={
+                    !onRoleChange ||
+                    member.role === "mod" ||
+                    member.canBeModerator === false
+                  }
+                  ownerDisabled={!onTransfer}
+                  canDemote={member.role === "mod" && !!onRoleChange}
+                  onSelect={async (role) => {
+                    if (role === "owner") {
+                      setKicking(false);
+                      setCandidate(member.id);
                       setError("");
-                      setCandidate("");
-                      try {
-                        await onRoleChange(
-                          member,
-                          member.role === "mod" ? "member" : "mod",
-                        );
-                      } catch (failure) {
-                        setError(
-                          failure instanceof Error
-                            ? failure.message
-                            : "The member's role could not be changed.",
-                        );
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                  >
-                    {member.role === "mod"
-                      ? "Demote to member"
-                      : "Promote to moderator"}
-                  </button>
-                )}
-              {onTransfer && member.role !== "owner" && (
+                      return;
+                    }
+                    setBusy(true);
+                    setError("");
+                    setCandidate("");
+                    try {
+                      await onRoleChange?.(member, role);
+                    } catch (failure) {
+                      setError(
+                        failure instanceof Error
+                          ? failure.message
+                          : "The member's role could not be changed.",
+                      );
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
+              )}
+              {onKick && member.role !== "owner" && (
                 <button
                   type="button"
-                  className="transferOwnershipButton"
+                  className="danger"
                   disabled={busy}
                   onClick={() => {
+                    setKicking(true);
                     setCandidate(member.id);
                     setError("");
                   }}
                 >
-                  Promote to owner
+                  Kick
                 </button>
               )}
             </div>
             {candidate === member.id && (
               <div className="ownershipConfirmation settingsDangerZone">
-                <p>
-                  Transfer ownership to <strong>{member.name}</strong>? You will
-                  become a regular member and lose owner controls. Only the new
-                  owner can transfer it back.
-                </p>
+                {kicking ? (
+                  <p>
+                    Kick <strong>{member.name}</strong>? They will immediately
+                    lose server access and be disconnected from its voice
+                    channels.
+                  </p>
+                ) : (
+                  <p>
+                    Transfer ownership to <strong>{member.name}</strong>? You
+                    will become a regular member and lose owner controls. Only
+                    the new owner can transfer it back.
+                  </p>
+                )}
                 {error && <p role="alert">{error}</p>}
                 <div className="managedChannelActions">
                   <button
@@ -121,7 +156,8 @@ export function SettingsMembers({
                       setBusy(true);
                       setError("");
                       try {
-                        await onTransfer!(member);
+                        if (kicking) await onKick!(member);
+                        else await onTransfer!(member);
                         setCandidate("");
                       } catch (failure) {
                         setError(
@@ -134,7 +170,11 @@ export function SettingsMembers({
                       }
                     }}
                   >
-                    {busy ? "Transferring…" : "Confirm transfer ownership"}
+                    {busy
+                      ? "Saving…"
+                      : kicking
+                        ? "Kick from server"
+                        : "Confirm transfer ownership"}
                   </button>
                 </div>
               </div>
@@ -145,6 +185,6 @@ export function SettingsMembers({
       {!visible.length && (
         <p className="empty">No members match this search.</p>
       )}
-    </section>
+    </SettingsSection>
   );
 }

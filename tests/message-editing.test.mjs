@@ -4,6 +4,131 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { resolveReplyTarget } from "../app/reply-navigation.ts";
+
+test("reply composer focuses at the end of the draft and respects disabled or busy state", async () => {
+  const source = await readFile(
+    new URL("../app/message-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "message-composer.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let effect;
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(ast) === "useLayoutEffect" &&
+      node.arguments[0].getText(ast).includes("!replyId")
+    )
+      effect = node.arguments[0].getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(effect);
+  for (const state of [
+    { replyId: "original", disabled: false, busy: false },
+    { replyId: undefined, disabled: false, busy: false },
+    { replyId: "original", disabled: true, busy: false },
+    { replyId: "original", disabled: false, busy: true },
+  ]) {
+    let focused = false,
+      selection;
+    const textarea = {
+      current: {
+        value: "existing draft",
+        focus: () => {
+          focused = true;
+        },
+        setSelectionRange: (...args) => {
+          selection = args;
+        },
+      },
+    };
+    vm.runInNewContext(`(${effect})();`, { ...state, textarea });
+    assert.equal(focused, !!state.replyId && !state.disabled && !state.busy);
+    if (focused) assert.deepEqual(selection, [14, 14]);
+  }
+});
+
+test("reply navigation reuses loaded messages and requests scoped history only when needed", async () => {
+  const controller = new AbortController();
+  let request;
+  const fetcher = async (url, options) => {
+    request = { url, options };
+    return {
+      ok: true,
+      json: async () => ({ messages: [{ id: "original", text: "hello" }] }),
+    };
+  };
+  assert.equal(
+    await resolveReplyTarget({
+      targetId: "original",
+      messages: [{ id: "original" }],
+      channelId: "channel",
+      signal: controller.signal,
+      fetcher,
+    }),
+    null,
+  );
+  assert.equal(request, undefined);
+  const rows = await resolveReplyTarget({
+    targetId: "original",
+    messages: [],
+    channelId: "channel",
+    signal: controller.signal,
+    fetcher,
+  });
+  assert.equal(rows[0].id, "original");
+  const params = new URL(request.url, "https://local.test").searchParams;
+  assert.equal(params.get("channelId"), "channel");
+  assert.equal(params.get("contextId"), "original");
+  assert.equal(request.options.signal, controller.signal);
+});
+
+test("reply navigation rejects deleted targets and ignores responses after cancellation", async () => {
+  const controller = new AbortController();
+  const options = {
+    targetId: "original",
+    messages: [],
+    channelId: "channel",
+    signal: controller.signal,
+  };
+  await assert.rejects(
+    resolveReplyTarget({
+      ...options,
+      messages: [{ id: "original", deleted: true }],
+    }),
+    /no longer available/,
+  );
+  await assert.rejects(
+    resolveReplyTarget({
+      ...options,
+      fetcher: async () => ({
+        ok: false,
+        json: async () => ({ error: "This message is no longer available." }),
+      }),
+    }),
+    /no longer available/,
+  );
+  await assert.rejects(
+    resolveReplyTarget({
+      ...options,
+      fetcher: async () => {
+        controller.abort();
+        return {
+          ok: true,
+          json: async () => ({ messages: [{ id: "original" }] }),
+        };
+      },
+    }),
+    { name: "AbortError" },
+  );
+});
 import * as attachmentTypes from "../app/attachment-types.ts";
 import {
   applyMessageEdit,

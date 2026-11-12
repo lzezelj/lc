@@ -1,10 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { SettingsSection } from "./settings-section";
+import { useEffect, useRef, useState } from "react";
+import type { SessionCache } from "./conversation-cache";
 import { SettingsModal } from "./settings-modal";
 import { MessageDeleteAction } from "./message-delete-action";
 import { SettingsDestinations } from "./settings-destinations";
 
-type PersonalMessage = {
+export type PersonalMessage = {
   id: string;
   text: string;
   createdAt: string;
@@ -16,10 +18,18 @@ type PersonalMessage = {
 };
 export function PersonalMessages({
   currentServerId,
+  accountId,
+  cache,
 }: {
   currentServerId: string;
+  accountId: string;
+  cache: SessionCache<PersonalMessage[]>;
 }) {
-  const [messages, setMessages] = useState<PersonalMessage[]>([]),
+  const cached = cache.get(accountId, "personal-messages");
+  const revision = useRef(0);
+  const [messages, setMessages] = useState<PersonalMessage[]>(
+      () => cached ?? [],
+    ),
     [category, setCategory] = useState<"server" | "direct">("server"),
     [queries, setQueries] = useState({ server: "", direct: "" });
   const [group, setGroup] = useState<{
@@ -29,15 +39,27 @@ export function PersonalMessages({
     } | null>(null),
     [messageQuery, setMessageQuery] = useState("");
   const [error, setError] = useState(""),
-    [loading, setLoading] = useState(true);
+    [loading, setLoading] = useState(!cached);
   useEffect(() => {
     const abort = new AbortController();
+    const startedAtRevision = revision.current;
     void fetch("/api/users/me/message-history", { signal: abort.signal })
       .then(async (response) => {
         const data = await response.json();
-        if (!response.ok)
+        if (!response.ok) {
+          if (
+            !abort.signal.aborted &&
+            (response.status === 401 || response.status === 403)
+          ) {
+            cache.delete(accountId, "personal-messages");
+            setMessages([]);
+          }
           throw new Error(data.error ?? "Messages could not be loaded.");
-        if (!abort.signal.aborted) setMessages(data);
+        }
+        if (!abort.signal.aborted && startedAtRevision === revision.current) {
+          setMessages(data);
+          cache.set(accountId, "personal-messages", data);
+        }
       })
       .catch((failure) => {
         if (!abort.signal.aborted) setError(failure.message);
@@ -46,7 +68,7 @@ export function PersonalMessages({
         if (!abort.signal.aborted) setLoading(false);
       });
     return () => abort.abort();
-  }, []);
+  }, [accountId, cache]);
   const groups = [
     ...new Map(
       messages.map((message) => [
@@ -79,16 +101,19 @@ export function PersonalMessages({
     const data = await response.json();
     if (!response.ok)
       throw new Error(data.error ?? "Messages could not be deleted.");
-    setMessages((current) =>
-      current.filter((message) => !data.deletedIds.includes(message.id)),
+    revision.current++;
+    const remaining = messages.filter(
+      (message) => !data.deletedIds.includes(message.id),
     );
+    setMessages(remaining);
+    cache.set(accountId, "personal-messages", remaining);
   }
   return (
-    <section className="personalMessages">
-      <h3>My messages</h3>
-      <p className="settingsDescription">
-        Find your sent messages in a server or to a person.
-      </p>
+    <SettingsSection
+      title="My messages"
+      className="personalMessages"
+      hint="Find your sent messages in a server or to a person."
+    >
       <SettingsDestinations
         label="My messages"
         category={category}
@@ -132,6 +157,7 @@ export function PersonalMessages({
               Search messages
               <input
                 type="search"
+                placeholder="Search messages"
                 value={messageQuery}
                 onChange={(event) => setMessageQuery(event.target.value)}
               />
@@ -173,6 +199,6 @@ export function PersonalMessages({
           </div>
         </SettingsModal>
       )}
-    </section>
+    </SettingsSection>
   );
 }

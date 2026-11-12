@@ -1,4 +1,5 @@
 "use client";
+import { SettingsSection } from "./settings-section";
 
 import { useEffect, useRef, useState } from "react";
 import { formatUserHandle } from "../user-handle";
@@ -92,21 +93,24 @@ export function ServerInvites({
         (a.handle ?? "").localeCompare(b.handle ?? ""),
     );
   return (
-    <section className="serverInvites">
-      <h3>
-        {mode === "friends"
+    <SettingsSection
+      className="serverInvites"
+      title={
+        mode === "friends"
           ? "Invite friends to server"
-          : "Invite people to server"}
-      </h3>
-      <p className="settingsDescription">
-        {mode === "friends"
+          : "Invite people to server"
+      }
+      hint={
+        mode === "friends"
           ? "Your friends are listed alphabetically. Existing members are marked below."
-          : "Search existing LC accounts by name or username. Enter at least three characters. Demo access is managed in demo account settings."}
-      </p>
+          : "Search existing LC accounts by name or username. Enter at least three characters. Demo access is managed in demo account settings."
+      }
+    >
       <label>
         {mode === "friends" ? "Search friends" : "Search people"}
         <input
           type="search"
+          placeholder={mode === "friends" ? "Search friends" : "Search people"}
           value={query}
           maxLength={100}
           onChange={(event) => {
@@ -210,6 +214,6 @@ export function ServerInvites({
           {busy ? "Inviting…" : `Invite selected (${selected.length})`}
         </button>
       </div>
-    </section>
+    </SettingsSection>
   );
 }
