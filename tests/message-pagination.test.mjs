@@ -94,7 +94,9 @@ function fixture({
       channels: "channels",
       serverMembers: {},
     },
-    [`${prefix}server/friends`]: { areFriends: async () => authorized },
+    [`${prefix}server/direct-conversations`]: {
+      canMessage: async () => authorized,
+    },
     [`${prefix}server/rate-limit`]: {},
     [`${prefix}server/notify-user`]: {},
     [`${prefix}server/message-attachments`]: {},

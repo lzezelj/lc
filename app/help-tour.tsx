@@ -75,9 +75,9 @@ export const helpSteps = [
     text: "LC brings server chats, direct messages and voice calls together. This short introduction shows where the main controls live. Use Next to continue, or Skip to leave the tour.",
   },
   {
-    title: "Friends and direct messages",
-    location: "LC button → Friends",
-    text: "Click LC at the top of the server rail to open Friends. Search for someone by their handle to send a friend request. Select an accepted friend to message them or start a call.",
+    title: "Messages and friends",
+    location: "LC button → Messages",
+    text: "Click LC at the top of the server rail to open Messages. Message someone who shares a server with you, or continue an existing conversation. Friend requests are optional for messaging; calls require an accepted friendship.",
   },
   {
     title: "Servers and channels",

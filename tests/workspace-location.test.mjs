@@ -158,7 +158,7 @@ function fixture({
       json: async () =>
         url === "/api/servers"
           ? servers
-          : url === "/api/friends"
+          : url === "/api/conversations"
             ? friends
             : url.endsWith("/channels")
               ? [
@@ -416,8 +416,8 @@ test("fresh visits and inaccessible saved servers open Friends", async () => {
     assert.equal(f.context.navigationReady, true);
   }
 });
-test("only accepted saved conversations are restored, including their Friends tab", async () => {
-  for (const status of ["accepted", "pending", "missing"]) {
+test("allowed saved conversations restore independently of friendship, including their Messages tab", async () => {
+  for (const status of ["accepted", "pending", "none", "missing", "denied"]) {
     const f = fixture({
       saved: {
         ...savedServer,
@@ -425,13 +425,16 @@ test("only accepted saved conversations are restored, including their Friends ta
         friendId: "friend",
         friendTab: "offline",
       },
-      friends: status === "missing" ? [] : [{ id: "friend", status }],
+      friends:
+        status === "missing"
+          ? []
+          : [{ id: "friend", status, canMessage: status !== "denied" }],
     });
     f.run(bootstrap);
     await settle();
     assert.equal(
       f.context.selectedFriend?.id ?? null,
-      status === "accepted" ? "friend" : null,
+      ["missing", "denied"].includes(status) ? null : "friend",
     );
     assert.equal(f.context.friendTab, "offline");
     assert.equal(f.context.friendsView, true);

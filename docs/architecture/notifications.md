@@ -6,15 +6,24 @@ Typing, unread state, read positions, mentions, notification preferences/sounds 
 
 ## Server and channel activity
 
+Direct unread baselines also initialize from stored conversation participants,
+using epoch for a new non-friend conversation so its first incoming message is
+unread. Existing accepted-friend/read baselines remain unchanged. Inbox rows and
+preferences use the shared direct-message access predicate, independently of
+friendship; disabled/expired peers are excluded. Read acknowledgements still
+require a real message in the exact signed-in pair.
+
 Typing indicators use transient authenticated signaling, not PostgreSQL. The
 composer sends activity at most once per two seconds while input changes and
 sends stop on blur, submission, empty input or context cleanup. It sends no draft
 text. The server derives identity/name from signed claims, checks channel access
-or accepted-friend claims and limits active updates. One temporary context per
+or separate signed `messageIds` claims and limits active updates. One temporary context per
 socket expires after six seconds; a one-second sweep publishes changes. Multiple
 tabs deduplicate to one typist, and closing one preserves another tab's activity.
 Channel snapshots reach authorized subscribed clients; DM snapshots reach the
-two accounts with reciprocal friend claims. The client filters the active
+two accounts with reciprocal message claims. `friendIds` continues to authorize
+calls only. Message claims cover accepted friends, shared-server peers and existing
+conversations, using the same short-lived token snapshot boundary. The client filters the active
 conversation and own identity, with a seven-second expiry fallback and offline
 cleanup. These events do not refresh messages, unread state or media. Typing
 shares the existing signaling permission snapshot/freshness boundary and its

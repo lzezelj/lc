@@ -20,6 +20,9 @@ see [LEARNING_GUIDE.md](LEARNING_GUIDE.md).
 - Persist servers, channels, memberships, and text messages, with non-owner
   accounts limited to three servers they create.
 - Deliver new messages and voice presence in real time.
+- Allow direct text conversations between friends or shared-server accounts,
+  retaining existing message history independently of friendship. Direct calls
+  still require accepted friendship; see [messaging](docs/architecture/messaging.md#direct-conversations-and-friendship).
 - Support direct two-person voice/video with native WebRTC.
 - Support group voice/video without requiring every participant to upload one
   stream per recipient.
@@ -95,6 +98,8 @@ responsibilities include:
   authenticated self-service username changes.
 - Drizzle queries and transactions.
 - Creation of short-lived signaling tokens.
+- Authoritative signaling permission snapshots for every socket admission and
+  periodic account refresh; see [authorization](docs/architecture/authentication.md#signaling-authorization).
 - Creation of room-scoped LiveKit participant tokens.
 - Persistence of text messages before real-time delivery.
 - Server-side LiveKit presence queries.

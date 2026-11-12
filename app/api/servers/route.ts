@@ -11,6 +11,8 @@ import {
 } from "../../../server/rate-limit";
 import { notifyServer } from "../../../server/notify-server";
 import { disconnectUserEverywhere } from "../../../server/disconnect-user";
+import { deleteServer } from "../../../server/delete-server";
+import { AdminError } from "../../../server/admin-error";
 
 export async function GET() {
   const session = await auth();
@@ -301,13 +303,36 @@ export async function DELETE(request: Request) {
       channelIds: leftChannels.map((channel) => channel.id),
     });
   }
-  const [deleted] = await db
-    .delete(servers)
-    .where(
-      and(eq(servers.id, serverId), eq(servers.createdBy, session.user.id)),
-    )
-    .returning({ id: servers.id });
-  if (!deleted)
-    return NextResponse.json({ error: "Server not found" }, { status: 404 });
-  return NextResponse.json(deleted);
+  if (
+    typeof serverId !== "string" ||
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(serverId)
+  )
+    return NextResponse.json({ error: "Invalid server" }, { status: 400 });
+  const limit = checkRateLimit(
+    `server-delete:${session.user.id}`,
+    rateLimits.serverMutation,
+  );
+  if (!limit.allowed)
+    return NextResponse.json(
+      {
+        error: rateLimitMessage(
+          "Too many server changes.",
+          limit.retryAfterSeconds,
+        ),
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(limit.retryAfterSeconds) },
+      },
+    );
+  try {
+    return await deleteServer(serverId, session.user.id, true);
+  } catch (error) {
+    if (error instanceof AdminError)
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    throw error;
+  }
 }

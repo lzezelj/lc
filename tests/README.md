@@ -1,5 +1,23 @@
 # Test coverage
 
+Revocation coverage in signaling tests includes stale-token replay/restart,
+inactive-account/authority-error admission, in-flight admission revocation,
+periodic refresh failure, friends-only call cleanup and preservation of unrelated
+server voice/text. Voice-session tests protect the internal authority endpoint's
+bearer secret. PostgreSQL tests cover current permission snapshots and shared
+owner/admin server deletion with media cleanup and orphan-demo revocation.
+
+Messages/nonfriend regressions run in the default signaling, avatar, history and
+workspace-restoration suites. `notifications.database.test.mjs` also exercises real
+SQL: shared-server starts, unrelated-account rejection, retained readable/writable
+history after friendship/server removal, friends-only call events, bounded previews,
+first-message unread state and disabled/expired/demo account denial.
+
+`search-debounce.test.mjs` runs in the default suite and checks the shared 500 ms
+delay, rapid-edit coalescing, current callbacks and cancellation on dismissal or
+unmount. Friend-request and voice-move suites cover obsolete search responses and
+the continuous Connecting-to-connected presence handoff.
+
 Admin dashboard coverage runs in `npm.cmd test` (`admin.test.mjs`) and
 `npm.cmd run test:db` (`admin.database.test.mjs`). It checks strict current-owner
 authorization, bounded parameterized reads, moderation identity/event ordering,

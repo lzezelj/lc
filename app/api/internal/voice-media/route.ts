@@ -34,8 +34,24 @@ export async function POST(request: Request) {
       { error: "Invalid voice session" },
       { status: 400 },
     );
+  if (
+    body.sessionIds !== undefined &&
+    (!Array.isArray(body.sessionIds) ||
+      body.sessionIds.length > 100 ||
+      body.sessionIds.some(
+        (id: unknown) => typeof id !== "string" || !id || id.length > 200,
+      ))
+  )
+    return NextResponse.json(
+      { error: "Invalid voice sessions" },
+      { status: 400 },
+    );
   try {
-    await removeAccountGroupMedia(body.userId, body.keepSessionId);
+    await removeAccountGroupMedia(
+      body.userId,
+      body.keepSessionId,
+      body.sessionIds,
+    );
     return new Response(null, { status: 204 });
   } catch {
     return NextResponse.json(

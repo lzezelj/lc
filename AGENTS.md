@@ -17,6 +17,8 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 - Do not deploy or change production infrastructure unless explicitly requested.
 - All buttons must inherit the shared hover animation in `app/globals.css`, including future buttons. Avoid separate hover movement/scaling rules; retain disabled states and reduced-motion support.
 - Reuse shared UI components and styles for equivalent controls. Microphone, output, and camera selectors must use `DeviceSelection`; update its shared CSS instead of styling each device selector separately.
+- All new visible features and controls, including buttons, dropdown menus, search bars, panels and dialogs, must follow the website's existing visual style. Reuse shared components, CSS variables, typography, spacing, colors, borders, focus states and interaction patterns; extend the shared styles when an equivalent control needs a change.
+- Debounce searches that trigger API requests by 500 ms after the last input change using the shared helpers in `app/use-search-debounce.ts`. Keep searches over already-loaded data (including emojis, members, channels and sounds) immediate. Keep typing responsive, cancel obsolete timers/requests, and ignore stale API responses. Explicit Search/Enter submission and pagination remain immediate; preserve existing minimum query lengths and backend authorization/rate limits.
 
 ## Product rules
 

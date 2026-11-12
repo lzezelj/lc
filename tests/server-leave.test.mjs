@@ -65,6 +65,8 @@ async function fixture({
     },
     "../../../server/rate-limit": {},
     "../../../server/notify-server": {},
+    "../../../server/delete-server": {},
+    "../../../server/admin-error": {},
     "../../../server/disconnect-user": {
       disconnectUserEverywhere: async (userId, channels) => {
         assert.equal(userId, "actor");

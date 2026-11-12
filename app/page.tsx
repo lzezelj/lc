@@ -39,6 +39,7 @@ import { useCallAudio, useScreenAudio, useSoundboardAudio } from "./call-media";
 import { SoundboardButton, useSoundboard } from "./soundboard";
 import { takeVoiceToggle } from "./voice-toggle-cooldown";
 import { useIdlePresence } from "./use-idle-presence";
+import { SEARCH_DEBOUNCE_MS } from "./use-search-debounce";
 import { CameraMirrorControl } from "./camera-mirror";
 import { captureCamera, cameraSource } from "./camera-processing";
 import { ServerAfkSettings } from "./server-afk-settings";
@@ -223,7 +224,8 @@ type Friend = {
   name: string;
   handle: string;
   image: string | null;
-  status: "pending" | "accepted";
+  status: "pending" | "accepted" | "none";
+  canMessage?: boolean;
   incoming: boolean;
   lastActivityAt: string | null;
   lastMessage?: { senderId: string; text: string } | null;
@@ -525,6 +527,8 @@ export default function Home() {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [friendSearch, setFriendSearch] = useState("");
   const [friendResults, setFriendResults] = useState<Friend[]>([]);
+  const friendSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const friendSearchRequest = useRef<AbortController | null>(null);
   const [friendTab, setFriendTab] = useState<"online" | "offline" | "pending">(
     "online",
   );
@@ -1291,13 +1295,13 @@ export default function Home() {
         preloadServerPictures(data);
         let savedFriend: Friend | undefined;
         if (saved?.view === "friends" && saved.friendId) {
-          const friendResponse = await fetch("/api/friends");
+          const friendResponse = await fetch("/api/conversations");
           if (friendResponse.ok) {
             const nextFriends = (await friendResponse.json()) as Friend[];
             if (Array.isArray(nextFriends)) {
               savedFriend = nextFriends.find(
                 (friend) =>
-                  friend.id === saved!.friendId && friend.status === "accepted",
+                  friend.id === saved!.friendId && friend.canMessage !== false,
               );
               if (active) setFriends(nextFriends);
             }
@@ -1363,8 +1367,19 @@ export default function Home() {
   ]);
 
   async function loadFriends() {
-    const response = await fetch("/api/friends");
-    if (response.ok) setFriends(await response.json());
+    const response = await fetch("/api/conversations");
+    if (response.ok) {
+      const nextFriends: Friend[] = await response.json();
+      setFriends(nextFriends);
+      setSelectedFriend((current) =>
+        current
+          ? (nextFriends.find(
+              (friend) =>
+                friend.id === current.id && friend.canMessage !== false,
+            ) ?? null)
+          : null,
+      );
+    }
   }
 
   useEffect(() => {
@@ -1675,19 +1690,65 @@ export default function Home() {
     });
   }
 
-  async function searchFriends(query = friendSearch) {
+  async function openConversation(user: { id: string }) {
+    try {
+      const response = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      const data = await response.json();
+      if (!response.ok)
+        throw new Error(data.error ?? "Conversation unavailable.");
+      setFriends((current) => [
+        ...current.filter((person) => person.id !== data.id),
+        data,
+      ]);
+      openFriend(data);
+      setProfileUser(null);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Conversation unavailable.",
+      );
+    }
+  }
+
+  const searchFriends = useCallback(async (query: string) => {
+    friendSearchRequest.current?.abort();
     if (query.trim().length < 3) {
       setFriendResults([]);
       return;
     }
-    const response = await fetch(
-      `/api/friends/search?q=${encodeURIComponent(query)}`,
-    );
-    if (response.ok) setFriendResults(await response.json());
-  }
+    const controller = new AbortController();
+    friendSearchRequest.current = controller;
+    try {
+      const response = await fetch(
+        `/api/friends/search?q=${encodeURIComponent(query.trim())}`,
+        { signal: controller.signal },
+      );
+      if (!response.ok) return;
+      const results = await response.json();
+      if (!controller.signal.aborted) setFriendResults(results);
+    } catch {
+      if (!controller.signal.aborted)
+        setErrorMessage("People could not be searched. Please try again.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (friendSearch.trim().length >= 3 && session?.user.id)
+      friendSearchTimer.current = setTimeout(() => {
+        void searchFriends(friendSearch);
+      }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      if (friendSearchTimer.current !== null)
+        clearTimeout(friendSearchTimer.current);
+      friendSearchRequest.current?.abort();
+    };
+  }, [friendSearch, searchFriends, session?.user.id]);
 
   async function friendAction(
-    action: "request" | "accept" | "decline",
+    action: "request" | "accept" | "decline" | "remove",
     friend: { id: string; handle?: string | null },
   ) {
     const response = await fetch("/api/friends", {
@@ -1756,12 +1817,17 @@ export default function Home() {
   }
 
   async function startFriendCall(friend: Friend) {
+    if (friend.status !== "accepted") return;
     const response = await fetch("/api/friends", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "activity", userId: friend.id }),
     });
-    if (response.ok) await loadFriends();
+    if (!response.ok) {
+      setErrorMessage("Calls require an accepted friendship.");
+      return;
+    }
+    await loadFriends();
     if (presenceSocket.current?.readyState === WebSocket.OPEN) {
       presenceSocket.current.send(
         JSON.stringify({ type: "call-invite", targetUserId: friend.id }),
@@ -2844,6 +2910,13 @@ export default function Home() {
           const participants = message.participants.map(normalizePresence);
           if (
             pendingVoiceChannel.current === message.roomId &&
+            participants.some(
+              (person) => person.userId === currentUserId && !person.connecting,
+            )
+          )
+            pendingVoiceChannel.current = "";
+          if (
+            pendingVoiceChannel.current === message.roomId &&
             !participants.some((person) => person.userId === currentUserId)
           )
             participants.push({
@@ -2875,6 +2948,18 @@ export default function Home() {
         ) {
           setOnlineUserIds(message.userIds);
           setUserStatuses(message.statuses ?? {});
+        }
+        if (message.type === "friendship-revoked" && message.roomId) {
+          setIncomingCall((current) =>
+            current?.roomId === message.roomId ? null : current,
+          );
+          if (directRoomId.current === message.roomId) {
+            setNoticeMessage(
+              "This call ended because you are no longer friends.",
+            );
+            closeCallViewRef.current();
+          }
+          return;
         }
         if (message.type === "friendship-changed") {
           void loadFriends();
@@ -3040,7 +3125,8 @@ export default function Home() {
               Object.entries(presence)
                 .filter(
                   ([channelId]) =>
-                    !authoritativePresenceChannels.current.has(channelId),
+                    !authoritativePresenceChannels.current.has(channelId) &&
+                    pendingVoiceChannel.current !== channelId,
                 )
                 .map(([channelId, participants]) => [
                   channelId,
@@ -3313,6 +3399,15 @@ export default function Home() {
   async function handleSignal(
     message: Signal | { type: "chat"; text: string },
   ) {
+    if (
+      message.type === "friendship-revoked" &&
+      "roomId" in message &&
+      message.roomId === directRoomId.current
+    ) {
+      setNoticeMessage("This call ended because you are no longer friends.");
+      closeCallViewRef.current();
+      return;
+    }
     if (message.type === "voice-replaced" && "sessionId" in message) {
       handleVoiceReplacement(message.sessionId);
       return;
@@ -3332,7 +3427,6 @@ export default function Home() {
       return;
     }
     if (message.type === "joined") {
-      updatePendingVoice(directRoomId.current, false);
       setJoining(false);
       setJoined(true);
       setStatus("Waiting for another person...");
@@ -3668,8 +3762,6 @@ export default function Home() {
     sessionId = voiceSessionId.current,
   ) {
     if (sessionId !== voiceSessionId.current) return;
-    if (present && pendingVoiceChannel.current === channelId)
-      updatePendingVoice(channelId, false);
     if (present || activeGroupChannelId.current === channelId)
       activeGroupChannelId.current = present ? channelId : "";
     setConnectedGroupChannelId((current) =>
@@ -3834,10 +3926,11 @@ export default function Home() {
       void receiveSignal(JSON.parse(event.data));
     };
     ws.onerror = () => {
+      if (socket.current !== ws) return;
       setJoining(false);
       setStatus("Cannot reach signaling server");
       setErrorMessage(
-        "Cannot reach the signaling server. Make sure npm run dev:all is running.",
+        "Cannot reach the call connection service. Check your internet connection and try again. If the problem continues, the service may be temporarily unavailable.",
       );
     };
     ws.onclose = () => {
@@ -5309,7 +5402,9 @@ export default function Home() {
       onAddFriend={
         profileUser.id !== session.user.id &&
         session.user.role !== "demo" &&
-        !friends.some((friend) => friend.id === profileUser.id)
+        !friends.some(
+          (friend) => friend.id === profileUser.id && friend.status !== "none",
+        )
           ? async () => {
               if (!(await friendAction("request", profileUser)))
                 throw new Error(
@@ -5334,18 +5429,24 @@ export default function Home() {
             }
           : undefined
       }
-      onMessage={
+      onRemoveFriend={
+        session.user.role !== "demo" &&
         friends.some(
           (friend) =>
             friend.id === profileUser.id && friend.status === "accepted",
         )
-          ? () => {
-              const friend = friends.find(
-                (friend) => friend.id === profileUser.id,
-              );
-              if (friend) openFriend(friend);
+          ? async () => {
+              if (!(await friendAction("remove", profileUser)))
+                throw new Error(
+                  "The friend could not be removed. Please try again.",
+                );
               setProfileUser(null);
             }
+          : undefined
+      }
+      onMessage={
+        profileUser.id !== session.user.id && session.user.role !== "demo"
+          ? () => void openConversation(profileUser)
           : undefined
       }
     />
@@ -5503,7 +5604,7 @@ export default function Home() {
                 <NotificationSettings
                   servers={servers}
                   friends={friends.filter(
-                    (friend) => friend.status === "accepted",
+                    (friend) => friend.canMessage !== false,
                   )}
                   preferences={notificationInbox.preferences}
                   onSave={notificationInbox.save}
@@ -6472,10 +6573,7 @@ export default function Home() {
   );
 
   if (friendsView) {
-    const acceptedFriends = friends.filter(
-      (friend) => friend.status === "accepted",
-    );
-    const recentFriends = [...acceptedFriends]
+    const recentFriends = [...friends]
       .filter((friend) => friend.lastActivityAt)
       .sort(
         (left, right) =>
@@ -6485,11 +6583,13 @@ export default function Home() {
     const pendingRequests = friends.filter(
       (friend) => friend.status === "pending",
     );
-    const visibleFriends = acceptedFriends.filter((friend) =>
-      friendTab === "online"
-        ? onlineUserIds.includes(friend.id)
-        : !onlineUserIds.includes(friend.id),
-    );
+    const visibleFriends = friends
+      .filter((friend) => friend.canMessage !== false)
+      .filter((friend) =>
+        friendTab === "online"
+          ? onlineUserIds.includes(friend.id)
+          : !onlineUserIds.includes(friend.id),
+      );
     return (
       <WorkspaceShell
         call={groupCall}
@@ -6500,7 +6600,7 @@ export default function Home() {
         <aside className="workspaceRail">
           <button
             className="workspaceLogo friendsActive"
-            aria-label="Friends"
+            aria-label="Messages"
             aria-current="page"
             onClick={openFriendsHome}
           >
@@ -6588,7 +6688,7 @@ export default function Home() {
                 openFriendsHome();
               }}
             >
-              {selectedFriend ? "Back to Friends" : "Friends"}
+              {selectedFriend ? "Back to Messages" : "Messages"}
             </button>
           </header>
           <nav>
@@ -6652,15 +6752,45 @@ export default function Home() {
                 {selectedFriend.name}
               </button>
             ) : (
-              <strong>Friends</strong>
+              <strong>Messages</strong>
             )}
             {panelControls}
             {selectedFriend && (
-              <ConversationSearch
-                key={composerKey}
-                userId={selectedFriend.id}
-                onResult={showSearchResult}
-              />
+              <>
+                {selectedFriend.status !== "accepted" && (
+                  <span className="profileActions">
+                    <small>Not friends</small>
+                    {selectedFriend.status === "pending" ? (
+                      selectedFriend.incoming ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void friendAction("accept", selectedFriend)
+                          }
+                        >
+                          Accept friend request
+                        </button>
+                      ) : (
+                        <small>Friend request sent</small>
+                      )
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void friendAction("request", selectedFriend)
+                        }
+                      >
+                        Add friend
+                      </button>
+                    )}
+                  </span>
+                )}
+                <ConversationSearch
+                  key={composerKey}
+                  userId={selectedFriend.id}
+                  onResult={showSearchResult}
+                />
+              </>
             )}
           </header>
           {!selectedFriend && (
@@ -6669,32 +6799,30 @@ export default function Home() {
                 className="friendSearchForm"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  void searchFriends();
+                  if (friendSearchTimer.current !== null)
+                    clearTimeout(friendSearchTimer.current);
+                  void searchFriends(friendSearch);
                 }}
               >
                 <input
                   value={friendSearch}
                   onChange={(event) => {
                     const value = event.target.value;
+                    friendSearchRequest.current?.abort();
                     setFriendSearch(value);
-                    if (
-                      value.trim().length >= 3 ||
-                      value.includes(".") ||
-                      value.includes("(")
-                    ) {
-                      void searchFriends(value);
-                    } else {
-                      setFriendResults([]);
-                    }
+                    setFriendResults([]);
                   }}
-                  placeholder="Search friends"
+                  placeholder="Search people"
                 />
                 <button>Search</button>
               </form>
               {friendResults
                 .filter(
                   (result) =>
-                    !friends.some((friend) => friend.id === result.id),
+                    !friends.some(
+                      (friend) =>
+                        friend.id === result.id && friend.status !== "none",
+                    ),
                 )
                 .map((friend) => (
                   <div className="friendRow" key={friend.id}>
@@ -6706,6 +6834,12 @@ export default function Home() {
                       onClick={() => void friendAction("request", friend)}
                     >
                       Add friend
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void openConversation(friend)}
+                    >
+                      Message
                     </button>
                   </div>
                 ))}
@@ -6816,13 +6950,13 @@ export default function Home() {
                     <EmptyState
                       title={
                         friendTab === "online"
-                          ? "No friends online right now"
-                          : "No offline friends"
+                          ? "No contacts online right now"
+                          : "No offline contacts"
                       }
                       description={
                         friendTab === "online"
-                          ? "When your friends come online, you’ll find them here. You can also search for someone to add."
-                          : "Friends who are offline will appear here. Everyone may already be online."
+                          ? "Your contacts appear here when online. Open a server member’s profile to start a conversation."
+                          : "Offline contacts appear here. Existing conversations stay in Messages."
                       }
                     />
                   )}
@@ -7017,6 +7151,15 @@ export default function Home() {
                 <button
                   type="button"
                   data-chat-jump-target
+                  disabled={
+                    selectedFriend.status !== "accepted" &&
+                    !conversationCallActive
+                  }
+                  title={
+                    selectedFriend.status !== "accepted"
+                      ? "Calls require an accepted friendship"
+                      : undefined
+                  }
                   onClick={() =>
                     conversationCallActive
                       ? endFriendCall()
@@ -7253,7 +7396,7 @@ export default function Home() {
         <section>
           <button
             className="workspaceLogo noServerFriendsButton"
-            aria-label="Friends"
+            aria-label="Messages"
             onClick={openFriendsHome}
           >
             LC
@@ -7316,7 +7459,7 @@ export default function Home() {
       <aside className="workspaceRail" aria-label="Workspaces">
         <button
           className="workspaceLogo"
-          aria-label="Friends"
+          aria-label="Messages"
           onClick={openFriendsHome}
         >
           LC

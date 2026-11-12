@@ -498,6 +498,7 @@ test("soundboard preferences survive hook remounts; microphone mute blocks publi
       },
       "react/jsx-runtime": {},
       "./loading-skeleton": {},
+      "./use-search-debounce": {},
       "./voice-activity": {
         monitorVoiceActivity() {},
         prepareVoiceActivity() {},

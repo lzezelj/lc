@@ -109,6 +109,11 @@ characters before showing up to 20 matching active non-demo accounts not already
 in the server. Both actions require server ownership in the backend. The default
 membership POST mode retains the accepted-friend requirement; explicit people
 mode permits active non-friends. Demo assignments remain in demo management.
+Friend discovery and Invite people wait for 500 ms without typing before searching
+the API, retaining the three-character minimum. Changing the query cancels pending
+work and ignores obsolete responses; submitting friend search runs immediately.
+Local member/friend-list filtering stays immediate because it makes no API
+requests; see [shared search behavior](ui.md#shared-controls-and-search-behavior).
 These actions create account-bound pending invitations, not memberships or public
 invite links. Migration `0024_server_invitations` stores one pending row per
 server/recipient, with indexed inbox/outbox lookups and cascading server/account
@@ -216,6 +221,12 @@ Its server administration also supports creation, pictures, AFK selection and
 eligible ownership transfer. Admin server deletion revokes demos losing their
 final assignment and publishes a `server-deleted` access-refresh reason after
 commit; see the owning [admin contract](admin.md#server-and-user-administration).
+Ordinary owner deletion now shares `server/delete-server.ts` with the admin path.
+It rechecks `created_by` under the server lock, captures members/channels/invitees,
+disables demos losing their last membership, and deletes transactionally. After
+commit it invalidates channel permissions, closes native rooms, deletes group
+media rooms and refreshes affected accounts/invitations. Unrelated voice rooms
+remain authorized. Ordinary deletion does not write an administrative audit entry.
 
 ## Membership revocation and moderation
 
@@ -228,8 +239,8 @@ or deleting an account follows one control path:
    endpoint for that user.
 4. The signaling service sends `access-changed` and closes matching sockets
    with code `4003`. The browser refreshes its session, server/navigation, and
-   friendship state in place, and a new connection requires a token containing
-   current permissions. This avoids a full-page reload loop while still letting
+   friendship state in place, and a new connection revalidates current permissions
+   with the application, even when reusing an old signed token. This avoids a full-page reload loop while still letting
    an already-open no-server page discover when access is added.
 5. Next.js enumerates LiveKit participants in affected group rooms and removes
    every participant identity prefixed by the user's ID.

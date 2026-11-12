@@ -7,7 +7,7 @@ import {
   messages,
   serverMembers,
 } from "../db/schema";
-import { areFriends } from "./friends";
+import { canMessage } from "./direct-conversations";
 import { notifyUser } from "./notify-user";
 import { readMessageRequest } from "./message-attachments";
 import { checkRateLimit, rateLimits, rateLimitMessage } from "./rate-limit";
@@ -54,7 +54,7 @@ async function editMessage(
             isNull(messages.deletedAt),
           ),
         );
-  if (!message || (userId && !(await areFriends(session.user.id, userId))))
+  if (!message || (userId && !(await canMessage(session.user.id, userId))))
     return Response.json(
       { error: "Message unavailable or you cannot edit it." },
       { status: 403 },

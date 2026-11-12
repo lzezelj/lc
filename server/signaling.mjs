@@ -12,9 +12,29 @@ export function createSignalingServer({
   maxPeers = 2,
   pendingVoiceTimeoutMs = 30_000,
   heartbeatIntervalMs = 30_000,
+  authorizationIntervalMs = 30_000,
   authSecret = process.env.AUTH_SECRET,
   internalSecret = process.env.SIGNALING_INTERNAL_SECRET ?? authSecret,
-  removeGroupMedia = async (userId, keepSessionId) => {
+  authorizeIdentity = async (identity) => {
+    const appUrl =
+      process.env.APP_INTERNAL_URL ??
+      (process.env.NODE_ENV === "production"
+        ? "http://app:3000"
+        : "http://127.0.0.1:3000");
+    const response = await fetch(`${appUrl}/api/internal/signaling-authorize`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${internalSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ userId: identity.sub }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.status === 403) return null;
+    if (!response.ok) throw new Error("Signaling authorization unavailable");
+    return response.json();
+  },
+  removeGroupMedia = async (userId, keepSessionId, sessionIds) => {
     const appUrl =
       process.env.APP_INTERNAL_URL ??
       (process.env.NODE_ENV === "production"
@@ -26,7 +46,7 @@ export function createSignalingServer({
         Authorization: `Bearer ${internalSecret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ userId, keepSessionId }),
+      body: JSON.stringify({ userId, keepSessionId, sessionIds }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) throw new Error("Could not remove previous group media");
@@ -316,6 +336,10 @@ export function createSignalingServer({
             response.writeHead(400).end("Invalid user");
             return;
           }
+          authorizationRevisions.set(
+            body.userId,
+            (authorizationRevisions.get(body.userId) ?? 0) + 1,
+          );
           for (const client of ws.clients) {
             if (client.identity?.sub === body.userId) {
               client.send(
@@ -334,7 +358,7 @@ export function createSignalingServer({
                     : {}),
                 }),
               );
-              client.close(4003, "Access changed");
+              revokeSocketAccess(client);
             }
           }
           response.writeHead(204).end();
@@ -352,7 +376,7 @@ export function createSignalingServer({
         return;
       }
       readJsonBody(request)
-        .then((body) => {
+        .then(async (body) => {
           if (
             typeof body.userId !== "string" ||
             !body.event ||
@@ -360,6 +384,15 @@ export function createSignalingServer({
           ) {
             response.writeHead(400).end("Invalid user event");
             return;
+          }
+          if (
+            ["friendship-changed", "access-changed"].includes(body.event.type)
+          ) {
+            authorizationRevisions.set(
+              body.userId,
+              (authorizationRevisions.get(body.userId) ?? 0) + 1,
+            );
+            await refreshAuthorization(body.userId);
           }
           for (const client of ws.clients) {
             if (
@@ -551,6 +584,182 @@ export function createSignalingServer({
     response.end("Upgrade Required");
   });
   const ws = new WebSocketServer({ noServer: true });
+  const authorizationRevisions = new Map();
+  const refreshingAuthorization = new Map();
+
+  function revokeSocketAccess(client) {
+    client.revoked = true;
+    client.allowedChannelIds?.clear();
+    client.subscribedRoomIds?.clear();
+    client.subscribedTextChannelId = undefined;
+    client.identity.friendIds = [];
+    client.identity.messageIds = [];
+    typing.clear(client);
+    const pendingRoom = clearPendingVoice(client);
+    if (pendingRoom) broadcastPresence(pendingRoom);
+    for (const roomId of client.groupPresence?.keys() ?? []) {
+      client.groupPresence.delete(roomId);
+      voiceSessions.release(client.identity.sub, client.groupVoiceSessionId);
+      broadcastPresence(roomId);
+    }
+    for (const [roomId, peers] of rooms) {
+      if (!peers.delete(client)) continue;
+      voiceSessions.release(client.identity.sub, client.voiceSessionId);
+      for (const peer of peers)
+        if (peer.readyState === WebSocket.OPEN)
+          peer.send(
+            JSON.stringify({ type: "peer-left", userId: client.identity.sub }),
+          );
+      broadcastPresence(roomId);
+      if (!peers.size) rooms.delete(roomId);
+    }
+    client.close(4003, "Access changed");
+  }
+
+  async function currentIdentity(identity) {
+    const revision = authorizationRevisions.get(identity.sub) ?? 0;
+    const fresh = await authorizeIdentity(identity);
+    if ((authorizationRevisions.get(identity.sub) ?? 0) !== revision)
+      throw new Error("Authorization changed during admission");
+    if (!fresh) return null;
+    if (
+      fresh.sub !== identity.sub ||
+      typeof fresh.name !== "string" ||
+      ["channelIds", "serverIds", "friendIds", "messageIds"].some(
+        (key) =>
+          !Array.isArray(fresh[key]) ||
+          fresh[key].some((id) => typeof id !== "string"),
+      )
+    )
+      throw new Error("Invalid authorization response");
+    return { ...identity, ...fresh, authorizationRevision: revision };
+  }
+
+  const roomPermitted = (identity, roomId) => {
+    if (deletedChannels.has(roomId)) return false;
+    if (identity.channelIds.includes(roomId)) return true;
+    if (!roomId.startsWith("friend:")) return false;
+    const pair = roomId.slice(7).split(":");
+    return (
+      pair.length === 2 &&
+      pair.includes(identity.sub) &&
+      identity.friendIds.includes(pair.find((id) => id !== identity.sub))
+    );
+  };
+
+  async function refreshAuthorization(userId) {
+    const revision = authorizationRevisions.get(userId) ?? 0;
+    const pending = refreshingAuthorization.get(userId);
+    if (pending?.revision === revision) return pending.promise;
+    const promise = (async () => {
+      const clients = [...ws.clients].filter(
+        (client) =>
+          client.identity?.sub === userId &&
+          client.readyState === WebSocket.OPEN &&
+          !client.revoked,
+      );
+      if (!clients.length) return;
+      const previousGroupSessions = clients
+        .map((client) => client.groupVoiceSessionId)
+        .filter((id) => typeof id === "string");
+      try {
+        const fresh = await currentIdentity(clients[0].identity);
+        if (!fresh) throw new Error("Account no longer active");
+        const removedGroupSessions = new Set();
+        for (const client of clients) {
+          if (client.revoked || client.readyState !== WebSocket.OPEN) continue;
+          const previous = client.identity;
+          if (
+            previous.channelIds.some((id) => !fresh.channelIds.includes(id)) ||
+            previous.messageIds.some((id) => !fresh.messageIds.includes(id))
+          )
+            typing.clear(client);
+          client.identity = { ...fresh };
+          client.authorizationRevision = fresh.authorizationRevision;
+          client.allowedChannelIds = new Set(fresh.channelIds);
+          if (!client.allowedChannelIds.has(client.subscribedTextChannelId))
+            client.subscribedTextChannelId = undefined;
+          client.subscribedRoomIds = new Set(
+            [...(client.subscribedRoomIds ?? [])].filter((id) =>
+              client.allowedChannelIds.has(id),
+            ),
+          );
+          if (
+            client.pendingVoice &&
+            !roomPermitted(fresh, client.pendingVoice.roomId)
+          ) {
+            const roomId = clearPendingVoice(client);
+            if (roomId) broadcastPresence(roomId);
+          }
+          for (const peerId of previous.friendIds.filter(
+            (id) => !fresh.friendIds.includes(id),
+          ))
+            client.send(
+              JSON.stringify({
+                type: "friendship-revoked",
+                userId: peerId,
+                roomId: `friend:${[userId, peerId].sort().join(":")}`,
+              }),
+            );
+          for (const roomId of client.groupPresence?.keys() ?? []) {
+            if (roomPermitted(fresh, roomId)) continue;
+            client.groupPresence.delete(roomId);
+            if (client.groupVoiceSessionId)
+              removedGroupSessions.add(client.groupVoiceSessionId);
+            client.send(
+              JSON.stringify({ type: "channel-deleted", channelId: roomId }),
+            );
+            broadcastPresence(roomId);
+          }
+          for (const [roomId, peers] of rooms) {
+            if (!peers.has(client) || roomPermitted(fresh, roomId)) continue;
+            // This socket is the revoked native call, not the user's workspace or other call.
+            revokeSocketAccess(client);
+          }
+          for (const serverId of new Set([
+            ...previous.serverIds,
+            ...fresh.serverIds,
+          ]))
+            broadcastOnlinePresence(serverId);
+        }
+        if (removedGroupSessions.size)
+          await removeGroupMedia(userId, undefined, [...removedGroupSessions]);
+        broadcastUserPresence();
+      } catch {
+        // Failed refreshes may never leave old data permissions usable.
+        if ((authorizationRevisions.get(userId) ?? 0) !== revision) return;
+        for (const client of clients) {
+          if (client.readyState !== WebSocket.OPEN || client.revoked) continue;
+          client.send(JSON.stringify({ type: "access-changed" }));
+          revokeSocketAccess(client);
+        }
+        if (previousGroupSessions.length)
+          await removeGroupMedia(
+            userId,
+            undefined,
+            previousGroupSessions,
+          ).catch(() => {});
+      }
+    })();
+    refreshingAuthorization.set(userId, { revision, promise });
+    try {
+      await promise;
+    } finally {
+      if (refreshingAuthorization.get(userId)?.promise === promise)
+        refreshingAuthorization.delete(userId);
+    }
+  }
+
+  const authorizationTimer = setInterval(() => {
+    const users = new Set(
+      [...ws.clients]
+        .filter((client) => !client.revoked)
+        .map((client) => client.identity.sub),
+    );
+    for (const userId of users) void refreshAuthorization(userId);
+  }, authorizationIntervalMs);
+  authorizationTimer.unref();
+  server.once("close", () => clearInterval(authorizationTimer));
   // Browser WebSockets answer protocol pings automatically, even in idle tabs.
   const heartbeat = setInterval(() => {
     for (const socket of ws.clients) {
@@ -589,7 +798,7 @@ export function createSignalingServer({
         );
       } else if (context.pair.includes(client.identity.sub)) {
         const partner = context.pair.find((id) => id !== client.identity.sub);
-        if (client.identity.friendIds.includes(partner))
+        if (client.identity.messageIds.includes(partner))
           client.send(
             JSON.stringify({ type: "typing", userId: partner, users }),
           );
@@ -645,17 +854,37 @@ export function createSignalingServer({
     },
   });
 
-  server.on("upgrade", (request, socket, head) => {
+  server.on("upgrade", async (request, socket, head) => {
     const token = new URL(
       request.url ?? "/",
       "ws://signaling.local",
     ).searchParams.get("token");
-    const identity = verifySignalingToken(token, authSecret);
+    let identity = verifySignalingToken(token, authSecret);
     if (!identity) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
+    try {
+      identity = await currentIdentity(identity);
+      if (
+        !identity ||
+        identity.authorizationRevision !==
+          (authorizationRevisions.get(identity.sub) ?? 0) ||
+        !verifySignalingToken(token, authSecret)
+      ) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    } catch {
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+      );
+      socket.destroy();
+      return;
+    }
+    if (socket.destroyed) return;
     request.signalingIdentity = identity;
     ws.handleUpgrade(request, socket, head, (client) => {
       ws.emit("connection", client, request);
@@ -747,6 +976,7 @@ export function createSignalingServer({
     for (const client of ws.clients) {
       if (
         client.subscribedTextChannelId === channelId &&
+        client.allowedChannelIds.has(channelId) &&
         client.readyState === WebSocket.OPEN
       ) {
         client.send(outgoing);
@@ -864,6 +1094,7 @@ export function createSignalingServer({
       socket.heartbeatAlive = true;
     });
     socket.identity = request.signalingIdentity;
+    socket.authorizationRevision = socket.identity.authorizationRevision;
     socket.allowedChannelIds = new Set(socket.identity.channelIds);
     if (!userStatuses.has(socket.identity.sub)) {
       const requested = new URL(
@@ -883,6 +1114,12 @@ export function createSignalingServer({
     broadcastUserPresence();
 
     const isAllowed = (channelId) => {
+      if (
+        socket.revoked ||
+        socket.authorizationRevision !==
+          (authorizationRevisions.get(socket.identity.sub) ?? 0)
+      )
+        return false;
       if (deletedChannels.has(channelId)) return false;
       if (socket.allowedChannelIds.has(channelId)) return true;
       if (typeof channelId !== "string" || !channelId.startsWith("friend:"))
@@ -898,6 +1135,12 @@ export function createSignalingServer({
       socket.send(JSON.stringify({ type: "forbidden", channelId }));
 
     socket.on("message", (raw) => {
+      if (
+        socket.revoked ||
+        socket.authorizationRevision !==
+          (authorizationRevisions.get(socket.identity.sub) ?? 0)
+      )
+        return;
       let message;
       try {
         message = JSON.parse(raw.toString());
@@ -925,7 +1168,7 @@ export function createSignalingServer({
           typeof message.userId === "string" &&
           !message.channelId &&
           message.userId !== socket.identity.sub &&
-          socket.identity.friendIds.includes(message.userId)
+          socket.identity.messageIds.includes(message.userId)
         ) {
           const pair = [socket.identity.sub, message.userId].sort();
           context = { key: `direct:${JSON.stringify(pair)}`, pair };
@@ -1251,6 +1494,15 @@ export function createSignalingServer({
           )
           .then((admitted) => {
             socket.voiceJoinPending = false;
+            if (
+              admitted &&
+              (socket.revoked ||
+                socket.readyState !== WebSocket.OPEN ||
+                !isAllowed(message.roomId))
+            ) {
+              voiceSessions.release(socket.identity.sub, socket.voiceSessionId);
+              return;
+            }
             if (!admitted) {
               if (socket.readyState === WebSocket.OPEN)
                 socket.send(

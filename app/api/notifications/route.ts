@@ -6,7 +6,7 @@ import {
   serverNotifications,
   directNotifications,
 } from "../../../db/schema";
-import { areFriends } from "../../../server/friends";
+import { canMessage } from "../../../server/direct-conversations";
 import { notificationInbox } from "../../../server/notification-inbox";
 import { notifyUser } from "../../../server/notify-user";
 import { checkRateLimit } from "../../../server/rate-limit";
@@ -59,7 +59,7 @@ export async function PATCH(request: Request) {
         ),
       );
     if (!member) return Response.json({ error: "Forbidden" }, { status: 403 });
-  } else if (!(await areFriends(session.user.id, body.targetId)))
+  } else if (!(await canMessage(session.user.id, body.targetId)))
     return Response.json({ error: "Forbidden" }, { status: 403 });
   const enabled = body.mode !== "off",
     until = ["on", "off"].includes(body.mode)

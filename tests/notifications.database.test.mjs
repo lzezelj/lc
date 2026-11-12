@@ -12,6 +12,171 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import * as schema from "../db/schema.ts";
 import * as attachmentTypes from "../app/attachment-types.ts";
 import * as mentions from "../app/mentions.ts";
+import { isAccountActive } from "../auth-account.mjs";
+
+test("PostgreSQL nonfriend conversations require shared servers initially, survive unfriending and retain unread history", async () => {
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const database = drizzle(client, { schema });
+    const [actor, peer, stranger, server] = Array.from({ length: 4 }, () =>
+      randomUUID(),
+    );
+    await database.insert(schema.users).values([
+      { id: actor, name: "DM Actor" },
+      { id: peer, name: "DM Peer" },
+      { id: stranger, name: "DM Stranger" },
+    ]);
+    await database
+      .insert(schema.servers)
+      .values({ id: server, name: "DM test", createdBy: actor });
+    await database.insert(schema.serverMembers).values([
+      { serverId: server, userId: actor },
+      { serverId: server, userId: peer },
+    ]);
+    const friendship = await load("../server/friends.ts", {
+      "drizzle-orm": orm,
+      "../db": { db: database },
+      "../db/schema": schema,
+    });
+    const access = await load("../server/direct-conversations.ts", {
+      "drizzle-orm": orm,
+      "../db": { db: database },
+      "./friends": friendship,
+    });
+    const permissions = await load("../server/signaling-permissions.ts", {
+      "drizzle-orm": orm,
+      "../db": { db: database },
+      "../db/schema": schema,
+      "../auth-account.mjs": { isAccountActive },
+      "./direct-conversations": access,
+    });
+    assert.deepEqual(
+      [...(await permissions.signalingPermissions(actor)).serverIds],
+      [server],
+    );
+    assert.equal(await access.canMessage(actor, peer), true);
+    assert.equal(await access.canMessage(actor, stranger), false);
+    assert.equal(await access.canMessage(actor, actor), false);
+    assert.equal(await access.canCall(actor, peer), false);
+    let requestBody = { text: "Shared-server message", files: [] };
+    const dmRoute = await load("../app/api/direct-messages/[userId]/route.ts", {
+      "drizzle-orm": orm,
+      "next/server": { NextResponse: { json: Response.json } },
+      "../../../../auth": {
+        auth: async () => ({
+          user: { id: actor, name: "DM Actor", role: "member" },
+        }),
+      },
+      "../../../../db": { db: database },
+      "../../../../db/schema": schema,
+      "../../../../server/direct-conversations": access,
+      "../../../../server/rate-limit": {
+        checkRateLimit: () => ({ allowed: true }),
+        rateLimits: { message: {} },
+      },
+      "../../../../server/notify-user": { notifyUser: async () => {} },
+      "../../../../server/message-attachments": {
+        readMessageRequest: async () => requestBody,
+        saveAttachedMessage: async (_actor, _files, _direct, save) =>
+          save(database, []),
+      },
+    });
+    const context = (id) => ({ params: Promise.resolve({ userId: id }) });
+    const post = (id) =>
+      dmRoute.POST(
+        new Request("http://lc.test/dm", { method: "POST" }),
+        context(id),
+      );
+    assert.equal((await post(peer)).status, 201);
+    assert.equal((await post(stranger)).status, 403);
+    requestBody = { event: "call-ended", files: [] };
+    assert.equal(
+      (await post(peer)).status,
+      403,
+      "Nonfriends cannot create call events",
+    );
+    requestBody = { text: "Still accessible", files: [] };
+    await database
+      .insert(schema.friendships)
+      .values({ requesterId: actor, recipientId: peer, status: "accepted" });
+    assert.equal(await access.canCall(actor, peer), true);
+    assert.deepEqual(
+      [...(await permissions.signalingPermissions(actor)).friendIds],
+      [peer],
+    );
+    await database.insert(schema.directMessages).values({
+      senderId: peer,
+      recipientId: actor,
+      content: "Retained incoming message",
+      createdAt: new Date(),
+    });
+    await database
+      .delete(schema.friendships)
+      .where(orm.eq(schema.friendships.requesterId, actor));
+    await database
+      .delete(schema.serverMembers)
+      .where(orm.eq(schema.serverMembers.serverId, server));
+    assert.equal(await access.canMessage(actor, peer), true);
+    assert.equal(await access.canCall(actor, peer), false);
+    const currentPermissions = await permissions.signalingPermissions(actor);
+    assert.equal(currentPermissions.serverIds.length, 0);
+    assert.equal(currentPermissions.friendIds.length, 0);
+    assert.deepEqual([...currentPermissions.messageIds], [peer]);
+    const peers = await access.conversationPeers(actor);
+    assert.equal(peers.length, 1);
+    assert.equal(peers[0].status, "none");
+    assert.equal(peers[0].canMessage, true);
+    assert.equal(peers[0].lastMessage.text, "Retained incoming message");
+    assert.equal(
+      (await dmRoute.GET(new Request("http://lc.test/dm"), context(peer)))
+        .status,
+      200,
+    );
+    assert.equal(
+      (await post(peer)).status,
+      201,
+      "Existing conversations remain writable after server and friendship removal",
+    );
+    assert.deepEqual([...(await access.messagingPeerIds(actor))], [peer]);
+    const inbox = await load("../server/notification-inbox.ts", {
+      "drizzle-orm": orm,
+      "../db": { db: database },
+      "./direct-conversations": access,
+    });
+    const first = await inbox.notificationInbox(actor);
+    assert.equal(
+      first.direct[0].unread,
+      1,
+      "First incoming message must remain unread",
+    );
+    await database
+      .update(schema.users)
+      .set({ disabledAt: new Date() })
+      .where(orm.eq(schema.users.id, peer));
+    assert.equal(await access.canMessage(actor, peer), false);
+    assert.equal((await inbox.notificationInbox(actor)).direct.length, 0);
+    await database
+      .update(schema.users)
+      .set({ disabledAt: null, expiresAt: new Date("2020-01-01") })
+      .where(orm.eq(schema.users.id, peer));
+    assert.equal(await access.canMessage(actor, peer), false);
+    await database
+      .update(schema.users)
+      .set({ expiresAt: null, role: "demo" })
+      .where(orm.eq(schema.users.id, peer));
+    assert.equal(await access.canMessage(actor, peer), false);
+    await database
+      .update(schema.users)
+      .set({ disabledAt: new Date() })
+      .where(orm.eq(schema.users.id, actor));
+    assert.equal(await permissions.signalingPermissions(actor), null);
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
 
 async function load(path, deps) {
   const exports = {};
@@ -121,7 +286,7 @@ test("PostgreSQL mentions/read state persist across sessions; settings and API a
       }),
     };
     const friends = {
-      areFriends: async (a, b) => {
+      canMessage: async (a, b) => {
         const rows = await database
           .select()
           .from(schema.friendships)
@@ -155,7 +320,13 @@ test("PostgreSQL mentions/read state persist across sessions; settings and API a
       "../app/mentions": mentions,
       "./notify-user": notify,
     });
+    const directTools = await load("../server/direct-conversations.ts", {
+      "drizzle-orm": orm,
+      "../db": { db: database },
+      "./friends": { areFriends: friends.canMessage },
+    });
     const inboxTools = await load("../server/notification-inbox.ts", {
+      "./direct-conversations": directTools,
       "drizzle-orm": orm,
       "../db": { db: database },
     });
@@ -222,7 +393,7 @@ test("PostgreSQL mentions/read state persist across sessions; settings and API a
       "../auth": auth,
       "../db": { db: database },
       "../db/schema": schema,
-      "./friends": friends,
+      "./direct-conversations": friends,
       "./notify-user": notify,
       "./rate-limit": rates,
       "./message-attachments": reader,
@@ -246,7 +417,7 @@ test("PostgreSQL mentions/read state persist across sessions; settings and API a
       "drizzle-orm": orm,
       "../../../../auth": auth,
       "../../../../db": { db: database },
-      "../../../../server/friends": friends,
+      "../../../../server/direct-conversations": friends,
       "../../../../server/notify-user": notify,
       "../../../../server/rate-limit": rates,
     });
@@ -331,7 +502,7 @@ test("PostgreSQL mentions/read state persist across sessions; settings and API a
       "../../../auth": auth,
       "../../../db": { db: database },
       "../../../db/schema": schema,
-      "../../../server/friends": friends,
+      "../../../server/direct-conversations": friends,
       "../../../server/notification-inbox": inboxTools,
       "../../../server/notify-user": notify,
       "../../../server/rate-limit": rates,

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { MessageAttachment } from "./attachment-types";
+import { useDebouncedSearch } from "./use-search-debounce";
 
 export type SearchMessage = {
   id: string;
@@ -21,15 +22,19 @@ export type SearchMessage = {
   callDurationSeconds?: number | null;
 };
 type Cursor = { beforeId: string; beforeCreatedAt: string };
-export function ConversationSearch({
-  channelId,
-  userId,
-  onResult,
-}: {
+type SearchProps = {
   channelId?: string;
   userId?: string;
   onResult: (messages: SearchMessage[], targetId: string) => void;
-}) {
+};
+
+export function ConversationSearch(props: SearchProps) {
+  return (
+    <ConversationSearchInput key={props.channelId ?? props.userId} {...props} />
+  );
+}
+
+function ConversationSearchInput({ channelId, userId, onResult }: SearchProps) {
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [open, setOpen] = useState(false);
@@ -39,11 +44,15 @@ export function ConversationSearch({
   const [error, setError] = useState("");
   const request = useRef<AbortController | null>(null);
   const host = useRef<HTMLDivElement>(null);
+  const { schedule, cancel } = useDebouncedSearch((text: string) => {
+    void load(text);
+  });
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
-    if (!open) return;
+    if (!open && query.trim().length < 2) return;
     const close = (event: PointerEvent) => {
       if (!host.current?.contains(event.target as Node)) {
+        cancel();
         request.current?.abort();
         setBusy(false);
         setOpen(false);
@@ -51,8 +60,9 @@ export function ConversationSearch({
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
-  }, [open]);
+  }, [open, query, cancel]);
   async function load(text: string, more?: Cursor, contextId?: string) {
+    cancel();
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -113,6 +123,7 @@ export function ConversationSearch({
       ref={host}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
+          cancel();
           request.current?.abort();
           setOpen(false);
           setBusy(false);
@@ -131,7 +142,15 @@ export function ConversationSearch({
           placeholder="Search messages"
           value={query}
           maxLength={100}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            const value = event.target.value;
+            setQuery(value);
+            request.current?.abort();
+            cancel();
+            setBusy(false);
+            setOpen(false);
+            if (value.trim().length >= 2) schedule(value.trim());
+          }}
         />
         <button
           type="submit"
@@ -164,6 +183,7 @@ export function ConversationSearch({
               type="button"
               aria-label="Close search results"
               onClick={() => {
+                cancel();
                 request.current?.abort();
                 setBusy(false);
                 setOpen(false);

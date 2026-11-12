@@ -4,14 +4,34 @@ Workspace restoration/caching, profiles, settings, help, loading, panels, resizi
 
 [Architecture overview](../../ARCHITECTURE.md) · Related: [Messaging and conversation history](messaging.md), [Voice sessions and transports](voice-and-media.md), [Media capture and audio processing](media-and-audio.md), [Servers, channels and presence](servers-and-presence.md), [Notifications and activity](notifications.md).
 
+## Shared controls and search behavior
+
+New visible features reuse the website's existing components, CSS variables,
+typography, spacing, colors, borders and interaction states. Buttons, dropdowns,
+search fields, panels and dialogs follow equivalent existing controls, including
+shared button hover animation, keyboard focus, disabled and reduced-motion states.
+
+Searches that trigger API requests wait 500 ms after the last edit before
+requesting results. `app/use-search-debounce.ts` owns the shared delay and
+cancellable search scheduler. This covers friend discovery, Invite people,
+conversation messages and admin record searches. Filtering already-loaded data
+(emojis, members/channels, demos, notification/personal-message destinations,
+personal messages, sounds and Invite friends) stays immediate.
+Search buttons/Enter, pagination and selecting a message's surrounding context
+remain immediate. API searches retain their minimum query lengths, authorization
+and rate limits; obsolete timers/requests are cancelled and stale results ignored.
+Conversation search resets when its destination changes; closing its results or
+leaving cancels scheduled work. Admin search keeps filters/pages in the URL and
+does not remount its input after an automatic search, preserving typing focus.
+
 ## Workspace navigation and call footer
 
-Fresh authenticated entry and the Friends button open the Friends list. The LC
+Fresh authenticated entry and the Messages button open the contact list. The LC
 button returns to the selected direct conversation when switching back from a
 server; switching workspaces retains that selection without affecting calls.
 Reloads restore the last Friends tab/conversation or server/text channel from
 per-account session storage in that browser tab. Startup validates saved IDs
-against current server access, accepted friends and fetched channels; stale
+against current server access, permitted conversations and fetched channels; stale
 destinations fall back to Friends or the server's first text channel. Persistence
 waits until restoration finishes so initial defaults cannot overwrite the saved
 destination. This stores navigation IDs only and does not resume calls/capture
@@ -48,6 +68,19 @@ uncached channel shows loading until its authorized history arrives.
 
 ## Avatars, profiles and identity updates
 
+Accepted friends' profiles offer Remove friend with inline confirmation and a
+busy/error state using existing danger-button styles. POST `/api/friends` with
+`action: remove` deletes only an accepted relationship involving the signed-in
+non-demo actor, in either requester direction. Both accounts receive the existing
+friendship refresh event after deletion. Existing conversations and server memberships
+remain available. Messages shows Not friends with Add friend, Accept friend request,
+or Friend request sent as appropriate. Profiles can show Message alongside friendship
+controls; the backend checks shared-server/friendship/history access before opening
+the conversation. Calls are disabled for nonfriends. Restoring a conversation does
+not require friendship, and relationship refreshes update its badge without replacing
+the selected history. Empty threads are temporary until the first message is sent.
+See [direct conversation access](messaging.md#direct-conversations-and-friendship).
+
 The shared `Avatar` renders existing profile image URLs as circles with initials
 on missing/failed images. Voice-channel avatars are 20px; message/friend/member
 avatars are 32px (26px in the compact conversation list). Message history, search and live message responses include
@@ -80,8 +113,8 @@ account's image is removed, including soft account deletion. Only a versioned UR
 is stored in `users.image` and JWT/session metadata; bytes are not copied into
 messages or tokens. Auth callbacks refresh the picture from PostgreSQL.
 
-GET `/api/users/{userId}/avatar` requires self, accepted friendship or current
-shared-server membership before returning private/no-store, PNG-only/nosniff
+GET `/api/users/{userId}/avatar` requires self, accepted friendship, current
+shared-server membership or an eligible retained conversation before returning private/no-store, PNG-only/nosniff
 bytes. A targeted `profile-updated` user event updates current friend/member
 metadata and invalidates server snapshots without clearing message history or
 restarting calls. Other tabs of the same account also refresh session metadata.
@@ -212,7 +245,7 @@ their normal styling. Member buttons also account for their horizontal margins.
 Username changes refresh the Auth.js session in place rather than reloading the
 application. Public profile dialogs open from identity links and show existing
 name/handle, live presence, the shared server in the current view and a Message
-action for accepted friends that opens their conversation in the Friends
+action that resolves permitted conversations in the Messages
 workspace without leaving voice. Member and friend entries open profiles across
 their full identity area, including the avatar. Profiles offer friend requests
 by public user ID through the existing authenticated Friends API, acceptance of

@@ -494,7 +494,9 @@ async function downloadFixture({
         channels: {},
         serverMembers: {},
       },
-      "../../../../server/friends": { areFriends: async () => friend },
+      "../../../../server/direct-conversations": {
+        canMessage: async () => friend,
+      },
       "../../../../server/attachment-range": { attachmentRange },
     },
   );
@@ -649,7 +651,9 @@ test("channel and DM endpoints save attachment-only messages and reject unauthor
             users,
             serverMembers: {},
           },
-          [`${prefix}server/friends`]: { areFriends: async () => allowed },
+          [`${prefix}server/direct-conversations`]: {
+            canMessage: async () => allowed,
+          },
           [`${prefix}server/rate-limit`]: {
             checkRateLimit: () => ({ allowed: true }),
             rateLimits: { message: {} },

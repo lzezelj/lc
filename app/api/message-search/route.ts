@@ -20,7 +20,7 @@ import {
   serverMembers,
   users,
 } from "../../../db/schema";
-import { areFriends } from "../../../server/friends";
+import { canMessage } from "../../../server/direct-conversations";
 import { checkRateLimit, rateLimitMessage } from "../../../server/rate-limit";
 
 export async function GET(request: Request) {
@@ -39,7 +39,7 @@ export async function GET(request: Request) {
       { status: 400 },
     );
   if (userId) {
-    if (!(await areFriends(session.user.id, userId)))
+    if (!(await canMessage(session.user.id, userId)))
       return Response.json({ error: "Forbidden" }, { status: 403 });
   } else {
     const [access] = await db

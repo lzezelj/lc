@@ -523,6 +523,92 @@ test("connecting rows appear locally before a socket exists, deduplicate actual 
   );
 });
 
+test("successful group joins retain Connecting until an authoritative roster replaces it", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    page,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let groupHandler, presenceHandler, joinedHandler;
+  function visit(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === "handleGroupConnection"
+    )
+      groupHandler = node.getText(ast);
+    if (ts.isIfStatement(node)) {
+      const condition = node.expression.getText(ast);
+      if (
+        condition.includes('message.type === "presence"') &&
+        condition.includes("Array.isArray")
+      )
+        presenceHandler = node.thenStatement.getText(ast);
+      if (condition === 'message.type === "joined"')
+        joinedHandler = node.thenStatement.getText(ast);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(joinedHandler);
+  assert.doesNotMatch(joinedHandler, /updatePendingVoice/);
+  const pending = { current: sourceId };
+  let roster = { [sourceId]: [{ userId, connecting: true }] };
+  const sent = [];
+  const scope = {
+    pendingVoiceChannel: pending,
+    voiceSessionId: { current: "session" },
+    activeGroupChannelId: { current: "" },
+    presenceSocket: { current: {} },
+    groupMediaRef: { current: {} },
+    setConnectedGroupChannelId: () => {},
+    sendGroupPresence: (...args) => sent.push(args),
+    updatePendingVoice: () =>
+      assert.fail("Successful setup must not cancel pending presence"),
+    currentUserId: userId,
+    session: { user: { name: "Joining" } },
+    normalizePresence: (person) => person,
+    authoritativePresenceChannels: { current: new Set() },
+    directRoomId: { current: "" },
+    setVoicePresence: (update) => {
+      roster = update(roster);
+    },
+  };
+  const group = vm.runInNewContext(
+    `${ts.transpile(groupHandler)}; handleGroupConnection`,
+    scope,
+  );
+  group(sourceId, true, "session");
+  assert.equal(pending.current, sourceId);
+  assert.equal(roster[sourceId][0].connecting, true);
+  assert.equal(sent[0][1], true);
+  const receive = vm.runInNewContext(
+    ts.transpile(`(message) => ${presenceHandler}`),
+    scope,
+  );
+  receive({ roomId: sourceId, participants: [] });
+  assert.equal(
+    roster[sourceId][0].connecting,
+    true,
+    "An older empty snapshot must not hide the joining user",
+  );
+  receive({ roomId: sourceId, participants: [{ userId, name: "Joined" }] });
+  assert.equal(pending.current, "");
+  assert.equal(roster[sourceId].length, 1);
+  assert.equal(roster[sourceId][0].name, "Joined");
+  receive({ roomId: sourceId, participants: [] });
+  assert.equal(
+    roster[sourceId].length,
+    0,
+    "Confirmed membership must still allow subsequent removal",
+  );
+});
+
 test("voice move client ignores stale source rooms and joins the supplied server's channel", async () => {
   const page = await readFile(
     new URL("../app/page.tsx", import.meta.url),

@@ -2,6 +2,11 @@
 
 Durable storage ownership, schema/migration entry points and the location of feature-specific persistence contracts.
 
+Direct-message rows also identify durable conversation peers independently of
+friendships. Removing a friendship leaves those rows and read/preferences state
+intact; no conversation-table migration is introduced. See
+[direct conversations](messaging.md#direct-conversations-and-friendship).
+
 [Architecture overview](../../ARCHITECTURE.md) · Related: [Authentication and authorization](authentication.md), [Messaging and conversation history](messaging.md), [Servers, channels and presence](servers-and-presence.md), [Infrastructure, deployment and operations](infrastructure.md).
 
 ## PostgreSQL and Drizzle

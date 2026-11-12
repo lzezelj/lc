@@ -14,6 +14,150 @@ const source = await readFile(
   "utf8",
 );
 
+test("friend discovery debounces typing and ignores responses after cancellation", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "page.tsx",
+    page,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let search, effect;
+  function visit(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(ast) === "searchFriends"
+    )
+      search = node.initializer.arguments[0].getText(ast);
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(ast) === "useEffect" &&
+      node.arguments[0].getText(ast).includes("friendSearchTimer.current =")
+    )
+      effect = node.arguments[0].getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  const timers = new Map(),
+    requests = [];
+  let results = [];
+  const scope = {
+    friendSearch: "alice",
+    session: { user: { id: actorId } },
+    friendSearchTimer: { current: null },
+    friendSearchRequest: { current: null },
+    AbortController,
+    SEARCH_DEBOUNCE_MS: 500,
+    setTimeout: (callback, delay) => {
+      const id = {};
+      timers.set(id, { callback, delay });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+    fetch: (url, options) =>
+      new Promise((resolve) => requests.push({ url, options, resolve })),
+    setFriendResults: (value) => {
+      results = value;
+    },
+    setErrorMessage: () =>
+      assert.fail("Cancelled searches must not show errors"),
+  };
+  scope.searchFriends = vm.runInNewContext(ts.transpile(`(${search})`), scope);
+  const start = vm.runInNewContext(ts.transpile(`(${effect})`), scope);
+  let cleanup = start();
+  assert.equal(requests.length, 0);
+  assert.equal([...timers.values()][0].delay, 500);
+  cleanup();
+  assert.equal(timers.size, 0);
+  scope.friendSearch = "alicia";
+  cleanup = start();
+  [...timers.values()][0].callback();
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].url, /q=alicia$/);
+  cleanup();
+  requests[0].resolve({ ok: true, json: async () => [{ id: "obsolete" }] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(results, []);
+  scope.friendSearch = "al";
+  start();
+  assert.equal(timers.size, 0);
+  const immediate = scope.searchFriends("alice");
+  assert.equal(requests.length, 2);
+  requests[1].resolve({ ok: true, json: async () => [{ id: targetId }] });
+  await immediate;
+  assert.equal(results[0].id, targetId);
+});
+
+test("conversation APIs derive identity from the session and reject unauthorized peer resolution", async () => {
+  const source = await readFile(
+    new URL("../app/api/conversations/route.ts", import.meta.url),
+    "utf8",
+  );
+  let authenticated = true,
+    allowed = true;
+  const lookups = [],
+    checks = [],
+    exports = {};
+  const dependencies = {
+    "../../../auth": {
+      auth: async () => (authenticated ? { user: { id: actorId } } : null),
+    },
+    "../../../server/direct-conversations": {
+      canMessage: async (actor, peer) => {
+        checks.push([actor, peer]);
+        return allowed;
+      },
+      conversationPeers: async (actor, peer) => {
+        lookups.push([actor, peer]);
+        return [
+          {
+            id: targetId,
+            status: "none",
+            canMessage: true,
+            lastMessage: { text: "Kept history" },
+          },
+        ];
+      },
+    },
+  };
+  vm.runInNewContext(
+    ts.transpile(source, {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    {
+      exports,
+      Response,
+      require: (name) => dependencies[name],
+    },
+  );
+  const post = () =>
+    exports.POST(
+      new Request("http://lc.test/api/conversations", {
+        method: "POST",
+        body: JSON.stringify({ userId: targetId, actorId: "forged" }),
+      }),
+    );
+  assert.equal((await post()).status, 200);
+  assert.deepEqual(checks[0], [actorId, targetId]);
+  assert.deepEqual(lookups[0], [actorId, targetId]);
+  assert.equal((await (await exports.GET()).json())[0].status, "none");
+  allowed = false;
+  assert.equal((await post()).status, 403);
+  assert.equal(
+    lookups.length,
+    2,
+    "Forbidden requests cannot resolve profile metadata",
+  );
+  authenticated = false;
+  assert.equal((await post()).status, 403);
+  assert.equal((await exports.GET()).status, 403);
+});
+
 test("Friends list scopes metadata and bounded last-message previews to accepted friends", async () => {
   for (const mode of ["friends", "empty", "anonymous"]) {
     const schema = {
@@ -158,6 +302,7 @@ function fixture({
   authenticated = true,
   target = targetId,
   existing = false,
+  removeExists = true,
 } = {}) {
   const predicates = [],
     writes = [],
@@ -179,7 +324,11 @@ function fixture({
     },
     "../../../db/schema": {
       users: { id: "users.id", handle: "users.handle" },
-      friendships: {},
+      friendships: {
+        requesterId: "requesterId",
+        recipientId: "recipientId",
+        status: "status",
+      },
       directMessages: {},
     },
     "../../../user-handle": { normalizeUserHandle },
@@ -204,6 +353,16 @@ function fixture({
           }),
         }),
         insert: () => ({ values: async (values) => writes.push(values) }),
+        delete: () => ({
+          where: (predicate) => ({
+            returning: async () => {
+              predicates.push(predicate);
+              if (!removeExists) return [];
+              writes.push({ removed: true });
+              return [{ requesterId: actorId, recipientId: targetId }];
+            },
+          }),
+        }),
       },
     },
   };
@@ -234,6 +393,63 @@ function fixture({
       ),
   };
 }
+
+test("removing friends scopes deletion to accepted relationships in either actor direction and notifies both accounts", async () => {
+  const f = fixture();
+  assert.equal(
+    (await f.request({ action: "remove", userId: targetId })).status,
+    200,
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(f.predicates[0])), {
+    op: "and",
+    args: [
+      { op: "eq", args: ["status", "accepted"] },
+      {
+        op: "or",
+        args: [
+          {
+            op: "and",
+            args: [
+              { op: "eq", args: ["requesterId", actorId] },
+              { op: "eq", args: ["recipientId", targetId] },
+            ],
+          },
+          {
+            op: "and",
+            args: [
+              { op: "eq", args: ["requesterId", targetId] },
+              { op: "eq", args: ["recipientId", actorId] },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(
+    f.notifications.map(([id]) => id).sort(),
+    [actorId, targetId].sort(),
+  );
+  assert.ok(
+    f.notifications.every(([, event]) => event.type === "friendship-changed"),
+  );
+});
+
+test("friend removal rejects anonymous/demo actors, invalid IDs and absent relationships without notifications", async () => {
+  for (const [options, userId, status] of [
+    [{ authenticated: false }, targetId, 403],
+    [{ role: "demo" }, targetId, 403],
+    [{}, "invalid", 400],
+    [{ removeExists: false }, targetId, 404],
+  ]) {
+    const f = fixture(options);
+    assert.equal(
+      (await f.request({ action: "remove", userId })).status,
+      status,
+    );
+    assert.equal(f.writes.length, 0);
+    assert.equal(f.notifications.length, 0);
+  }
+});
 
 test("profile friend requests resolve a user ID and notify only the target", async () => {
   const f = fixture();

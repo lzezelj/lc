@@ -44,6 +44,8 @@ Message rows link back to their author, server and channel and include timestamp
 reply context, attachments, deletion placeholders and edit attribution.
 
 Search queries are limited to 200 characters and UUID filters are validated.
+Typing searches automatically after the shared 500 ms debounce; explicit Search
+and pagination remain immediate. See [shared search behavior](ui.md#shared-controls-and-search-behavior).
 Lists return at most 50 records plus a next-page indicator, with deterministic
 ordering and bounded page numbers. Search/page state is kept in the URL so Back
 can restore filters. Pagination uses offsets; concurrent writes can shift a page,

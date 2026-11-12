@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatUserHandle } from "../user-handle";
+import { SEARCH_DEBOUNCE_MS } from "./use-search-debounce";
 
 export type InvitePerson = {
   id: string;
@@ -64,7 +65,7 @@ export function ServerInvites({
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
-    }, 250);
+    }, SEARCH_DEBOUNCE_MS);
     return () => {
       controller.abort();
       window.clearTimeout(timer);

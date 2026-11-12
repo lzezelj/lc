@@ -1,7 +1,11 @@
 import { RoomServiceClient } from "livekit-server-sdk";
 
 // LiveKit identities retain the account prefix used by moderation APIs.
-export async function removeAccountGroupMedia(userId, keepSessionId) {
+export async function removeAccountGroupMedia(
+  userId,
+  keepSessionId,
+  sessionIds,
+) {
   const url = process.env.LIVEKIT_INTERNAL_URL ?? process.env.LIVEKIT_URL;
   if (!url) return;
   const key = process.env.LIVEKIT_API_KEY;
@@ -25,7 +29,9 @@ export async function removeAccountGroupMedia(userId, keepSessionId) {
           .filter(
             (person) =>
               person.identity.startsWith(`${userId}:`) &&
-              person.identity !== `${userId}:${keepSessionId}`,
+              person.identity !== `${userId}:${keepSessionId}` &&
+              (sessionIds === undefined ||
+                sessionIds.some((id) => person.identity === `${userId}:${id}`)),
           )
           .map((person) =>
             client.removeParticipant(room.name, person.identity),

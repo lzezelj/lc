@@ -173,6 +173,7 @@ test("profile picture changes use the authenticated account and notify after com
 test("profile picture reads require authentication and an authorized audience", async () => {
   let authenticated = true,
     allowed = false,
+    conversationAllowed = false,
     present = true,
     reads = 0;
   const route = await avatarModule(
@@ -200,6 +201,9 @@ test("profile picture reads require authentication and an authorized audience", 
       "../../../../../server/profile-pictures": {
         profileAudience: async () => new Set(allowed ? [me] : []),
       },
+      "../../../../../server/direct-conversations": {
+        canMessage: async () => conversationAllowed,
+      },
     },
   );
   const get = (userId = other) =>
@@ -208,6 +212,13 @@ test("profile picture reads require authentication and an authorized audience", 
     });
   assert.equal((await get()).status, 403);
   assert.equal(reads, 0);
+  conversationAllowed = true;
+  assert.equal(
+    (await get()).status,
+    200,
+    "Historical conversations retain avatar access without friendship/shared servers",
+  );
+  conversationAllowed = false;
   allowed = true;
   const picture = await get();
   assert.equal(picture.status, 200);

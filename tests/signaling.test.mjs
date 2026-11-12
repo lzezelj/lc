@@ -131,6 +131,40 @@ test("DM typing requires friendship and stops when the typing socket disconnects
   await quiet;
 });
 
+test("nonfriend message claims allow typing but never authorize call invitations or voice joins", async () => {
+  const url = await startServer();
+  const alice = await connect(url, "Message A", [], [], [], "online", [
+    "test-Message B",
+  ]);
+  const bob = await connect(url, "Message B", [], [], [], "online", [
+    "test-Message A",
+  ]);
+  const typing = matchingMessage(bob, (event) => event.type === "typing");
+  alice.send(
+    JSON.stringify({ type: "typing", userId: "test-Message B", active: true }),
+  );
+  assert.equal((await typing).users[0].id, "test-Message A");
+  const rejectedInvite = matchingMessage(
+    alice,
+    (event) => event.type === "forbidden",
+  );
+  alice.send(
+    JSON.stringify({ type: "call-invite", targetUserId: "test-Message B" }),
+  );
+  await rejectedInvite;
+  const rejectedJoin = matchingMessage(
+    alice,
+    (event) => event.type === "forbidden",
+  );
+  alice.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "friend:test-Message A:test-Message B",
+    }),
+  );
+  await rejectedJoin;
+});
+
 test("voice claims serialize per account, remove SFU media before replacement and reject stale cleanup", async () => {
   const events = [];
   const sessions = createVoiceSessions({
@@ -386,6 +420,7 @@ async function startServer(options) {
     port: 0,
     authSecret,
     internalSecret: authSecret,
+    authorizeIdentity: async (identity) => ({ ...identity }),
     removeGroupMedia: async () => {},
     ...options,
   });
@@ -394,6 +429,291 @@ async function startServer(options) {
   const address = server.address();
   return `ws://127.0.0.1:${address.port}`;
 }
+
+async function internalCommand(url, path, body) {
+  return fetch(`${url.replace("ws:", "http:")}/internal/${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${authSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+test("replaying a token after revocation or signaling restart never restores removed channel permissions", async () => {
+  let allowed = true;
+  const authority = async (identity) => ({
+    ...identity,
+    channelIds: allowed ? identity.channelIds : [],
+    serverIds: allowed ? identity.serverIds : [],
+  });
+  const url = await startServer({ authorizeIdentity: authority });
+  const original = await connect(url, "Revoked");
+  const tokenQuery = new URL(original.url).search;
+  allowed = false;
+  const closed = once(original, "close");
+  assert.equal(
+    (await internalCommand(url, "disconnect-user", { userId: "test-Revoked" }))
+      .status,
+    204,
+  );
+  await closed;
+  for (const address of [
+    url,
+    await startServer({ authorizeIdentity: authority }),
+  ]) {
+    const replay = new WebSocket(`${address}${tokenQuery}`);
+    resources.unshift(replay);
+    await once(replay, "open");
+    let forbidden = matchingMessage(
+      replay,
+      (event) => event.type === "forbidden",
+    );
+    replay.send(
+      JSON.stringify({ type: "subscribe-text", channelId: "general" }),
+    );
+    await forbidden;
+    forbidden = matchingMessage(replay, (event) => event.type === "forbidden");
+    replay.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+    await forbidden;
+    const quiet = expectNoMessage(replay);
+    await internalCommand(address, "text-message", {
+      channelId: "general",
+      message: { id: "private", text: "Restricted body" },
+    });
+    await quiet;
+  }
+});
+
+test("inactive accounts and unavailable authorization fail closed at WebSocket admission", async () => {
+  for (const authority of [
+    async () => null,
+    async () => {
+      throw new Error("offline");
+    },
+  ]) {
+    const url = await startServer({ authorizeIdentity: authority });
+    const token = createSignalingToken(
+      { id: "test-Inactive", name: "Inactive", channelIds: ["general"] },
+      authSecret,
+    );
+    const rejected = new WebSocket(`${url}?token=${token}`);
+    resources.unshift(rejected);
+    const [error] = await once(rejected, "error");
+    assert.match(error.message, /Unexpected server response: (401|503)/);
+  }
+});
+
+test("an authorization response started before revocation cannot attach a late socket", async () => {
+  let finish;
+  let entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const url = await startServer({
+    authorizeIdentity: (identity) =>
+      new Promise((resolve) => {
+        finish = () => resolve(identity);
+        entered();
+      }),
+  });
+  const token = createSignalingToken(
+    { id: "test-Racing", name: "Racing", channelIds: ["general"] },
+    authSecret,
+  );
+  const pending = new WebSocket(`${url}?token=${token}`);
+  resources.unshift(pending);
+  const rejected = once(pending, "error");
+  await started;
+  await internalCommand(url, "disconnect-user", { userId: "test-Racing" });
+  finish();
+  assert.match((await rejected)[0].message, /503/);
+});
+
+test("unfriending removes calls on existing and replayed sockets while preserving text and unrelated server voice", async () => {
+  let friends = true;
+  const url = await startServer({
+    authorizeIdentity: async (identity) => ({
+      ...identity,
+      friendIds: friends ? identity.friendIds : [],
+    }),
+  });
+  const alice = await connect(
+    url,
+    "Unfriend A",
+    permittedChannelIds,
+    [],
+    ["test-Unfriend B"],
+  );
+  const bob = await connect(
+    url,
+    "Unfriend B",
+    permittedChannelIds,
+    [],
+    ["test-Unfriend A"],
+  );
+  const joined = nextMessage(alice);
+  alice.send(JSON.stringify({ type: "join", roomId: "lounge" }));
+  await joined;
+  const revoked = matchingMessage(
+    alice,
+    (event) => event.type === "friendship-revoked",
+  );
+  friends = false;
+  await Promise.all(
+    ["test-Unfriend A", "test-Unfriend B"].map((userId) =>
+      internalCommand(url, "user-event", {
+        userId,
+        event: { type: "friendship-changed" },
+      }),
+    ),
+  );
+  assert.equal(
+    (await revoked).roomId,
+    "friend:test-Unfriend A:test-Unfriend B",
+  );
+  assert.equal(alice.readyState, WebSocket.OPEN);
+  const observer = await connect(url, "Unfriend observer");
+  const presence = matchingMessage(
+    observer,
+    (event) => event.type === "presence" && event.roomId === "lounge",
+  );
+  observer.send(
+    JSON.stringify({ type: "subscribe-presence", roomIds: ["lounge"] }),
+  );
+  assert.equal((await presence).participants[0].userId, "test-Unfriend A");
+  const denied = matchingMessage(alice, (event) => event.type === "forbidden");
+  alice.send(
+    JSON.stringify({ type: "call-invite", targetUserId: "test-Unfriend B" }),
+  );
+  await denied;
+  const typing = matchingMessage(bob, (event) => event.type === "typing");
+  alice.send(
+    JSON.stringify({ type: "typing", userId: "test-Unfriend B", active: true }),
+  );
+  await typing;
+  const replay = new WebSocket(alice.url);
+  resources.unshift(replay);
+  await once(replay, "open");
+  const forbidden = matchingMessage(
+    replay,
+    (event) => event.type === "forbidden",
+  );
+  replay.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "friend:test-Unfriend A:test-Unfriend B",
+    }),
+  );
+  await forbidden;
+});
+
+test("periodic authorization removes missed permissions and closes sockets when authority fails", async () => {
+  let state = "allowed";
+  const url = await startServer({
+    authorizationIntervalMs: 30,
+    authorizeIdentity: async (identity) => {
+      if (state === "offline") throw new Error("offline");
+      return {
+        ...identity,
+        channelIds: state === "allowed" ? identity.channelIds : [],
+      };
+    },
+  });
+  const client = await connect(url, "Lease");
+  state = "denied";
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const denied = matchingMessage(client, (event) => event.type === "forbidden");
+  client.send(JSON.stringify({ type: "subscribe-text", channelId: "general" }));
+  await denied;
+  const closed = once(client, "close");
+  state = "offline";
+  assert.equal((await closed)[0], 4003);
+});
+
+test("a pending friend admission cannot finish while a revocation lookup is still pending", async () => {
+  let finishMedia, finishAuthorization;
+  let mediaEntered, authorizationEntered;
+  let refreshing = false;
+  const removing = new Promise((resolve) => {
+    mediaEntered = resolve;
+  });
+  const authorizing = new Promise((resolve) => {
+    authorizationEntered = resolve;
+  });
+  const url = await startServer({
+    authorizeIdentity: (identity) =>
+      refreshing
+        ? new Promise((resolve) => {
+            finishAuthorization = () => resolve({ ...identity, friendIds: [] });
+            authorizationEntered();
+          })
+        : Promise.resolve({ ...identity }),
+    removeGroupMedia: () =>
+      new Promise((resolve) => {
+        finishMedia = resolve;
+        mediaEntered();
+      }),
+  });
+  const call = await connect(url, "Pending revoke", [], [], ["test-Peer"]);
+  const result = matchingMessage(call, (event) =>
+    ["joined", "room-full"].includes(event.type),
+  );
+  call.send(
+    JSON.stringify({
+      type: "join",
+      roomId: "friend:test-Peer:test-Pending revoke",
+    }),
+  );
+  await removing;
+  refreshing = true;
+  const change = internalCommand(url, "user-event", {
+    userId: "test-Pending revoke",
+    event: { type: "friendship-changed" },
+  });
+  await authorizing;
+  finishMedia();
+  assert.equal((await result).type, "room-full");
+  finishAuthorization();
+  await change;
+});
+
+test("unfriending closes only the matching active friend call and dismisses its invitation", async () => {
+  let friends = true;
+  const url = await startServer({
+    authorizeIdentity: async (identity) => ({
+      ...identity,
+      friendIds: friends ? identity.friendIds : [],
+    }),
+  });
+  const alice = await connect(url, "Pair A", [], [], ["test-Pair B"]);
+  const bob = await connect(url, "Pair B", [], [], ["test-Pair A"]);
+  const workspace = await connect(url, "Pair A", [], [], ["test-Pair B"]);
+  const roomId = "friend:test-Pair A:test-Pair B";
+  for (const client of [alice, bob]) {
+    const joined = matchingMessage(client, (event) => event.type === "joined");
+    client.send(JSON.stringify({ type: "join", roomId }));
+    await joined;
+  }
+  const dismissed = matchingMessage(
+    workspace,
+    (event) => event.type === "friendship-revoked",
+  );
+  const closed = [once(alice, "close"), once(bob, "close")];
+  friends = false;
+  await Promise.all(
+    ["test-Pair A", "test-Pair B"].map((userId) =>
+      internalCommand(url, "user-event", {
+        userId,
+        event: { type: "friendship-changed" },
+      }),
+    ),
+  );
+  assert.equal((await dismissed).roomId, roomId);
+  for (const [code] of await Promise.all(closed)) assert.equal(code, 4003);
+  assert.equal(workspace.readyState, WebSocket.OPEN);
+});
 
 test("admin presence snapshots require the internal secret and distinguish selected status from disconnection", async () => {
   const url = await startServer();
@@ -437,9 +757,10 @@ async function connect(
   serverIds = ["server-1"],
   friendIds = [],
   initialStatus = "online",
+  messageIds = friendIds,
 ) {
   const token = createSignalingToken(
-    { id: `test-${name}`, name, channelIds, serverIds, friendIds },
+    { id: `test-${name}`, name, channelIds, serverIds, friendIds, messageIds },
     authSecret,
   );
   const socket = new WebSocket(`${url}?token=${token}&status=${initialStatus}`);

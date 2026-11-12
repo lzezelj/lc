@@ -4,10 +4,37 @@ Composers, drafts, emoji/reactions, edits, search, attachments, persistence, del
 
 [Architecture overview](../../ARCHITECTURE.md) · Related: [Authentication and authorization](authentication.md), [Notifications and activity](notifications.md), [Workspace UI and navigation](ui.md), [Database and persistence](database.md).
 
+## Direct conversations and friendship
+
+The Messages workspace separates conversations from friendship. Active non-demo
+accounts can message accepted friends, users sharing a server, or peers with
+existing direct-message rows. `server/direct-conversations.ts` owns this predicate;
+each history/send/edit/search/reaction/attachment/read/preference API checks it
+independently and still scopes message IDs to the signed-in pair. Unrelated peers,
+self, disabled/expired accounts and demo accounts are denied. Calls and call-history
+events retain their separate accepted-friend checks; message permission never
+grants call permission.
+
+GET `/api/conversations` merges friendships, shared-server contacts and peers derived from stored messages,
+returning profile metadata, friendship status (including `none`), messaging access,
+latest activity and a bounded 160-character latest-text preview. POST resolves a
+permitted peer for a new Message action without creating a durable empty thread.
+The first message makes the conversation durable. No schema migration or separate
+conversation table is needed. Unfriending deletes only the friendship: existing
+history remains available, including after both users leave their shared servers.
+If every message is permanently erased and no friendship/shared server remains,
+there is no remaining conversation to list or authorize. Soft-deleted rows retain
+the relationship and display the existing Deleted message placeholder.
+
+Lists derive peers from the account's message rows and use existing pair/timeline
+indexes for previews. This adds reads proportional to that account's history and
+is intended for the current small deployment, not an unbounded public messenger.
+GET `/api/friends` remains the social-graph endpoint for accepted/pending friendships.
+
 ## Reconnect and history recovery
 
 Owner-only app-wide inspection and moderation use separate APIs; ordinary message
-authorization stays membership/friendship scoped. See [Application administration](admin.md)
+authorization stays membership/conversation scoped. See [Application administration](admin.md)
 for admin-edit attribution, transactional audit history and moderation notifications.
 
 Signaling sends protocol ping frames every 30 seconds; browsers answer pong frames
@@ -75,8 +102,8 @@ Escape/Arrow Left for keyboard access. Hover opening does not steal keyboard foc
 Migration `0020_message_reactions` adds separate channel/direct reaction tables,
 with cascading user/message deletion and triggers
 that remove reactions on soft deletion. Calls and deleted messages cannot receive
-reactions. `/api/message-reactions` authorizes server membership or accepted DM
-friendship, constrains message IDs to that conversation, rate-limits mutations,
+reactions. `/api/message-reactions` authorizes server membership or permitted DM
+conversation access, constrains message IDs to that conversation, rate-limits mutations,
 and derives the reacting user exclusively from the session. Adds/removals are
 idempotent; responses aggregate counts and the viewer's own participation.
 Migration `0021_single_message_reaction` enforces one reaction per message/user.
@@ -96,7 +123,7 @@ emoji; custom emoji uploads are not introduced.
 
 Authors can edit their own live channel/DM messages from the context menu.
 `PATCH /api/messages/{id}` and `PATCH /api/direct-messages/{userId}/{id}`
-recheck author identity and current membership/friendship, reject deleted messages
+recheck author identity and current membership/conversation access, reject deleted messages
 and call events, enforce the shared message rate limit and the 4,000-character
 bound, and update PostgreSQL before notifying clients. Attachments and reply
 relationships remain unchanged; an attachment caption can become empty.
@@ -116,7 +143,10 @@ edited label without adding unread counts or reordering the conversation. Delete
 rows are never resurrected by delayed edits. Reconnect reloads recover missed edits.
 
 The shared conversation search occupies the chat header for all accounts, replacing
-the owner demo menu. GET `/api/message-search` accepts exactly one channel/friend
+the owner demo menu. Typing triggers search after the shared 500 ms debounce;
+Search/Enter runs immediately. Dismissal cancels pending searches and changing
+conversation resets the search state; see [shared search behavior](ui.md#shared-controls-and-search-behavior).
+GET `/api/message-search` accepts exactly one channel/friend
 scope, rechecks current access, and returns up to 50 matches with timestamp/ID
 cursors. Search is a parameterized, case-insensitive literal substring match on
 text and attachment filenames; deleted rows and DM call entries are excluded.
@@ -139,7 +169,7 @@ forward/backward paging; the down arrow resumes the normal history view.
 
 ## Composer, attachments and persisted delivery
 
-Channel chats and friend DMs share `MessageComposer`. Its textarea retains the
+Channel chats and DMs share `MessageComposer`. Its textarea retains the
 single-line height, grows and shrinks with explicit or wrapped lines up to three
 rows, then scrolls vertically. Enter sends; Shift+Enter inserts a newline; IME
 composition does not send. A left attachment button and drop target stage up to
@@ -150,7 +180,7 @@ Staged files are scoped to the account and destination, so navigation cannot
 attach them to another conversation.
 
 Message POST endpoints accept JSON for text/call events and multipart for files.
-Session and membership/friendship checks precede body parsing. The server bounds
+Session and membership/conversation checks precede body parsing. The server bounds
 the streamed body before parsing, checks signatures rather than trusting MIME
 claims, and sanitizes filenames. `server/message-attachments.ts` locks the
 uploader's user row and checks a shared 100 MiB account quota across channels
@@ -180,7 +210,7 @@ Migration `0013_message_attachments` adds message metadata and a separate
 `message_attachments` table. Message foreign keys cascade permanent removal;
 database triggers release bytes and clear metadata on soft deletion, including
 bulk/account paths. GET `/api/attachments/{id}` rechecks current server membership
-or exact DM participation and accepted friendship before loading bytes. Deleted
+or exact DM participation and permitted conversation access before loading bytes. Deleted
 messages are inaccessible. Responses use private/no-store, nosniff, a sandbox CSP
 and encoded filenames; there is no public file directory or image optimizer URL.
 This storage choice increases PostgreSQL backup size and upload memory use (up
@@ -259,7 +289,7 @@ replace the content immediately without polling.
 
 Channel and direct-message history are fetched newest-first in cursor pages of
 50 messages. Both queries order by timestamp and ID for stable ties; direct
-history remains restricted to the authenticated pair of accepted friends.
+history remains restricted to the authenticated pair with permitted conversation access.
 GET `/api/friends` returns friendship/profile metadata, the stored activity
 timestamp and a bounded last-message preview for each accepted friend. A lateral
 query fetches at most one text-message row per direction using the existing

@@ -37,6 +37,107 @@ async function moduleAt(path, dependencies) {
   );
   return exports;
 }
+test("ordinary server deletion enforces ownership and cleans media, access and orphaned demos after database deletion", async () => {
+  const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const base = drizzle(client, { schema });
+    const db = new Proxy(base, {
+      get(target, key) {
+        if (key === "transaction") return async (action) => action(target);
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const [owner, member, demo, serverId, room] = Array.from(
+      { length: 5 },
+      () => randomUUID(),
+    );
+    await base.insert(schema.users).values([
+      { id: owner, name: "Owner" },
+      { id: member, name: "Member" },
+      { id: demo, name: "Demo", role: "demo" },
+    ]);
+    await base
+      .insert(schema.servers)
+      .values({ id: serverId, name: "Deletion test", createdBy: owner });
+    await base.insert(schema.serverMembers).values([
+      { userId: owner, serverId, role: "owner" },
+      { userId: member, serverId },
+      { userId: demo, serverId },
+    ]);
+    await base
+      .insert(schema.channels)
+      .values({ id: room, serverId, name: "Voice", type: "voice_group" });
+    const events = [];
+    const errors = await moduleAt("../server/admin-error.ts", {});
+    const service = await moduleAt("../server/delete-server.ts", {
+      "drizzle-orm": orm,
+      "../db": { db },
+      "./admin-error": errors,
+      "./admin-audit": {
+        auditAdmin: () =>
+          assert.fail("Ordinary deletion is not an admin action"),
+      },
+      "./remove-channel-media": {
+        removeChannelMedia: async (...args) => {
+          assert.equal(
+            (
+              await base
+                .select()
+                .from(schema.servers)
+                .where(orm.eq(schema.servers.id, serverId))
+            ).length,
+            0,
+          );
+          events.push(["media", ...args]);
+        },
+      },
+      "./notify-user": {
+        notifyUser: async (...args) => events.push(["notify", ...args]),
+      },
+      "./disconnect-user": {
+        disconnectUserEverywhere: async (...args) =>
+          events.push(["disconnect", ...args]),
+      },
+    });
+    await assert.rejects(
+      () => service.deleteServer(serverId, member, true),
+      (error) => error.status === 404,
+    );
+    assert.equal(events.length, 0);
+    const response = await service.deleteServer(serverId, owner, true);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).revokedDemos, 1);
+    assert.ok(
+      events.some(
+        ([type, id, channel]) =>
+          type === "media" && id === serverId && channel === room,
+      ),
+    );
+    assert.ok(
+      events.some(
+        ([type, id, event]) =>
+          type === "notify" &&
+          id === member &&
+          event.reason === "server-deleted",
+      ),
+    );
+    assert.ok(
+      events.some(([type, id]) => type === "disconnect" && id === demo),
+    );
+    const [revoked] = await base
+      .select()
+      .from(schema.users)
+      .where(orm.eq(schema.users.id, demo));
+    assert.ok(revoked.disabledAt);
+  } finally {
+    await client.query("ROLLBACK");
+    await client.end();
+  }
+});
+
 test("admin SQL, audit atomicity, global reads, edits and deletion cleanup against PostgreSQL", async () => {
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
@@ -151,6 +252,15 @@ test("admin SQL, audit atomicity, global reads, edits and deletion cleanup again
         storeMentions: async () => [],
       },
     };
+    dependencies["./delete-server"] = await moduleAt(
+      "../server/delete-server.ts",
+      {
+        ...dependencies,
+        "./disconnect-user": {
+          disconnectUserEverywhere: async (...args) => events.push(args),
+        },
+      },
+    );
     dependencies["./admin-entities"] = await moduleAt(
       "../server/admin-entities.ts",
       {

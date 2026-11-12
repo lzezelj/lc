@@ -3,6 +3,7 @@ import { auth } from "../../../../../auth";
 import { db } from "../../../../../db";
 import { userAvatars } from "../../../../../db/schema";
 import { profileAudience } from "../../../../../server/profile-pictures";
+import { canMessage } from "../../../../../server/direct-conversations";
 
 export async function GET(
   _request: Request,
@@ -15,7 +16,8 @@ export async function GET(
     return new Response(null, { status: 400 });
   if (
     session.user.id !== userId &&
-    !(await profileAudience(userId)).has(session.user.id)
+    !(await profileAudience(userId)).has(session.user.id) &&
+    !(await canMessage(session.user.id, userId))
   )
     return new Response(null, { status: 403 });
   const [avatar] = await db

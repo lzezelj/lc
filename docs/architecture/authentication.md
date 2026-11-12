@@ -131,9 +131,26 @@ current channel memberships and signs this identity and channel list with
 HMAC-SHA256 using `AUTH_SECRET`. The token expires after 60 seconds and is
 verified with a timing-safe signature comparison by the WebSocket service.
 
-The short lifetime limits token reuse. Administrative membership changes call
-the internal disconnect endpoint, forcing affected sockets to reconnect before
-receiving a refreshed permission list.
+The signed token proves identity at admission; its permission arrays are not the
+authority. Every WebSocket upgrade calls secret-authenticated
+`POST /api/internal/signaling-authorize` and replaces those arrays with current
+PostgreSQL account, channel, server, friendship and messaging permissions from
+`server/signaling-permissions.ts`, also used for token issuance. Inactive accounts
+are rejected. Admission fails closed if the application cannot authorize within
+five seconds. Replaying an unexpired token after removal, including after a
+signaling restart, cannot restore old access. A local authorization generation
+rejects an in-flight lookup if a revocation arrived while it was pending.
+
+Administrative disconnect immediately clears socket permissions before closing.
+Friendship/access refresh events also trigger server-side reauthorization:
+unfriending removes only friends-only call rights, dismisses matching invitations
+and closes that pair's native call. Text eligibility and unrelated server calls
+remain intact. Open connections reauthorize every 30 seconds, coalesced per account;
+this repairs missed events and enforces disabled/expired accounts. An unavailable
+or failed refresh closes affected sockets instead of retaining old permissions.
+Missed-event revocation is therefore bounded by this interval plus the five-second
+lookup timeout, rather than instantaneous. This adds an application-availability
+dependency to signaling admission and authorization refresh.
 The browser caches a signaling token for at most 45 seconds so its independent
 presence, text, and direct-call sockets do not each consume a token issuance.
 Access and friendship changes invalidate that cache immediately. Server and

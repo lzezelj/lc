@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { auth } from "../../../../auth";
 import { db } from "../../../../db";
-import { areFriends } from "../../../../server/friends";
+import { canMessage } from "../../../../server/direct-conversations";
 import { notifyUser } from "../../../../server/notify-user";
 import { checkRateLimit } from "../../../../server/rate-limit";
 
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     );
   if (
     body.scope === "direct" &&
-    !(await areFriends(session.user.id, body.targetId))
+    !(await canMessage(session.user.id, body.targetId))
   )
     return Response.json({ error: "Forbidden" }, { status: 403 });
   const result =

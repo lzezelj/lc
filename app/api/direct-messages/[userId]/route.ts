@@ -7,7 +7,7 @@ import {
 } from "../../../../server/message-attachments";
 import { db } from "../../../../db";
 import { directMessages, friendships, users } from "../../../../db/schema";
-import { areFriends } from "../../../../server/friends";
+import { canMessage, canCall } from "../../../../server/direct-conversations";
 import {
   checkRateLimit,
   rateLimits,
@@ -21,7 +21,7 @@ export async function GET(
 ) {
   const session = await auth();
   const { userId } = await params;
-  if (!session || !(await areFriends(session.user.id, userId)))
+  if (!session || !(await canMessage(session.user.id, userId)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const query = new URL(request.url).searchParams;
   const beforeCreatedAt = query.get("beforeCreatedAt");
@@ -106,7 +106,7 @@ export async function POST(
 ) {
   const session = await auth();
   const { userId } = await params;
-  if (!session || !(await areFriends(session.user.id, userId)))
+  if (!session || !(await canMessage(session.user.id, userId)))
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   const rateLimit = checkRateLimit(
     `message:${session.user.id}`,
@@ -128,6 +128,11 @@ export async function POST(
   const body = await readMessageRequest(request);
   if (body instanceof Response) return body;
   const isCallEvent = Boolean(body.event);
+  if (isCallEvent && !(await canCall(session.user.id, userId)))
+    return NextResponse.json(
+      { error: "Calls require an accepted friendship" },
+      { status: 403 },
+    );
   const durationSeconds = isCallEvent
     ? Math.max(0, Math.min(86_400, Math.round(body.durationSeconds ?? 0)))
     : null;

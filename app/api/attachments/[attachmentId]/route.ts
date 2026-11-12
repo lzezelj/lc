@@ -9,7 +9,7 @@ import {
   messages,
   serverMembers,
 } from "../../../../db/schema";
-import { areFriends } from "../../../../server/friends";
+import { canMessage } from "../../../../server/direct-conversations";
 
 export async function GET(
   request: Request,
@@ -60,7 +60,7 @@ export async function GET(
         message.senderId === session.user.id
           ? message.recipientId
           : message.senderId;
-      if (await areFriends(session.user.id, otherId))
+      if (await canMessage(session.user.id, otherId))
         metadata = message.attachments.find((file) => file.id === attachmentId);
     }
   }

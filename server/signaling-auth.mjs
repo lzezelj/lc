@@ -12,6 +12,7 @@ export function createSignalingToken(identity, secret, lifetimeSeconds = 60) {
     channelIds: identity.channelIds,
     serverIds: identity.serverIds ?? [],
     friendIds: identity.friendIds ?? [],
+    messageIds: identity.messageIds ?? identity.friendIds ?? [],
     exp: Math.floor(Date.now() / 1000) + lifetimeSeconds,
   });
   const signature = createHmac("sha256", secret)
@@ -37,6 +38,7 @@ export function verifySignalingToken(token, secret) {
   }
   try {
     const identity = JSON.parse(Buffer.from(payload, "base64url").toString());
+    identity.messageIds ??= identity.friendIds;
     if (
       typeof identity.sub !== "string" ||
       typeof identity.name !== "string" ||
@@ -48,6 +50,8 @@ export function verifySignalingToken(token, secret) {
       !identity.serverIds.every((serverId) => typeof serverId === "string") ||
       !Array.isArray(identity.friendIds) ||
       !identity.friendIds.every((friendId) => typeof friendId === "string") ||
+      !Array.isArray(identity.messageIds) ||
+      !identity.messageIds.every((id) => typeof id === "string") ||
       typeof identity.exp !== "number" ||
       identity.exp <= Math.floor(Date.now() / 1000)
     ) {

@@ -10,7 +10,7 @@ import {
   directMessageReactions,
   users,
 } from "../../../db/schema";
-import { areFriends } from "../../../server/friends";
+import { canMessage } from "../../../server/direct-conversations";
 import { checkRateLimit } from "../../../server/rate-limit";
 import { notifyUser } from "../../../server/notify-user";
 import { isReactionEmoji, type MessageReaction } from "../../emoji-catalog";
@@ -34,7 +34,7 @@ async function scopeFor(actor: string, channelId: unknown, userId: unknown) {
     typeof userId === "string" &&
     uuid.test(userId) &&
     !channelId &&
-    (await areFriends(actor, userId))
+    (await canMessage(actor, userId))
   ) {
     return {
       table: directMessages,

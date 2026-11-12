@@ -86,6 +86,8 @@ test("channel moves are owner-only within Text/Voice; server order is private to
         [`${prefix}server/notify-server`]: {},
         [`${prefix}server/remove-channel-media`]: {},
         [`${prefix}server/disconnect-user`]: {},
+        [`${prefix}server/delete-server`]: {},
+        [`${prefix}server/admin-error`]: {},
         "../../../../../../lib/list-order": { moveRelative },
         "../../../../lib/list-order": { moveRelative },
       };
@@ -341,6 +343,8 @@ test("AFK creation returns the destination immediately; settings require the own
         notifyServer: async (id) => events.push(id),
       },
       "../../../server/disconnect-user": {},
+      "../../../server/delete-server": {},
+      "../../../server/admin-error": {},
       "../../../server/rate-limit": {
         rateLimits: { serverMutation: {} },
         checkRateLimit: () => ({ allowed: true }),
@@ -513,7 +517,9 @@ test("video attachment migration permits 25 MiB, serves authorized PostgreSQL by
       "../../../../auth": { auth: async () => ({ user: { id: actor } }) },
       "../../../../db": { db: database },
       "../../../../db/schema": schema,
-      "../../../../server/friends": { areFriends: async () => false },
+      "../../../../server/direct-conversations": {
+        canMessage: async () => false,
+      },
       "../../../../server/attachment-range": { attachmentRange },
     };
     vm.runInNewContext(
@@ -1220,8 +1226,8 @@ test("message reactions enforce conversation access, isolate actors, aggregate l
       "../../../server/notify-user": {
         notifyUser: async (userId, event) => events.push({ userId, event }),
       },
-      "../../../server/friends": {
-        areFriends: async (left, right) => {
+      "../../../server/direct-conversations": {
+        canMessage: async (left, right) => {
           const result = await client.query(
             "SELECT 1 FROM friendships WHERE status = 'accepted' AND ((requester_id = $1 AND recipient_id = $2) OR (requester_id = $2 AND recipient_id = $1))",
             [left, right],
@@ -1695,7 +1701,7 @@ test("real PostgreSQL edit/search queries preserve files, enforce conversation s
         auth: async () => ({ user: { id: actor, role: "member" } }),
       },
       friends = {
-        areFriends: async (a, b) =>
+        canMessage: async (a, b) =>
           [actor, friend].includes(a) && [actor, friend].includes(b),
       },
       rates = {
@@ -1772,7 +1778,7 @@ test("real PostgreSQL edit/search queries preserve files, enforce conversation s
       "../auth": auth,
       "../db": { db: database },
       "../db/schema": schema,
-      "./friends": friends,
+      "./direct-conversations": friends,
       "./rate-limit": rates,
       "./message-attachments": reader,
       "./notify-user": {
@@ -1822,7 +1828,7 @@ test("real PostgreSQL edit/search queries preserve files, enforce conversation s
       "../../../auth": auth,
       "../../../db": { db: database },
       "../../../db/schema": schema,
-      "../../../server/friends": friends,
+      "../../../server/direct-conversations": friends,
       "../../../server/rate-limit": rates,
     });
     const find = (parameters) =>

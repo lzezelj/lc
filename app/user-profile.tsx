@@ -22,6 +22,7 @@ export function UserProfile({
   onEditProfile,
   onAddFriend,
   onAcceptFriend,
+  onRemoveFriend,
   requestPending = false,
   friendActionsUnavailable = false,
 }: {
@@ -33,11 +34,13 @@ export function UserProfile({
   onEditProfile?: () => void;
   onAddFriend?: () => Promise<void>;
   onAcceptFriend?: () => Promise<void>;
+  onRemoveFriend?: () => Promise<void>;
   requestPending?: boolean;
   friendActionsUnavailable?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirmRemoval, setConfirmRemoval] = useState(false);
   async function updateFriendship(action: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -89,10 +92,6 @@ export function UserProfile({
             <button className="primary" type="button" onClick={onEditProfile}>
               Edit profile
             </button>
-          ) : onMessage ? (
-            <button className="primary" type="button" onClick={onMessage}>
-              Message
-            </button>
           ) : onAcceptFriend ? (
             <button
               className="primary"
@@ -116,6 +115,48 @@ export function UserProfile({
               {busy ? "Sending request…" : "Add friend"}
             </button>
           ) : null}
+          {onMessage && (
+            <button className="primary" type="button" onClick={onMessage}>
+              Message
+            </button>
+          )}
+          {onMessage && !onRemoveFriend && !onEditProfile && (
+            <small>Not friends</small>
+          )}
+          {onRemoveFriend && (
+            <div className={confirmRemoval ? "settingsDangerZone" : undefined}>
+              {confirmRemoval && (
+                <p>
+                  Remove {user.name} from your friends? Your message history
+                  will be kept.
+                </p>
+              )}
+              {confirmRemoval && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmRemoval(false)}
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                type="button"
+                className="danger"
+                disabled={busy}
+                onClick={() => {
+                  if (!confirmRemoval) setConfirmRemoval(true);
+                  else void updateFriendship(onRemoveFriend);
+                }}
+              >
+                {busy
+                  ? "Removing…"
+                  : confirmRemoval
+                    ? "Confirm remove friend"
+                    : "Remove friend"}
+              </button>
+            </div>
+          )}
           {friendActionsUnavailable && (
             <small>Demo accounts cannot send friend requests.</small>
           )}

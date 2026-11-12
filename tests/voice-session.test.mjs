@@ -165,6 +165,7 @@ test("SFU cleanup scans rooms and removes only exact account-prefixed identities
   const removed = [],
     exports = {};
   let fail = false;
+  let replacement = false;
   vm.runInNewContext(
     ts.transpile(mediaSource, { module: ts.ModuleKind.CommonJS }),
     {
@@ -185,6 +186,7 @@ test("SFU cleanup scans rooms and removes only exact account-prefixed identities
             if (fail) throw new Error("offline");
             return [
               { identity: "account:session" },
+              ...(replacement ? [{ identity: "account:replacement" }] : []),
               { identity: "account-other:session" },
               { identity: "other:session" },
             ];
@@ -211,12 +213,81 @@ test("SFU cleanup scans rooms and removes only exact account-prefixed identities
     [],
     "reclaiming a call preserves that returning device's media identity",
   );
+  replacement = true;
+  await exports.removeAccountGroupMedia("account", undefined, ["session"]);
+  assert.deepEqual(
+    removed,
+    [
+      ["one", "account:session"],
+      ["two", "account:session"],
+    ],
+    "Revocation only removes captured sessions and preserves a newer call",
+  );
+  removed.length = 0;
+  await exports.removeAccountGroupMedia("account", undefined, []);
+  assert.equal(removed.length, 0);
 });
 
 const internalSource = await readFile(
   new URL("../app/api/internal/voice-media/route.ts", import.meta.url),
   "utf8",
 );
+
+test("internal signaling authorization requires the service secret before reading current permissions", async () => {
+  const source = await readFile(
+    new URL(
+      "../app/api/internal/signaling-authorize/route.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const exports = {},
+    reads = [];
+  let active = true;
+  vm.runInNewContext(ts.transpile(source, { module: ts.ModuleKind.CommonJS }), {
+    exports,
+    Buffer,
+    Response,
+    process: { env: { SIGNALING_INTERNAL_SECRET: "test-internal" } },
+    require: (name) =>
+      ({
+        "node:crypto": { timingSafeEqual },
+        "../../../../server/signaling-permissions": {
+          signalingPermissions: async (id) => {
+            reads.push(id);
+            return active
+              ? {
+                  sub: id,
+                  name: "Current",
+                  channelIds: [],
+                  serverIds: [],
+                  friendIds: [],
+                  messageIds: [],
+                }
+              : null;
+          },
+        },
+      })[name],
+  });
+  const run = (secret, body = { userId: "account" }) =>
+    exports.POST(
+      new Request("http://local/internal", {
+        method: "POST",
+        headers: secret ? { Authorization: `Bearer ${secret}` } : {},
+        body: JSON.stringify(body),
+      }),
+    );
+  for (const secret of [null, "incorrect", "wrong-secret!"])
+    assert.equal((await run(secret)).status, 401);
+  assert.deepEqual(reads, []);
+  assert.equal((await run("test-internal", {})).status, 400);
+  const response = await run("test-internal");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.equal((await response.json()).name, "Current");
+  active = false;
+  assert.equal((await run("test-internal")).status, 403);
+});
 test("internal media cleanup authenticates its secret, validates accounts and reports SFU failures", async () => {
   const exports = {},
     removed = [];
@@ -253,6 +324,11 @@ test("internal media cleanup authenticates its secret, validates accounts and re
     assert.equal((await run(secret)).status, 401);
   assert.deepEqual(removed, []);
   assert.equal((await run("test-internal", {})).status, 400);
+  assert.equal(
+    (await run("test-internal", { userId: "account", sessionIds: [42] }))
+      .status,
+    400,
+  );
   assert.equal((await run("test-internal")).status, 204);
   assert.deepEqual(removed, ["account"]);
   fail = true;

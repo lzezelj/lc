@@ -162,7 +162,7 @@ async function fixture({
   const auth = {
       auth: async () => (authenticated ? { user: { id: actor } } : null),
     },
-    friends = { areFriends: async () => allowed },
+    friends = { canMessage: async () => allowed },
     rate = {
       checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 3 }),
     },
@@ -174,7 +174,7 @@ async function fixture({
     "../../../auth": auth,
     "../../../db": { db },
     "../../../db/schema": tables,
-    "../../../server/friends": friends,
+    "../../../server/direct-conversations": friends,
     "../../../server/notification-inbox": {
       notificationInbox: async (userId) => {
         assert.equal(userId, actor);
@@ -188,7 +188,7 @@ async function fixture({
     "drizzle-orm": orm,
     "../../../../auth": auth,
     "../../../../db": { db },
-    "../../../../server/friends": friends,
+    "../../../../server/direct-conversations": friends,
     "../../../../server/notify-user": notify,
     "../../../../server/rate-limit": rate,
   });

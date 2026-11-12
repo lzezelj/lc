@@ -78,6 +78,19 @@ video. It provides:
 
 The service keeps connections and rooms in memory. Clients reconnect and
 resubscribe after a dropped WebSocket connection.
+Every upgrade and each account's 30-second authorization refresh load current
+permissions from Next.js, failing closed on unavailable/invalid authorization.
+Administrative removals clear rights before closing; friendship changes refresh
+rights on the server and stop only the matching native friend call, including
+pending admission, without relying on the client to honor a refresh event.
+The official client dismisses the matching invitation/call and keeps unrelated
+calls mounted. Modified peers cannot be forced to stop already-established native
+peer-to-peer media; the server revokes signaling and official clients stop capture.
+Authorization-refresh group cleanup targets captured session identities, so delayed
+media removal cannot evict a newer authorized replacement session. Revocation
+generations also block pending native admission until the refreshed rights apply.
+See [signaling authorization](authentication.md#signaling-authorization) for timing,
+restart/replay protection and the application-availability dependency.
 
 ## Friend-call cancellation
 
@@ -189,6 +202,12 @@ Pending presence is deduplicated against actual native/LiveKit occupants and
 cleared on successful membership, cancellation, failure or socket disconnect.
 Each server-side pending lease also expires after 30 seconds. These temporary
 rows show Connecting and cannot be moderated until membership is established.
+The browser retains its local Connecting row until an authoritative signaling
+snapshot includes its connected identity. Successful native/group setup does not
+send a separate pending-cancellation event: signaling replaces the pending lease
+with actual membership in one broadcast, avoiding a disappearing/reappearing row.
+Call signaling failures show connection/retry guidance suitable for deployed
+clients, without local development commands.
 Clients clear only a matching active call and refresh the server's channel list.
 Stale 60-second signaling tokens are blocked for 65 seconds after deletion while
 the signaling service stays running. Media cleanup is best effort if a service

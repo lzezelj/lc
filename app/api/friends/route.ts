@@ -99,7 +99,7 @@ export async function POST(request: Request) {
   const body = (await request.json()) as {
     handle?: string;
     userId?: string;
-    action?: "request" | "accept" | "decline" | "activity";
+    action?: "request" | "accept" | "decline" | "activity" | "remove";
   };
   if (body.action === "request" && (body.handle || body.userId)) {
     if (
@@ -152,6 +152,40 @@ export async function POST(request: Request) {
   }
   if (!body.userId || !body.action)
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  if (body.action === "remove") {
+    if (
+      typeof body.userId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        body.userId,
+      )
+    )
+      return NextResponse.json({ error: "Invalid user" }, { status: 400 });
+    const [removed] = await db
+      .delete(friendships)
+      .where(
+        and(
+          eq(friendships.status, "accepted"),
+          or(
+            and(
+              eq(friendships.requesterId, session.user.id),
+              eq(friendships.recipientId, body.userId),
+            ),
+            and(
+              eq(friendships.requesterId, body.userId),
+              eq(friendships.recipientId, session.user.id),
+            ),
+          ),
+        ),
+      )
+      .returning();
+    if (!removed)
+      return NextResponse.json({ error: "Friend not found" }, { status: 404 });
+    await Promise.all([
+      notifyUser(session.user.id, { type: "friendship-changed" }),
+      notifyUser(body.userId, { type: "friendship-changed" }),
+    ]);
+    return NextResponse.json({ id: body.userId });
+  }
   if (body.action === "activity") {
     const [updated] = await db
       .update(friendships)

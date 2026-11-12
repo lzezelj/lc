@@ -150,9 +150,12 @@ no centralized operational log store, distributed tracing or alerting service.
   redundancy.
 - LiveKit has UDP and ICE/TCP but no TURN/TLS relay for highly restrictive
   networks.
-- Signaling permissions are captured when the short-lived connection token is
-  issued. Administrative changes actively close sockets, but purely time-based
-  expiry is enforced when the session/token is next refreshed.
+- Signaling admissions and 30-second account authorization refreshes require the
+  application and PostgreSQL. Explicit removals clear permissions immediately;
+  missed events/account expiry are enforced by the next refresh (plus its maximum
+  five-second lookup time). Failed authorization closes sockets. See
+  [authorization](authentication.md#signaling-authorization). Self-hosted LiveKit
+  credential replay remains a separate documented media-service limitation.
 - Monitoring is mostly manual.
 - Rate-limit counters are local to one Next.js process and reset on restart;
   they are not suitable for horizontally scaled application instances.

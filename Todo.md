@@ -9,7 +9,7 @@ Automated tests for permissions and authorization
 Monitoring and structured logs
 
 Admin dashboard
-Changing user data through admin dashboard.
+Check if data is being loaded every single time
 Add a option to remove delay for soundboard sounds
 
 Long term
@@ -21,5 +21,7 @@ Message formatting
 Quick switcher
 Polls
 Server activity log
+Queue for api calls
 
 Short term
+fix the signaling error telling the user to check if npm run dev:all is working on deployed website?

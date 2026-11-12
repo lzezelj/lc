@@ -247,6 +247,7 @@ if (navigation || workspaceControls) {
       import React, {useState, useRef, useEffect} from 'react';
       import {Room, RoomEvent, Track, TrackEvent} from './group-navigation.mock.mjs';
       import {DeviceMenu} from './device-menu.js';
+      import {CameraMirrorControl} from './camera-mirror.js';
       import {cameraResolutions, videoPublishEncoding} from './camera-resolution.js';
       import {applyRemoteAudioVolume, participantGain} from './remote-audio-volume.js';
       import {voiceBlocked} from './voice-policy.js';

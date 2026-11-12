@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useDebouncedSearch } from "../use-search-debounce";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
@@ -751,18 +752,34 @@ export function AdminList({
       });
     return () => abort.abort();
   }, [endpoint, revision]);
+  const input = useRef<HTMLInputElement>(null);
+  const submittedQuery = useRef(q);
   const update = (nextQuery: string, nextPage: number) => {
+    submittedQuery.current = nextQuery;
     const params = new URLSearchParams(search.toString());
     params.set(queryKey, nextQuery);
     params.set(pageKey, String(nextPage));
     router.replace(`/admin?${params}`, { scroll: false });
   };
+  const { schedule, cancel } = useDebouncedSearch((text: string) => {
+    update(text, 0);
+  });
+  useEffect(() => {
+    if (submittedQuery.current !== q) {
+      cancel();
+      submittedQuery.current = q;
+      if (input.current) input.current.value = q;
+    }
+  }, [q, cancel]);
+  const searchScope = JSON.stringify({ resource, filters });
+  useEffect(() => cancel, [searchScope, cancel]);
   return (
     <div className="adminList">
       <form
         className="adminSearch"
         onSubmit={(event) => {
           event.preventDefault();
+          cancel();
           update(
             String(new FormData(event.currentTarget).get("search") ?? ""),
             0,
@@ -775,8 +792,9 @@ export function AdminList({
             type="search"
             maxLength={200}
             name="search"
-            key={q}
+            ref={input}
             defaultValue={q}
+            onChange={(event) => schedule(event.target.value)}
           />
         </label>
         <button type="submit">Search</button>

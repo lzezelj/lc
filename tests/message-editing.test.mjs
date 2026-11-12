@@ -245,7 +245,7 @@ async function fixture({
       },
       "../db": { db },
       "../db/schema": schema,
-      "./friends": { areFriends: async () => friends },
+      "./direct-conversations": { canMessage: async () => friends },
       "./message-attachments": reader,
       "./rate-limit": {
         checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 3 }),
@@ -274,7 +274,7 @@ async function fixture({
     },
     "../../../db": { db },
     "../../../db/schema": schema,
-    "../../../server/friends": { areFriends: async () => friends },
+    "../../../server/direct-conversations": { canMessage: async () => friends },
     "../../../server/rate-limit": {
       checkRateLimit: () => ({ allowed: !limited, retryAfterSeconds: 3 }),
       rateLimitMessage: () => "wait",
