@@ -140,7 +140,7 @@ no centralized operational log store, distributed tracing or alerting service.
 Host-side [database-backup.sh](../../scripts/database-backup.sh) provides daily
 compressed PostgreSQL 17 custom-format dumps and an interactive live restore.
 It uses the production Compose configuration without sourcing/printing secrets.
-Defaults are checkout `/apps/lc`, database/user `lc`, and private backup directory
+Defaults are checkout `/home/lc/apps/lc`, database/user `lc`, and private backup directory
 `/home/lc/lc-backups`. `LC_PROJECT_DIR`/`LC_BACKUP_DIR` may override paths for
 manual use and isolated tests; the supplied service/function use the defaults.
 Do not point these production commands at a development database.
@@ -152,7 +152,7 @@ establish that the timer is installed or that production was rolled back.
 
 ### Installation and daily operation
 
-After transferring the reviewed files to `/apps/lc`, run as the `lc` host user
+After transferring the reviewed files to `/home/lc/apps/lc`, run as the `lc` host user
 from that directory. No application deployment/rebuild is needed for these
 host-side scripts. GNU Bash/coreutils, util-linux `flock`, systemd and a current
 Docker Compose plugin are required. The job runs as root so no unattended sudo
@@ -160,7 +160,7 @@ password or change to Docker group membership is needed. Files are private
 (directory 0700, new archives 0600); the shell restore function uses sudo.
 
 ```bash
-cd /apps/lc
+cd /home/lc/apps/lc
 bash -n scripts/database-backup.sh
 sudo install -m 644 ops/lc-database-backup.service ops/lc-database-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -205,8 +205,8 @@ Enable the shell function once in the `lc` user's Bash configuration (without
 sudo; this is that user's configuration):
 
 ```bash
-grep -qxF 'source /apps/lc/ops/lc-backup-shell.sh' "$HOME/.bashrc" || printf '\nsource /apps/lc/ops/lc-backup-shell.sh\n' >> "$HOME/.bashrc"
-source /apps/lc/ops/lc-backup-shell.sh
+grep -qxF 'source /home/lc/apps/lc/ops/lc-backup-shell.sh' "$HOME/.bashrc" || printf '\nsource /home/lc/apps/lc/ops/lc-backup-shell.sh\n' >> "$HOME/.bashrc"
+source /home/lc/apps/lc/ops/lc-backup-shell.sh
 ```
 
 Then use `restore "2026-11-13"`. A function rather than a simple alias forwards

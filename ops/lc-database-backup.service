@@ -6,7 +6,7 @@ After=docker.service
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/apps/lc
-ExecStart=/usr/bin/bash /apps/lc/scripts/database-backup.sh backup
+WorkingDirectory=/home/lc/apps/lc
+ExecStart=/usr/bin/bash /home/lc/apps/lc/scripts/database-backup.sh backup
 UMask=0077
 TimeoutStartSec=30min
