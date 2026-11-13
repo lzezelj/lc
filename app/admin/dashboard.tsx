@@ -25,6 +25,7 @@ export type AdminRow = {
   accountRole?: string;
   ownerId?: string;
   afkChannelId?: string | null;
+  soundboardCooldownEnabled?: boolean;
   memberCount?: number;
   channelCount?: number;
   finalDemoCount?: number;

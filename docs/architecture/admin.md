@@ -24,6 +24,11 @@ server-owner/member checks and do not acquire global read privileges.
 
 ## Reads and navigation
 
+The dashboard stylesheet (`app/admin/admin.css`) uses the shared workspace UI
+tokens for surfaces, typography, controls, cards, selection and focus. Buttons
+inherit the global hover animation and reduced-motion behavior; confirmation
+forms retain the shared settings modal. See [visual rules](ui.md#visual-rules-and-consistency).
+
 `server/admin-read.ts` owns parameterized, explicitly selected admin queries.
 Users expose ID, display name, handle, profile image, account type, creation time,
 expiry and disabled state. Email addresses, OAuth links/credentials, cookies,
@@ -112,6 +117,11 @@ expired-account cleanup removing newly chosen memberships between separate steps
 Changing assignments during regeneration also disconnects existing connections.
 
 ## Server and user administration
+
+Server settings also offers Remove/Enable soundboard cooldown, with confirmation
+and transactional `server.soundboard` audit history. This owner-only option applies
+to everyone in the selected server and defaults to enabled. Migration
+`0033_soundboard_cooldown` is required; see [soundboard playback](soundboards.md).
 
 `server/admin-entities.ts` adds server creation, name/AFK/ownership changes and
 server/user deletion behind the same current-owner guard, rate limiter, bounded

@@ -662,6 +662,7 @@ async function playbackRoute({
   sound = true,
   userId = "actor",
   now = () => 1000,
+  cooldownEnabled = true,
 } = {}) {
   const predicates = [];
   const route = await moduleAt(
@@ -675,6 +676,7 @@ async function playbackRoute({
       "../../../../../../db/schema": {
         serverMembers: { userId: "userId", serverId: "memberServer" },
         serverSounds: { id: "soundId", serverId: "soundServer" },
+        servers: { id: "serverId", soundboardCooldownEnabled: "cooldown" },
       },
       "../../../../../../db": {
         db: {
@@ -682,6 +684,7 @@ async function playbackRoute({
             from: () => ({
               where: async (predicate) => {
                 predicates.push(predicate);
+                if (fields.enabled) return [{ enabled: cooldownEnabled }];
                 return (fields.userId ? member : sound) ? [{}] : [];
               },
             }),
@@ -699,6 +702,33 @@ const playRequest = () =>
   new Request(`https://lc.test/soundboard/play?clip=${clipId}`, {
     method: "POST",
   });
+
+test("disabled server cooldown allows rapid playback but retains membership and clip checks", async () => {
+  resetRateLimitsForTests();
+  const fixture = await playbackRoute({ cooldownEnabled: false });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    assert.equal((await fixture.route.POST(playRequest(), params)).status, 200);
+  }
+  const protectedServer = await playbackRoute();
+  assert.equal(
+    (await protectedServer.route.POST(playRequest(), params)).status,
+    200,
+  );
+  assert.equal(
+    (await protectedServer.route.POST(playRequest(), params)).status,
+    429,
+  );
+  for (const [options, status] of [
+    [{ member: false }, 403],
+    [{ sound: false }, 404],
+  ]) {
+    const denied = await playbackRoute({ ...options, cooldownEnabled: false });
+    assert.equal(
+      (await denied.route.POST(playRequest(), params)).status,
+      status,
+    );
+  }
+});
 
 test("server playback permits require membership and a server-scoped existing clip", async () => {
   for (const [options, status] of [
@@ -998,6 +1028,7 @@ test("metadata and audio each require current session and target server membersh
           "../../../../../db/schema": {
             serverMembers: { userId: "userId", serverId: "serverId" },
             serverSounds: "sounds",
+            servers: { id: "id", soundboardCooldownEnabled: "cooldown" },
           },
           "../../../../../server/sound-upload": uploads,
           "../../../../../server/notify-user": {
@@ -1114,6 +1145,211 @@ const deferred = () => {
   return { promise, resolve };
 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("preloading stays within cache budget and stops obsolete work", async () => {
+  const fetched = [];
+  const { preloadSoundAudio } = await moduleAt(
+    "../app/soundboard-library.ts",
+    {
+      "./soundboard-audio": { SoundCache },
+      react: {},
+    },
+    {
+      fetch: async (url) => {
+        fetched.push(url);
+        return new Response(new ArrayBuffer(2 * 1024 * 1024));
+      },
+    },
+  );
+  const sounds = Array.from({ length: 8 }, (_, index) => ({
+    id: `preload-${index}`,
+    serverId: "preload-server",
+    durationMs: 10000,
+  }));
+  const controller = new AbortController();
+  let warmed = 0;
+  await preloadSoundAudio(
+    sounds,
+    async () => {
+      warmed++;
+    },
+    controller.signal,
+  );
+  assert.equal(fetched.length, 2);
+  assert.equal(warmed, 2);
+  const cancel = new AbortController();
+  await preloadSoundAudio(
+    sounds.map((sound) => ({ ...sound, serverId: "cancel-server" })),
+    async () => cancel.abort(),
+    cancel.signal,
+  );
+  assert.equal(fetched.length, 3);
+});
+
+test("ready player preloads without audio, reuses publication between clips and releases on stop", async () => {
+  const audio = audioFixture();
+  let publications = 0,
+    removals = 0,
+    permits = 0,
+    decodes = 0;
+  const bytes = new ArrayBuffer(4);
+  audio.context.decodeAudioData = async () => {
+    decodes++;
+    return {};
+  };
+  const activity = [];
+  const player = new SoundPlayer(
+    undefined,
+    (playing) => activity.push(playing),
+    true,
+  );
+  const publish = async () => {
+    publications++;
+    return () => removals++;
+  };
+  await player.preload(audio.context, async () => bytes);
+  assert.equal(audio.sources.length, 0);
+  assert.equal(publications, 0);
+  await player.prepare(audio.context, publish);
+  assert.equal(publications, 1);
+  assert.deepEqual(activity, []);
+  const play = () =>
+    player.play(
+      audio.context,
+      async () => bytes,
+      publish,
+      async () => {
+        permits++;
+      },
+    );
+  await play();
+  audio.sources[0].onended();
+  assert.equal(removals, 0);
+  assert.equal(audio.tracks[0].stopped, false);
+  await play();
+  assert.equal(publications, 1);
+  assert.equal(permits, 2);
+  assert.equal(decodes, 1);
+  assert.equal(audio.tracks.length, 1);
+  await assert.rejects(
+    player.play(
+      audio.context,
+      async () => bytes,
+      publish,
+      async () => {
+        throw new Error("Forbidden");
+      },
+    ),
+    /Forbidden/,
+  );
+  assert.equal(audio.sources.length, 2);
+  assert.equal(publications, 1);
+  player.stop();
+  assert.equal(removals, 1);
+  assert.equal(audio.tracks[0].stopped, true);
+  assert.deepEqual(activity, [true, false, true, false]);
+  await player.prepare(audio.context, publish);
+  assert.equal(publications, 2);
+  player.stop();
+});
+
+test("stopping a pending ready publication releases its late result without starting audio", async () => {
+  const audio = audioFixture();
+  const publication = deferred();
+  const player = new SoundPlayer(undefined, undefined, true);
+  let removals = 0;
+  const pending = player.prepare(audio.context, async () => {
+    await publication.promise;
+    return () => removals++;
+  });
+  player.stop();
+  publication.resolve();
+  await pending;
+  assert.equal(removals, 1);
+  assert.equal(audio.tracks[0].stopped, true);
+  assert.equal(audio.sources.length, 0);
+});
+
+test("audio preparation overlaps authorization and never publishes before permission", async () => {
+  const player = new SoundPlayer();
+  const audio = audioFixture();
+  const permission = deferred();
+  const download = deferred();
+  const events = [];
+  const pending = player.play(
+    audio.context,
+    () => {
+      events.push("download");
+      return download.promise;
+    },
+    async () => {
+      events.push("publish");
+      return () => {};
+    },
+    async () => {
+      events.push("authorize");
+      await permission.promise;
+    },
+  );
+  assert.deepEqual(events, ["download", "authorize"]);
+  download.resolve(new ArrayBuffer(4));
+  await tick();
+  assert.equal(audio.sources.length, 0);
+  permission.resolve();
+  await pending;
+  assert.deepEqual(events, ["download", "authorize", "publish"]);
+  player.stop();
+  await assert.rejects(
+    player.play(
+      audio.context,
+      async () => new ArrayBuffer(4),
+      async () => {
+        assert.fail("Denied sound was published");
+      },
+      async () => {
+        throw new Error("Forbidden");
+      },
+    ),
+    /Forbidden/,
+  );
+  assert.equal(audio.sources.length, 1);
+});
+
+test("decoded audio is reused by buffer and context while each play still authorizes", async () => {
+  const player = new SoundPlayer();
+  const audio = audioFixture();
+  const bytes = new ArrayBuffer(4);
+  let decodes = 0,
+    permits = 0;
+  audio.context.decodeAudioData = async () => {
+    decodes++;
+    return {};
+  };
+  const play = (data = bytes) =>
+    player.play(
+      audio.context,
+      async () => data,
+      async () => () => {},
+      async () => {
+        permits++;
+      },
+    );
+  await play();
+  await play();
+  assert.equal(decodes, 1);
+  assert.equal(permits, 2);
+  await play(new ArrayBuffer(4));
+  assert.equal(decodes, 2);
+  const other = audioFixture();
+  other.context.decodeAudioData = audio.context.decodeAudioData;
+  await player.play(
+    other.context,
+    async () => bytes,
+    async () => () => {},
+  );
+  assert.equal(decodes, 3);
+  player.stop();
+});
 
 test("stop during download prevents publication; leaving during publish releases the late track", async () => {
   const player = new SoundPlayer();

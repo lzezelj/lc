@@ -169,6 +169,32 @@ export function ServerSettings({
       <div className="adminToolbar">
         <button
           type="button"
+          onClick={() =>
+            confirm({
+              title:
+                server.soundboardCooldownEnabled === false
+                  ? "Enable soundboard cooldown"
+                  : "Remove soundboard cooldown",
+              description: `${server.soundboardCooldownEnabled === false ? "Restore the one-second delay between sounds" : "Allow sounds without the one-second delay"} for everyone in ${server.name}.`,
+              run: async () => {
+                await adminRequest("/api/admin", "PATCH", {
+                  target: "server",
+                  id: serverId,
+                  action: "soundboard",
+                  soundboardCooldownEnabled:
+                    server.soundboardCooldownEnabled === false,
+                });
+                refresh();
+              },
+            })
+          }
+        >
+          {server.soundboardCooldownEnabled === false
+            ? "Enable soundboard cooldown"
+            : "Remove soundboard cooldown"}
+        </button>
+        <button
+          type="button"
           onClick={() => {
             let name = server.name;
             confirm({

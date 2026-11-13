@@ -232,6 +232,13 @@
       "when": 1794355200000,
       "tag": "0032_admin_dashboard",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794528000000,
+      "tag": "0033_soundboard_cooldown",
+      "breakpoints": true
     }
   ]
 }

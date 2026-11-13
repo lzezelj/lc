@@ -42,27 +42,112 @@ export class SoundCooldown {
 
 // Owns capture independently of microphone mute/gating and of the board dialog.
 export class SoundPlayer {
+  // Encoded buffers are owned by the bounded audio LRU. Weak keys let decoded
+  // audio go with those buffers without retaining another unbounded clip list.
+  private decoded = new WeakMap<
+    AudioContext,
+    WeakMap<ArrayBuffer, Promise<AudioBuffer>>
+  >();
+  private async decode(
+    context: AudioContext,
+    load: () => Promise<ArrayBuffer>,
+  ) {
+    const bytes = await load();
+    let buffers = this.decoded.get(context);
+    if (!buffers) {
+      buffers = new WeakMap();
+      this.decoded.set(context, buffers);
+    }
+    let pending = buffers.get(bytes);
+    if (!pending) {
+      pending = context.decodeAudioData(bytes.slice(0));
+      buffers.set(bytes, pending);
+      void pending.catch(() => buffers.delete(bytes));
+    }
+    return pending;
+  }
   constructor(
     private monitor?: (track: MediaStreamTrack) => () => void,
     private onPlayingChange?: (playing: boolean) => void,
+    private keepReady = false,
   ) {}
+  private output: {
+    context: AudioContext;
+    destination: MediaStreamAudioDestinationNode;
+    track: MediaStreamTrack;
+    pending: Promise<void>;
+    unpublish?: () => void;
+  } | null = null;
+  async preload(context: AudioContext, load: () => Promise<ArrayBuffer>) {
+    await this.decode(context, load);
+  }
+  async prepare(context: AudioContext, publish: PublishSound) {
+    if (!this.keepReady) return;
+    if (
+      this.output?.context === context &&
+      this.output.track.readyState !== "ended"
+    ) {
+      await this.output.pending;
+      return;
+    }
+    if (this.output) this.stop();
+    const destination = context.createMediaStreamDestination();
+    const output = {
+      context,
+      destination,
+      track: destination.stream.getAudioTracks()[0],
+      pending: Promise.resolve(),
+      unpublish: undefined as (() => void) | undefined,
+    };
+    this.output = output;
+    output.pending = (async () => {
+      try {
+        const unpublish = await publish(output.track);
+        if (this.output !== output) unpublish();
+        else output.unpublish = unpublish;
+      } catch (error) {
+        if (this.output === output) this.stop();
+        throw error;
+      }
+    })();
+    await output.pending;
+  }
   private generation = 0;
   private release: (() => void) | null = null;
-  stop() {
+  private stopClip() {
     this.generation++;
     this.release?.();
     this.release = null;
+  }
+  stop() {
+    this.stopClip();
+    const output = this.output;
+    this.output = null;
+    output?.track.stop();
+    output?.unpublish?.();
   }
   async play(
     context: AudioContext,
     load: () => Promise<ArrayBuffer>,
     publish: PublishSound,
+    authorize: () => Promise<void> = async () => {},
   ) {
-    this.stop();
+    if (this.keepReady) this.stopClip();
+    else this.stop();
     const generation = this.generation;
-    const buffer = await context.decodeAudioData((await load()).slice(0));
+    const [buffer] = await Promise.all([
+      this.decode(context, load),
+      authorize(),
+    ]);
     if (generation !== this.generation) return;
-    const destination = context.createMediaStreamDestination();
+    if (this.keepReady) {
+      await this.prepare(context, publish);
+      if (generation !== this.generation || !this.output) return;
+    }
+    const activeGeneration = this.generation;
+    const readyOutput = this.keepReady ? this.output : null;
+    const destination =
+      readyOutput?.destination ?? context.createMediaStreamDestination();
     const track = destination.stream.getAudioTracks()[0];
     const source = context.createBufferSource();
     source.buffer = buffer;
@@ -84,18 +169,20 @@ export class SoundPlayer {
         playing = false;
         this.onPlayingChange?.(false);
       }
-      track.stop();
-      unpublish?.();
+      if (!readyOutput) {
+        track.stop();
+        unpublish?.();
+      }
     };
     this.release = release;
     try {
-      unpublish = await publish(track);
-      if (generation !== this.generation) {
-        unpublish();
+      unpublish = readyOutput ? undefined : await publish(track);
+      if (activeGeneration !== this.generation) {
+        unpublish?.();
         release();
         return;
       }
-      source.onended = () => this.stop();
+      source.onended = () => (this.keepReady ? this.stopClip() : this.stop());
       source.start();
       playing = true;
       this.onPlayingChange?.(true);

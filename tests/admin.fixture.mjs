@@ -57,6 +57,8 @@ window.verifyAdminDashboard = async () => {
         edited = true;
       }
       if (body.target === "server" && body.name) server.name = body.name;
+      if (body.target === "server" && body.action === "soundboard")
+        server.soundboardCooldownEnabled = body.soundboardCooldownEnabled;
       return Response.json({
         id: body.id ?? serverId,
         name: body.name ?? server.name,
@@ -313,6 +315,36 @@ window.verifyAdminDashboard = async () => {
   await until(
     () => host.querySelector(".adminServerSettings"),
     "Server settings did not load",
+  );
+  const beforeCooldown = mutations.length;
+  await click("Remove soundboard cooldown");
+  check(
+    mutations.length === beforeCooldown,
+    "Cooldown changed before confirmation",
+  );
+  await click("Cancel", document.querySelector("dialog"));
+  check(mutations.length === beforeCooldown, "Cancel changed cooldown");
+  await click("Remove soundboard cooldown");
+  await click("Confirm", document.querySelector("dialog"));
+  await until(
+    () => host.textContent.includes("Enable soundboard cooldown"),
+    "Cooldown control did not refresh",
+  );
+  check(
+    mutations.at(-1).action === "soundboard" &&
+      mutations.at(-1).soundboardCooldownEnabled === false &&
+      mutations.at(-1).confirmed === true,
+    "Cooldown removal lacks confirmed policy",
+  );
+  await click("Enable soundboard cooldown");
+  await click("Confirm", document.querySelector("dialog"));
+  await until(
+    () => host.textContent.includes("Remove soundboard cooldown"),
+    "Cooldown did not restore",
+  );
+  check(
+    mutations.at(-1).soundboardCooldownEnabled === true,
+    "Cooldown restoration missing",
   );
   await click("Rename server");
   const beforeRename = mutations.length;

@@ -80,8 +80,13 @@ export async function GET(
       },
     });
   }
+  const [server] = await db
+    .select({ soundboardCooldownEnabled: servers.soundboardCooldownEnabled })
+    .from(servers)
+    .where(eq(servers.id, serverId));
   return NextResponse.json(
     {
+      soundboardCooldownEnabled: server?.soundboardCooldownEnabled !== false,
       sounds: [
         ...(
           await db

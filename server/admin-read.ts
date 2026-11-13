@@ -50,7 +50,7 @@ export async function readAdmin(query: URLSearchParams) {
     case "server":
       if (!serverId)
         return Response.json({ error: "Select a server" }, { status: 400 });
-      statement = sql`SELECT s.id,s.name,s.image,s.created_by AS "ownerId",s.afk_channel_id AS "afkChannelId",s.created_at AS "createdAt",
+      statement = sql`SELECT s.id,s.name,s.image,s.created_by AS "ownerId",s.afk_channel_id AS "afkChannelId",s.soundboard_cooldown_enabled AS "soundboardCooldownEnabled",s.created_at AS "createdAt",
         (SELECT count(*)::int FROM server_members sm WHERE sm.server_id=s.id) AS "memberCount",
         (SELECT count(*)::int FROM channels c WHERE c.server_id=s.id) AS "channelCount",
         (SELECT count(*)::int FROM server_members sm JOIN users u ON u.id=sm.user_id WHERE sm.server_id=s.id AND u.role='demo' AND NOT EXISTS(SELECT 1 FROM server_members other WHERE other.user_id=u.id AND other.server_id<>s.id)) AS "finalDemoCount"

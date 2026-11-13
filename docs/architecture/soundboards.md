@@ -26,7 +26,7 @@ uploads are limited to 2 MiB and 10.01 seconds of 16-bit PCM mono/stereo at
 8–48 kHz. The API bounds the streamed request even without Content-Length and
 validates the RIFF format, chunk sizes, sample alignment and duration independently
 of the extension, MIME label or client. Metadata queries never select audio bytes;
-clip bytes are fetched only on demand through the same membership-protected route.
+clip bytes are fetched for bounded preloading or playback through the same membership-protected route.
 Immutable random clip IDs are cache versions. This bounded first implementation
 keeps audio in existing database backups without adding filesystem volumes or
 object storage. It stores up to 40 MiB of custom audio per server. Compressed
@@ -54,9 +54,29 @@ local. Replacing a file or closing the dialog ignores stale decode results.
 The existing raw-body API, independent server validation, authorization, quotas,
 immutable clip IDs and PostgreSQL storage remain authoritative and unchanged.
 
-The browser loads metadata when opening the board and audio only when selected.
+Opening the board loads metadata and preloads its first six tiles sequentially
+within a 4 MiB budget. Conservative duration-based byte estimates avoid evicting
+earlier tiles. Both public and preview decoders are warmed without playing audio
+or requesting permits. Closing the board or changing servers cancels subsequent
+work; one in-flight download may finish into the bounded cache. Other sounds
+remain available on demand.
 A server-and-version-keyed memory LRU holds at most 24 clips and 4 MiB of encoded
-audio; decoded buffers last only for playback. The call's captured server ID,
+audio. Each player reuses decoded buffers by encoded-buffer identity and audio
+context; weak keys release cache ownership when the bounded encoded LRU evicts
+the clip or the player/context is discarded. Failed decodes can be retried.
+Published playback prepares audio and requests its permit concurrently, then
+waits for both before starting audio. Every play still requests
+a fresh permit, including decoded-cache hits. Stop/replacement generation checks
+discard late results. Preview skips the permit and remains local-only.
+Opening a connected call's board prepares one silent destination track and its
+native/LiveKit publication, including the sender's local monitoring element.
+Consecutive clips replace only the buffer source and reuse that publication.
+Natural completion, board closure and navigation retain readiness. Microphone
+mute, leave, peer replacement and final disconnect release it using the existing
+stop paths. Late publications clean themselves up after teardown. The next
+open/play can prepare a replacement. Idle readiness never sets speaking or the
+musical-note indicator; the clip lifecycle owns those signals.
+The call's captured server ID,
 rather than the viewed workspace, determines the board. Friend calls have no
 server board. The board opens as a dropup directly above the call controls,
 matching the footer width. Its two-column tile grid shows three rows (six sounds)
@@ -106,9 +126,20 @@ remain. Custom leave announcements are removed because the departing sender's
 transport is being closed. Upload permits owners/moderators, removal remains owner-only, and soundboard clips
 cannot be selected across server boundaries.
 
+Migration `0033_soundboard_cooldown` adds a default-enabled per-server cooldown.
+The application owner can remove or restore it for everyone in a selected server
+from Admin dashboard → Servers → Server settings, through a confirmed, audited
+mutation. Metadata exposes `soundboardCooldownEnabled`; the call hook loads it on
+call/server changes, focus and targeted `soundboard-updated` events, canceling stale
+requests. Changes notify only that server's members and do not restart calls.
+The browser defaults to enforcing the delay if policy loading fails. The backend
+reads the current server policy for every permit, so stale clients cannot bypass
+an enabled cooldown. Local preview and the single-active-clip rule are unchanged.
+
 Every published play, including a cache hit, requests
 POST `/api/servers/{serverId}/soundboard/play?clip={id}`. The API rechecks current
-membership and clip/server association, then grants at most one play per account
+membership and clip/server association, then, when the selected server's cooldown
+is enabled, grants at most one play per account
 per second across tabs and servers. HTTP 429 includes Retry-After. The browser
 also guards rapid clicks and disables Play for one second, using call-owned state
 that survives dropup closure/navigation; local Preview is independent. Playback
@@ -139,8 +170,8 @@ Web Audio gain fade from leaking part of a short clip. Nonzero volume reopens
 the same receiver without detaching playback. This also makes Deafen and hidden
 screen-audio gating immediate.
 
-Natural completion, replacement, leaving and call
-changes release the source and publication. Generation checks discard obsolete
+Natural completion and replacement release the clip source. Leaving, mute and
+call changes also release the prepared publication. Generation checks discard obsolete
 downloads/decodes and clean up late publication results. Signaling transports no
 soundboard payloads. The published sound's audio detector combines with microphone
 activity in speaking presence and separately announces a `soundboard` media-state
@@ -182,5 +213,5 @@ roll back the entire schema.
 
 Relevant tests: [soundboard.test.mjs](../../tests/soundboard.test.mjs), [database.test.mjs](../../tests/database.test.mjs), [direct-webrtc.browser.mjs](../../tests/direct-webrtc.browser.mjs).
 
-Run `npm.cmd run test:soundboard` and the relevant database tests. Use `--soundboard` for browser lifecycle behavior; real multi-account LiveKit playback still needs media-service verification.
+Run `npm.cmd run test:soundboard` and the relevant database tests. Use `--soundboard` for browser lifecycle behavior, or `--soundboard-latency` for only the muted startup comparison with real browser decoding and controlled 80 ms download/permit plus 20 ms publication delays. Its three-sample medians compare sequential, concurrent and preloaded/prepared playback, not production network or remote audible latency. Real multi-account LiveKit playback still needs media-service verification.
 See the [test guide](../../tests/README.md) for browser prerequisites and mode details.

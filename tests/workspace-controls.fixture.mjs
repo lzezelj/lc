@@ -88,6 +88,7 @@ import { useWorkspaceActivity } from "./use-workspace-activity.js";
 import { IncomingCallNotice } from "./incoming-call-notice.js";
 import { friendCallRoom, conversationHasCall } from "./call-context.js";
 import { soundWave } from "./soundboard-catalog.js";
+import { SoundPlayer } from "./soundboard-audio.js";
 import { RemoteAudioTrack } from "livekit-client";
 import { applyRemoteAudioVolume } from "./remote-audio-volume.js";
 
@@ -4924,8 +4925,10 @@ async function verifyModeratorControls() {
   }
   try {
     flushSync(() => root.render(h(Members)));
-    const promote = [...host.querySelectorAll("button")].filter(
-      (button) => button.textContent === "Promote to moderator",
+    const promote = [
+      ...host.querySelectorAll(".promotionOption > button"),
+    ].filter(
+      (button) => button.textContent === "Moderator" && !button.disabled,
     );
     check(
       promote.length === 1,
@@ -4952,7 +4955,102 @@ async function verifyModeratorControls() {
   }
 }
 
+async function measureSoundboardStartup() {
+  const context = new AudioContext();
+  const wave = soundWave("celebrate-v1");
+  const bytes = wave.buffer.slice(
+    wave.byteOffset,
+    wave.byteOffset + wave.byteLength,
+  );
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const samples = { sequential: [], parallel: [] };
+  let readyPlayer;
+  try {
+    await context.resume();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      for (const parallel of [false, true]) {
+        let allowed = false,
+          started;
+        const player = new SoundPlayer(undefined, (playing) => {
+          if (playing) started = performance.now();
+        });
+        const authorize = async () => {
+          await delay(80);
+          allowed = true;
+        };
+        const start = performance.now();
+        try {
+          await player.play(
+            context,
+            async () => {
+              await delay(80);
+              return bytes;
+            },
+            async () => {
+              if (!parallel) await authorize();
+              check(allowed, "Latency probe published before permission");
+              await delay(20);
+              return () => {};
+            },
+            parallel ? authorize : undefined,
+          );
+          check(started !== undefined, "Latency probe did not start audio");
+          samples[parallel ? "parallel" : "sequential"].push(started - start);
+        } finally {
+          player.stop();
+        }
+      }
+    }
+    const median = (values) => Math.round([...values].sort((a, b) => a - b)[1]);
+    const sequentialMs = median(samples.sequential),
+      parallelMs = median(samples.parallel);
+    let readyPublications = 0;
+    const readySamples = [];
+    readyPlayer = new SoundPlayer(undefined, undefined, true);
+    await readyPlayer.preload(context, async () => bytes);
+    const publishReady = async () => {
+      readyPublications++;
+      await delay(20);
+      return () => {};
+    };
+    await readyPlayer.prepare(context, publishReady);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const start = performance.now();
+      await readyPlayer.play(
+        context,
+        async () => bytes,
+        publishReady,
+        async () => {
+          await delay(80);
+        },
+      );
+      readySamples.push(performance.now() - start);
+    }
+    check(
+      readyPublications === 1,
+      "Prepared playback republished the audio track",
+    );
+    return {
+      sequentialMs,
+      parallelMs,
+      preloadedReadyMs: median(readySamples),
+      readyPublications,
+      savedMs: sequentialMs - parallelMs,
+      simulatedDownloadMs: 80,
+      simulatedPermitMs: 80,
+      simulatedPublishMs: 20,
+      samplesPerMode: 3,
+    };
+  } finally {
+    readyPlayer?.stop();
+    await context.close();
+  }
+}
+
+window.measureSoundboardStartup = measureSoundboardStartup;
+
 async function verifySoundboard() {
+  const startupLatency = await measureSoundboardStartup();
   const savedPreferences = ["lc.soundboardVolume", "lc.soundboardMuted"].map(
     (key) => [key, localStorage.getItem(key)],
   );
@@ -4960,7 +5058,8 @@ async function verifySoundboard() {
   localStorage.setItem("lc.soundboardMuted", "false");
   await verifyModeratorControls();
   const originalFetch = window.fetch;
-  let publications = 0,
+  let permits = 0,
+    publications = 0,
     previewTrack,
     publishedTrack;
   const speaking = [];
@@ -5000,8 +5099,10 @@ async function verifySoundboard() {
       String(url).startsWith("/api/servers/call-server/soundboard"),
       "The board must use the active call's server",
     );
-    if (String(url).includes("/soundboard/play?"))
+    if (String(url).includes("/soundboard/play?")) {
+      permits++;
       return Response.json({ allowed: true });
+    }
     if (options.method === "POST") {
       check(
         options.body instanceof File && options.body.size > 44,
@@ -5231,7 +5332,7 @@ async function verifySoundboard() {
     )
       await new Promise((resolve) => setTimeout(resolve, 20));
     check(
-      publications === 0 && !speaking.includes(true),
+      publications === 1 && permits === 0 && !speaking.includes(true),
       "Preview must stay local and must not announce speaking",
     );
     const previewAudio = document.querySelector(
@@ -5727,10 +5828,12 @@ async function verifySoundboard() {
       managerHost.remove();
     }
     await new Promise((resolve) => setTimeout(resolve, 1100));
-    const beforeJoin = publications;
+    const beforeJoin = permits;
     await boardActions.playJoinSound("arriving-user", publish);
     check(
-      publications === beforeJoin + 1 && publishedTrack.readyState === "live",
+      permits === beforeJoin + 1 &&
+        publications === 1 &&
+        publishedTrack.readyState === "live",
       "Automatic join must publish through the same live soundboard track path",
     );
   } finally {
@@ -5747,6 +5850,7 @@ async function verifySoundboard() {
       publishedTrack.readyState === "ended",
     "Leaving must stop local and published sound tracks",
   );
+  return { startupLatency };
 }
 window.verifySoundboard = verifySoundboard;
 

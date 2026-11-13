@@ -24,7 +24,9 @@ const messageHistoryOnly = process.argv.includes("--message-history");
 const notificationsOnly = process.argv.includes("--notifications");
 const workspaceLayoutOnly = process.argv.includes("--workspace-layout");
 const videoAttachmentsOnly = process.argv.includes("--video-attachments");
-const soundboardOnly = process.argv.includes("--soundboard");
+const soundboardLatencyOnly = process.argv.includes("--soundboard-latency");
+const soundboardOnly =
+  process.argv.includes("--soundboard") || soundboardLatencyOnly;
 const cameraMirrorOnly = process.argv.includes("--camera-mirror");
 const listOrderOnly = process.argv.includes("--list-order");
 const panelAnimationsOnly = process.argv.includes("--panel-animations");
@@ -66,6 +68,7 @@ const supportedFlags = new Set([
   "--workspace-layout",
   "--video-attachments",
   "--soundboard",
+  "--soundboard-latency",
   "--panel-animations",
 ]);
 if (process.argv.slice(2).some((flag) => !supportedFlags.has(flag)))
@@ -470,6 +473,7 @@ if (navigation || workspaceControls) {
         .replaceAll('"next/link"', '"./admin-link.mock.js"')
         .replaceAll('"../avatar"', '"./avatar.js"')
         .replaceAll('"../settings-modal"', '"./settings-modal.js"')
+        .replaceAll('"../use-search-debounce"', '"./use-search-debounce.js"')
         .replaceAll(
           '"../profile-picture-settings"',
           '"./profile-picture-settings.js"',
@@ -894,7 +898,9 @@ try {
                   : panelAnimationsOnly
                     ? "window.verifyPanelAnimations()"
                     : soundboardOnly
-                      ? "window.verifySoundboard()"
+                      ? soundboardLatencyOnly
+                        ? "window.measureSoundboardStartup()"
+                        : "window.verifySoundboard()"
                       : videoAttachmentsOnly
                         ? "window.verifyVideoAttachments()"
                         : workspaceLayoutOnly

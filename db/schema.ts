@@ -145,6 +145,9 @@ export const servers = pgTable(
       (): AnyPgColumn => channels.id,
       { onDelete: "set null" },
     ),
+    soundboardCooldownEnabled: boolean("soundboard_cooldown_enabled")
+      .default(true)
+      .notNull(),
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),

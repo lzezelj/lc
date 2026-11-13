@@ -512,7 +512,7 @@ test("soundboard preferences survive hook remounts; microphone mute blocks publi
           }
         },
       },
-      "./soundboard-library": {},
+      "./soundboard-library": { useSoundboardRefresh: () => 0 },
       "./sound-manager": {},
       "./server-join-sound": {
         ServerJoinSound: class {
@@ -541,6 +541,7 @@ test("soundboard preferences survive hook remounts; microphone mute blocks publi
         body: { append() {} },
       },
       MediaStream: class {},
+      AbortController,
       setTimeout: () => 1,
       clearTimeout() {},
       fetch: async () => ({ ok: true }),

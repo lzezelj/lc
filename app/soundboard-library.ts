@@ -31,6 +31,29 @@ export type Sound = {
 };
 const cache = new SoundCache();
 
+// Warm visible tiles without churning the existing 4 MiB encoded cache.
+// One in-flight download may finish after cancellation, but cannot start audio.
+export async function preloadSoundAudio(
+  sounds: Sound[],
+  warm: (bytes: ArrayBuffer) => Promise<void>,
+  signal: AbortSignal,
+) {
+  let remaining = 4 * 1024 * 1024;
+  for (const sound of sounds.slice(0, 6)) {
+    if (signal.aborted) return;
+    const upperBytes = 44 + (sound.durationMs ?? 10010) * 192;
+    if (upperBytes > remaining) continue;
+    try {
+      const bytes = await loadSoundAudio(sound.serverId, sound.id);
+      if (signal.aborted) return;
+      remaining -= bytes.byteLength;
+      await warm(bytes);
+    } catch {
+      // Foreground playback retains its own retry and error message.
+    }
+  }
+}
+
 export async function loadSoundAudio(serverId: string, clipId: string) {
   return cache.get(`${serverId}/${clipId}`, async () => {
     const response = await fetch(

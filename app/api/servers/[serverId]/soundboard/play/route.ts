@@ -2,7 +2,11 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "../../../../../../auth";
 import { db } from "../../../../../../db";
-import { serverMembers, serverSounds } from "../../../../../../db/schema";
+import {
+  serverMembers,
+  serverSounds,
+  servers,
+} from "../../../../../../db/schema";
 import { checkRateLimit } from "../../../../../../server/rate-limit";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -35,10 +39,19 @@ export async function POST(
     .where(and(eq(serverSounds.id, clip), eq(serverSounds.serverId, serverId)));
   if (!sound)
     return NextResponse.json({ error: "Sound not found" }, { status: 404 });
-  const limit = checkRateLimit(`soundboard-play:${session.user.id}`, {
-    limit: 1,
-    windowMs: 1000,
-  });
+  const [server] = await db
+    .select({ enabled: servers.soundboardCooldownEnabled })
+    .from(servers)
+    .where(eq(servers.id, serverId));
+  if (!server)
+    return NextResponse.json({ error: "Server not found" }, { status: 404 });
+  const limit =
+    server.enabled === false
+      ? { allowed: true, retryAfterSeconds: 0 }
+      : checkRateLimit(`soundboard-play:${session.user.id}`, {
+          limit: 1,
+          windowMs: 1000,
+        });
   if (!limit.allowed)
     return NextResponse.json(
       { error: "Wait one second before playing another sound" },

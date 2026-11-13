@@ -32,7 +32,17 @@ export async function mutateAdminServer(
     throw new AdminError("Server name must be 1–60 characters");
   if (body.createAfk !== undefined && typeof body.createAfk !== "boolean")
     throw new AdminError("Invalid AFK option");
-  if (method === "PATCH" && action !== "rename" && action !== "afk")
+  if (
+    action === "soundboard" &&
+    typeof body.soundboardCooldownEnabled !== "boolean"
+  )
+    throw new AdminError("Invalid soundboard cooldown option");
+  if (
+    method === "PATCH" &&
+    action !== "rename" &&
+    action !== "afk" &&
+    action !== "soundboard"
+  )
     throw new AdminError("Unknown server action");
   if (
     action === "afk" &&
@@ -87,6 +97,10 @@ export async function mutateAdminServer(
     if (!server) throw new AdminError("Server not found", 404);
     if (action === "rename") {
       await tx.execute(sql`UPDATE servers SET name=${name} WHERE id=${id}`);
+    } else if (action === "soundboard") {
+      await tx.execute(
+        sql`UPDATE servers SET soundboard_cooldown_enabled=${body.soundboardCooldownEnabled} WHERE id=${id}`,
+      );
     } else {
       let afkChannelId = body.afkChannelId;
       if (body.createAfk === true) {
@@ -122,7 +136,11 @@ export async function mutateAdminServer(
     await auditAdmin(
       tx,
       actorId,
-      action === "rename" ? "server.rename" : "server.afk",
+      action === "rename"
+        ? "server.rename"
+        : action === "soundboard"
+          ? "server.soundboard"
+          : "server.afk",
       "server",
       id,
       { serverId: id },
@@ -130,7 +148,19 @@ export async function mutateAdminServer(
     return { ...server, ...(action === "rename" ? { name } : {}) };
   });
   if (method === "POST") await notifyUser(actorId, { type: "access-changed" });
-  else await notifyServer(id);
+  else if (action === "soundboard") {
+    const members = await db.execute(
+      sql`SELECT user_id AS id FROM server_members WHERE server_id=${id}`,
+    );
+    await Promise.allSettled(
+      members.rows.map((member) =>
+        notifyUser(String(member.id), {
+          type: "soundboard-updated",
+          serverId: id,
+        }),
+      ),
+    );
+  } else await notifyServer(id);
   return Response.json(row, { status: method === "POST" ? 201 : 200 });
 }
 

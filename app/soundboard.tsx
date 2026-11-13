@@ -12,6 +12,7 @@ import {
 
 import {
   loadSoundAudio,
+  preloadSoundAudio,
   useSoundboardRefresh,
   type Sound,
 } from "./soundboard-library";
@@ -111,8 +112,34 @@ export function useSoundboard(
     }
   }, [options.microphoneMuted]);
   const cooldown = useRef(new SoundCooldown());
+  const cooldownPolicy = useRef({ serverId, enabled: true });
+  const policyVersion = useSoundboardRefresh(serverId);
   const cooldownTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [playBlocked, setPlayBlocked] = useState(false);
+  useEffect(() => {
+    const abort = new AbortController();
+    cooldownPolicy.current = { serverId, enabled: true };
+    if (serverId)
+      void fetch(`/api/servers/${serverId}/soundboard`, {
+        signal: abort.signal,
+        cache: "no-store",
+      })
+        .then(async (response) => {
+          if (!response.ok) return;
+          const data = await response.json();
+          if (abort.signal.aborted) return;
+          cooldownPolicy.current = {
+            serverId,
+            enabled: data.soundboardCooldownEnabled !== false,
+          };
+          if (data.soundboardCooldownEnabled === false) {
+            if (cooldownTimer.current) clearTimeout(cooldownTimer.current);
+            setPlayBlocked(false);
+          }
+        })
+        .catch(() => {});
+    return () => abort.abort();
+  }, [serverId, policyVersion]);
   useEffect(
     () => () => {
       if (cooldownTimer.current) clearTimeout(cooldownTimer.current);
@@ -120,6 +147,11 @@ export function useSoundboard(
     [],
   );
   function reservePlay() {
+    if (
+      cooldownPolicy.current.serverId === serverId &&
+      !cooldownPolicy.current.enabled
+    )
+      return true;
     if (!cooldown.current.take()) return false;
     setPlayBlocked(true);
     cooldownTimer.current = setTimeout(() => setPlayBlocked(false), 1000);
@@ -134,6 +166,7 @@ export function useSoundboard(
       (track) =>
         monitorVoiceActivity(track, (speaking) => activity.current?.(speaking)),
       (playing) => playback.current?.(playing),
+      true,
     );
     const localPreview = new SoundPlayer();
     player.current = current;
@@ -201,14 +234,6 @@ export function useSoundboard(
       () => loadSoundAudio(serverId, clipId),
       async (track) => {
         if (audition) return listen(track, true);
-        const permit = await fetch(
-          `/api/servers/${serverId}/soundboard/play?clip=${encodeURIComponent(clipId)}`,
-          { method: "POST" },
-        );
-        if (!permit.ok) {
-          const result = await permit.json();
-          throw new Error(result.error ?? "The sound could not be played");
-        }
         if (microphoneMuted.current) return () => {};
         const unpublish = await publish(track);
         if (microphoneMuted.current) {
@@ -226,9 +251,52 @@ export function useSoundboard(
           throw error;
         }
       },
+      async () => {
+        if (audition) return;
+        const permit = await fetch(
+          `/api/servers/${serverId}/soundboard/play?clip=${encodeURIComponent(clipId)}`,
+          { method: "POST" },
+        );
+        if (!permit.ok) {
+          const result = await permit.json();
+          throw new Error(result.error ?? "The sound could not be played");
+        }
+      },
     );
   }
+  const preload = useCallback(async (sounds: Sound[], signal: AbortSignal) => {
+    const current = player.current;
+    if (!current) return;
+    const context = prepareVoiceActivity();
+    await preloadSoundAudio(
+      sounds,
+      async (bytes) => {
+        if (signal.aborted || current !== player.current) return;
+        await current.preload(context, async () => bytes);
+        await preview.current?.preload(context, async () => bytes);
+      },
+      signal,
+    );
+  }, []);
   return {
+    prepare: async (publish: PublishSound) => {
+      if (!serverId || microphoneMuted.current || !player.current) return;
+      const current = player.current;
+      await current.prepare(prepareVoiceActivity(), async (track) => {
+        const unpublish = await publish(track);
+        try {
+          const unlisten = await listen(track, false);
+          return () => {
+            unlisten();
+            unpublish();
+          };
+        } catch (error) {
+          unpublish();
+          throw error;
+        }
+      });
+    },
+    preload,
     playSound,
     playJoinSound: (userId?: string, publish?: PublishSound) => {
       const currentServer = joinServer.current;
@@ -284,7 +352,11 @@ export function SoundboardButton({
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
   const panelId = useId();
-  const { open, setOpen } = board;
+  const { open, setOpen, preload } = board;
+  useEffect(() => {
+    if (disabled || !serverId || !open) return;
+    void board.prepare(publish).catch(() => {});
+  }, [disabled, serverId, open, board, publish]);
   useEffect(() => {
     if (!open || uploadOpen) return;
     const close = (event: PointerEvent) => {
@@ -327,6 +399,7 @@ export function SoundboardButton({
           if (!(items.canUpload ?? items.canManage)) setUploadOpen(false);
           setError("");
           setLoadedFor(serverId);
+          void preload(items.sounds, abort.signal);
         }
       })
       .catch((error: Error) => {
@@ -338,7 +411,7 @@ export function SoundboardButton({
         }
       });
     return () => abort.abort();
-  }, [board.open, serverId, permissionVersion]);
+  }, [board.open, serverId, permissionVersion, preload]);
   async function play(sound: Sound, audition = false) {
     if (sound.serverId !== serverId) return;
     setPlaying(true);

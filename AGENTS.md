@@ -20,6 +20,20 @@ LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQ
 - All new visible features and controls, including buttons, dropdown menus, search bars, panels and dialogs, must follow the website's existing visual style. Reuse shared components, CSS variables, typography, spacing, colors, borders, focus states and interaction patterns; extend the shared styles when an equivalent control needs a change.
 - Debounce searches that trigger API requests by 500 ms after the last input change using the shared helpers in `app/use-search-debounce.ts`. Keep searches over already-loaded data (including emojis, members, channels and sounds) immediate. Keep typing responsive, cancel obsolete timers/requests, and ignore stale API responses. Explicit Search/Enter submission and pagination remain immediate; preserve existing minimum query lengths and backend authorization/rate limits.
 
+## Model recommendations
+
+- Assess the appropriate model and reasoning effort at the start of every user prompt. The usual default for this project is GPT-6.1 Sol at Light or Medium.
+- If a different model or effort would materially help, tell the user before starting substantive work. Name the recommended model and effort and briefly explain why. Let the user choose whether to switch; never change the model, reasoning settings, or model defaults yourself. When recommending a switch, wait for the user's decision before doing the substantive task unless they have explicitly asked you to continue with the current model.
+- If the current model and effort are suitable, proceed without a repetitive model notice. If the active model or effort is not exposed, do not claim to know it; phrase any useful recommendation conditionally.
+- Use these guidelines as starting points, not guarantees of quality:
+  - GPT-6.1 Sol Light: straightforward UI/CSS edits, simple questions, and clearly scoped fixes.
+  - GPT-6.1 Sol Medium: routine feature implementation and debugging.
+  - GPT-6.1 Sol High or GPT-6 Astra Light/Medium: difficult WebRTC/signaling bugs, consequential authentication or database design, architecture decisions, and problems that resist simpler attempts. Astra is the option for the most demanding reasoning and judgment; Sol balances capability and cost.
+  - GPT-6.1 Terra: tasks centered on screenshots, visual understanding, computer use, clear writing, and scoped code fixes.
+  - GPT-6 Luna: small, explicit, repeatable tasks such as extraction, summaries, or focused edits where speed and cost matter.
+  - GPT-6 Sol is an earlier Sol version; prefer considering GPT-6.1 Sol when both are available.
+- Higher reasoning effort generally uses more time and tokens and can help with planning, analysis, and checking. Effort labels are not directly comparable across model families or generations. Recheck current official guidance when model availability or capabilities matter; reference: https://learn.chatgpt.com/docs/models.
+
 ## Product rules
 
 - Users receive access at the server level and can access every channel in that server.
