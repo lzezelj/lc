@@ -20,6 +20,7 @@ const messageComposerOnly = process.argv.includes("--message-composer");
 const participantAudioOnly = process.argv.includes("--participant-audio");
 const serverInvitationsOnly = process.argv.includes("--server-invitations");
 const chatToolsOnly = process.argv.includes("--chat-tools");
+const messageHistoryOnly = process.argv.includes("--message-history");
 const notificationsOnly = process.argv.includes("--notifications");
 const workspaceLayoutOnly = process.argv.includes("--workspace-layout");
 const videoAttachmentsOnly = process.argv.includes("--video-attachments");
@@ -37,6 +38,7 @@ const workspaceControls =
   participantAudioOnly ||
   serverInvitationsOnly ||
   chatToolsOnly ||
+  messageHistoryOnly ||
   notificationsOnly ||
   workspaceLayoutOnly ||
   videoAttachmentsOnly ||
@@ -59,6 +61,7 @@ const supportedFlags = new Set([
   "--participant-audio",
   "--server-invitations",
   "--chat-tools",
+  "--message-history",
   "--notifications",
   "--workspace-layout",
   "--video-attachments",
@@ -284,6 +287,8 @@ if (navigation || workspaceControls) {
     for (const name of [
       "settings-modal",
       "settings-section",
+      "switch-control",
+      "segmented-control",
       "information-hint",
       "promotion-menu",
       "legal-frame",
@@ -412,9 +417,12 @@ if (navigation || workspaceControls) {
           "image-zoom",
           "member-order",
           "message-sequences",
+          "message-timestamp",
+          "use-message-day",
           "use-message-reactions",
           "use-typing",
           "use-conversation-draft",
+          "use-search-debounce",
           "use-server-invitations",
           "profile-crop",
           "mentions",
@@ -852,6 +860,7 @@ try {
     participantAudioOnly ||
     serverInvitationsOnly ||
     chatToolsOnly ||
+    messageHistoryOnly ||
     notificationsOnly ||
     workspaceLayoutOnly ||
     videoAttachmentsOnly ||
@@ -874,29 +883,31 @@ try {
       const checked = await call(
         "Runtime.evaluate",
         {
-          expression: adminOnly
-            ? "window.verifyAdminDashboard()"
-            : listOrderOnly
-              ? "window.verifyOrderAndDeviceSettings()"
-              : cameraMirrorOnly
-                ? "window.verifyCameraMirror()"
-                : panelAnimationsOnly
-                  ? "window.verifyPanelAnimations()"
-                  : soundboardOnly
-                    ? "window.verifySoundboard()"
-                    : videoAttachmentsOnly
-                      ? "window.verifyVideoAttachments()"
-                      : workspaceLayoutOnly
-                        ? "window.verifyWorkspaceLayout()"
-                        : serverInvitationsOnly
-                          ? "window.verifyServerInvitations()"
-                          : participantAudioOnly
-                            ? "window.verifyParticipantAudio()"
-                            : notificationsOnly
-                              ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
-                              : chatToolsOnly
-                                ? "window.verifyChatTools()"
-                                : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
+          expression: messageHistoryOnly
+            ? "(async () => { await window.verifyChatHistory(); return {headers: true, groupedTimes: true, navigation: true}; })()"
+            : adminOnly
+              ? "window.verifyAdminDashboard()"
+              : listOrderOnly
+                ? "window.verifyOrderAndDeviceSettings()"
+                : cameraMirrorOnly
+                  ? "window.verifyCameraMirror()"
+                  : panelAnimationsOnly
+                    ? "window.verifyPanelAnimations()"
+                    : soundboardOnly
+                      ? "window.verifySoundboard()"
+                      : videoAttachmentsOnly
+                        ? "window.verifyVideoAttachments()"
+                        : workspaceLayoutOnly
+                          ? "window.verifyWorkspaceLayout()"
+                          : serverInvitationsOnly
+                            ? "window.verifyServerInvitations()"
+                            : participantAudioOnly
+                              ? "window.verifyParticipantAudio()"
+                              : notificationsOnly
+                                ? "(async () => { await window.verifyWorkspaceActivity(); return window.verifyNotifications(); })()"
+                                : chatToolsOnly
+                                  ? "window.verifyChatTools()"
+                                  : "(async () => ({composer: await window.verifyMessageComposer(), attachments: await window.verifyAttachmentPreview()}))()",
           awaitPromise: true,
           userGesture: true,
           returnByValue: true,

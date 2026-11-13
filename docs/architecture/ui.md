@@ -8,6 +8,20 @@ Workspace restoration/caching, profiles, settings, help, loading, panels, resizi
 
 ### Visual rules and consistency
 
+`SwitchControl` is the shared immediate on/off preference control: a controlled
+native checkbox with `role="switch"`, explicit On/Off text, a whole-row label,
+keyboard focus and disabled/reduced-motion support. Mirror camera, echo cancellation
+and local sound-preview-on-trim use it without changing persistence or media flow.
+Raw microphone mode keeps echo cancellation disabled and visually off while
+preserving the saved preference. Submitted choices (AFK creation, invite recipients,
+destructive-action options) remain checkboxes with clickable labels.
+
+`SegmentedControl` shares the visible Servers/People and Text/Voice button groups;
+the selected button uses `aria-pressed` and the existing neutral filled treatment.
+Device lists and notification mute durations remain selects, and promotion remains
+an action menu with ownership confirmation. No speculative radio or Select all
+features were introduced.
+
 `app/globals.css` owns the workspace/settings typography and interaction tokens.
 Use `--font-ui` rather than introducing another font stack. The type scale is:
 
@@ -23,8 +37,14 @@ Use `--font-ui` rather than introducing another font stack. The type scale is:
 Body line height uses `--leading-body` (1.5), headings `--leading-heading` (1.3).
 Names remain neutral white; accent colors identify actions, links and focus.
 Status colors and destructive controls retain their semantic colors. Shared
-control/card/dialog radii, focus color and 4/8/12/16/24px spacing tokens define
+control/card/dialog radii (8/12/16px), focus color and 4/8/12/16/20/24px spacing tokens define
 equivalent controls. DeviceSelection owns equivalent device field styling.
+Selection rows and standard settings fields target a 44px minimum height. Nested
+cards/fields use smaller radii than their outer panels. `--surface-*` tokens govern
+panel, input, hover and raised surfaces; two-layer `--shadow-popover` and
+`--shadow-dialog` shadows are limited to floating surfaces. Message cards retain
+their existing hover behavior without individual drop shadows. Rail geometry,
+palette, message-action placement and overall workspace layout are unchanged.
 
 Selection uses neutral `--selection-background` for channels and an outline for
 server icons, plus `aria-current`, without left-edge stripes. Generic unread
@@ -64,15 +84,18 @@ danger actions retain their semantic colors.
 
 ### Local design playground
 
-In development only, the root layout mounts `app/design-playground.tsx` beside
-the application. Design lab opens a nonmodal native popover with live color and
+The session provider mounts `app/design-playground.tsx` beside the application
+only for the authenticated application owner, in development and production.
+Server ownership does not grant access. The panel unmounts when the owner session
+ends; it exposes no backend operations or persistent changes.
+Design lab opens a nonmodal native popover with live color and
 message spacing controls. Preview CSS uses shared color variables plus scoped
 overrides for workspace surfaces, messages and dialog corners; fixed-color controls
 are not fully themed. It does not change navigation, media ownership or APIs.
 Changes live in component memory, survive closing the panel, and disappear on reload.
 Preview can be disabled for comparison; Reset removes all overrides. Export CSS
 downloads the current experiment for review and manual integration, not an automatic
-project update. The playground is not mounted in production builds.
+project update. Members, demo accounts and signed-out visitors do not receive the panel.
 
 New visible features reuse the website's existing components, CSS variables,
 typography, spacing, colors, borders and interaction states. Buttons, dropdowns,
@@ -80,7 +103,7 @@ search fields, panels and dialogs follow equivalent existing controls, including
 shared button hover animation, keyboard focus, disabled and reduced-motion states.
 
 Account and server settings share a scoped content rhythm in `app/globals.css`:
-14px body/controls, 12px supporting text, 23px page headings, 16px subsection
+14px body/controls, 12px supporting text, 24px page headings, 16px subsection
 headings, and common section gaps, form fields, card padding and surfaces.
 Notifications, personal messages, media, channels, sounds, members and invitations
 reuse these rules while retaining their control-specific responsive layouts.

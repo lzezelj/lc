@@ -17,9 +17,13 @@ actions, reactions and attachments. Pagination recalculates groups over loaded
 history. No message data is merged or changed; grouping has no time cutoff.
 Boundary behavior is covered by `tests/message-sequences.test.mjs`.
 
-Consecutive same-author rows in the same actual minute hide repeated visible
-timestamps while retaining their accessible time text and edit indicators.
-Different dates/minutes, authors and unread/group boundaries retain timestamps.
+Group headers show timestamps beside the name; continuation rows reveal timestamps
+on hover or keyboard focus. Touch-only devices keep continuation times visible.
+Timestamps remain accessible and edit indicators stay visible. Received headers
+read avatar/name/time; sent headers mirror this to time/name/avatar. Dates use the
+viewer’s local calendar and locale: time today, Yesterday at time, otherwise date
+at time. One shared minute/focus clock updates day labels across midnight without
+per-message timers. Missing legacy timestamps retain their existing time label.
 Reply references use a compact quoted block with neutral author text; composing
 a reply shows an excerpt beside the existing cancel control. Backend reply and
 deletion contracts are unchanged.

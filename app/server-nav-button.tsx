@@ -1,5 +1,5 @@
 "use client";
-import { useId, type MouseEvent } from "react";
+import { useId, useState, type MouseEvent } from "react";
 import { preload } from "react-dom";
 import { isLocalPicture, type PictureCache } from "./picture-cache";
 import { UnreadIndicator } from "./unread-indicator";
@@ -43,6 +43,7 @@ export function ServerNavButton({
   drag?: DragReorder;
 }) {
   const tooltip = useId();
+  const [tooltipDismissed, setTooltipDismissed] = useState(false);
   const position = (element: HTMLElement) => {
     const top = element.getBoundingClientRect().top + 23;
     const estimatedHeight = Math.min(
@@ -57,9 +58,14 @@ export function ServerNavButton({
   return (
     <div
       className="serverButtonWrap"
+      data-tooltip-dismissed={tooltipDismissed || undefined}
       {...drag?.itemProps(server.id)}
+      onPointerLeave={() => setTooltipDismissed(false)}
       onPointerEnter={(event) => position(event.currentTarget)}
-      onFocus={(event) => position(event.currentTarget)}
+      onFocus={(event) => {
+        setTooltipDismissed(false);
+        position(event.currentTarget);
+      }}
     >
       <button
         {...drag?.iconProps(server.id)}
@@ -67,7 +73,11 @@ export function ServerNavButton({
         aria-current={active ? "page" : undefined}
         aria-label={`${server.name}${unread ? ", unread messages" : ""}${mentions ? `, ${mentions} unread mentions` : ""}${voiceUsers.length ? `, ${voiceUsers.length} in voice` : ""}`}
         aria-describedby={drag ? `${tooltip} ${drag.instructionsId}` : tooltip}
-        onClick={onClick}
+        onClick={(event) => {
+          setTooltipDismissed(true);
+          if (event.detail > 0) event.currentTarget.blur();
+          onClick();
+        }}
         onContextMenu={onContextMenu}
       >
         <Avatar

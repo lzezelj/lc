@@ -42,8 +42,8 @@
   --text-secondary: var(--muted);
   --danger-text: #ff899c;
   --danger-surface: #85283b22;
-  --control-radius: 7px;
-  --card-radius: 10px;
+  --control-radius: 8px;
+  --card-radius: 12px;
   --dialog-radius: 16px;
   --focus-ring: var(--accent);
   --space-1: 4px;
@@ -51,6 +51,14 @@
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
+  --space-section: 20px;
+  --control-height: 44px;
+  --surface-panel: var(--panel);
+  --surface-control: color-mix(in srgb, var(--panel), var(--deep) 15%);
+  --surface-hover: color-mix(in srgb, var(--panel), var(--ink) 6%);
+  --surface-raised: color-mix(in srgb, var(--panel), var(--ink) 3%);
+  --shadow-popover: 0 2px 6px #0003, 0 12px 28px #0005;
+  --shadow-dialog: 0 4px 12px #0004, 0 24px 64px #0006;
   color-scheme: dark;
 }
 
@@ -536,6 +544,7 @@ button.friendRow:hover, button.friendRow:focus-visible { background: #202e46; bo
   opacity: 1;
 }
 .serverTooltip strong, .serverTooltipPerson { display: block; }
+.serverButtonWrap[data-tooltip-dismissed] .serverTooltip { opacity: 0; }
 .serverTooltipPerson { margin-top: 4px; color: #a8d8bf; font-size: 12px; font-weight: 400; }
 .serverTooltip { max-height: calc(100dvh - 16px); overflow: hidden; }
 .serverUnreadDot { position: absolute; top: 1px; right: 1px; width: 12px; height: 12px; border: 2px solid #101420; border-radius: 50%; background: #f5f7fb; }
@@ -1796,6 +1805,10 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .chatLog > article { width: 100%; max-width: 100%; }
 .chatLog > article.messageOwn { margin-left: 0; margin-right: 0; text-align: right; }
 .messageOwn > .messageHeader { justify-content: flex-end; }
+.messageHeader > time { order: 1; flex-shrink: 0; }
+.messageHeader > .messageEdited { order: 2; }
+.messageOwn > .messageHeader > .profileLink { order: 2; flex-direction: row-reverse; }
+.messageOwn > .messageHeader > .messageEdited { order: 0; }
 .chatLog > article.messageOther { margin-left: 0; margin-right: auto; text-align: left; }
 .loadOlderMessages { display: block; margin: 0 auto 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: var(--panel); }
 
@@ -1806,7 +1819,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   border: 1px solid #30384c;
   border-radius: 9px;
   background: #171c29;
-  box-shadow: 0 2px 7px rgb(0 0 0 / 14%);
+  box-shadow: none;
   cursor: context-menu;
   transition:
     border-color 140ms ease,
@@ -1822,7 +1835,7 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .chat article:hover:not(:has(.replyPreview:hover)) {
   border-color: #71829d;
   background: #22283a;
-  box-shadow: 0 7px 18px rgb(0 0 0 / 24%);
+  box-shadow: none;
   transform: translateY(-1px);
 }
 
@@ -1872,7 +1885,9 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .replyDraftText { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; margin-top: 4px; }
 .replyingTo > span { min-width: 0; }
 .chat .messageHeader .profileLink { color: var(--ink); }
-.chat article[data-repeated-time] .messageHeader > time { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
+.chat article[data-message-continuation] .messageHeader > time { opacity: 0; }
+.chat article[data-message-continuation]:is(:hover, :focus-within) .messageHeader > time { opacity: 1; }
+@media (hover: none) { .chat article[data-message-continuation] .messageHeader > time { opacity: 1; } }
 
 .chat time {
   padding-left: 7px;
@@ -3103,9 +3118,20 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
   padding-bottom: 4px; box-shadow: none;
 }
 :root .chat .chatLog > article[data-message-continuation] {
+  position: relative;
   margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0;
   padding-top: 4px; box-shadow: none;
 }
+.chat article[data-message-continuation] {
+  display: grid; grid-template-columns: minmax(0, max-content) auto;
+  justify-content: start; align-items: baseline; column-gap: 8px;
+}
+.chat article[data-message-continuation] > * { grid-column: 1 / -1; }
+.chat article[data-message-continuation] > p { grid-column: 1; grid-row: 1; }
+.chat article[data-message-continuation] > .messageHeader { grid-column: 2; grid-row: 1; }
+.chat article.messageOwn[data-message-continuation] { grid-template-columns: auto minmax(0, max-content); justify-content: end; }
+.chat article.messageOwn[data-message-continuation] > p { grid-column: 2; }
+.chat article.messageOwn[data-message-continuation] > .messageHeader { grid-column: 1; }
 .chat article[data-message-continuation] .messageHeader .profileLink {
   position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%);
 }
@@ -3116,9 +3142,9 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 
 /* Shared settings page rhythm and typography across account and server sections. */
 .settingsWorkspace .settingsContent {
-  --settings-gap: 20px;
-  --settings-card-padding: 16px;
-  --settings-card-radius: 9px;
+  --settings-gap: var(--space-section);
+  --settings-card-padding: var(--space-4);
+  --settings-card-radius: var(--card-radius);
   display: flex; flex-direction: column; gap: var(--settings-gap);
   font-family: inherit; font-size: 14px; line-height: 1.5;
 }
@@ -3208,6 +3234,8 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .chat time, .messageEdited, .profileActions small, .contentEmptyState p { color: var(--text-secondary); }
 .contentEmptyState p { font-size: var(--text-body); line-height: var(--leading-body); }
 .workspaceButton.active { border-radius: 17px; outline: 2px solid var(--selection-indicator); outline-offset: 2px; }
+.serverButtonWrap > .workspaceButton:focus { outline: none; }
+.serverButtonWrap > .workspaceButton:is(.active, :focus-visible) { outline: 2px solid var(--selection-indicator); outline-offset: 2px; }
 .channel.active { background: var(--selection-background); color: var(--text-primary); }
 .channel .channelUnread { font-weight: var(--weight-label); color: var(--text-primary); }
 .conversationUnreadBadge { background: var(--mention-background); color: #fff; font-size: var(--text-badge); font-weight: var(--weight-heading); }
@@ -3227,3 +3255,47 @@ button.friendProfileCard:hover { background: #20283a; border-color: #657299; }
 .promotionMenu button:focus-visible, .informationHint:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .informationHintOverlay { font-family: var(--font-ui); font-size: var(--text-meta); line-height: var(--leading-body); }
 .settingsModal button.danger, .friendshipActions button.danger { color: var(--danger-text); }
+
+/* Immediate preferences use switches; submitted selections remain checkboxes. */
+.switchRow, .settingsContent .switchRow, .deviceDropdown .switchRow, .soundUploadForm .switchRow {
+  display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: var(--control-height);
+  margin: 0; padding: var(--space-2) 0; color: var(--text-primary); font-size: var(--text-body);
+  line-height: var(--leading-body); cursor: pointer;
+}
+.switchLabel { flex: 1; min-width: 0; }
+.switchState { color: var(--text-secondary); font-size: var(--text-meta); }
+.switchRow input[type="checkbox"], .soundUploadForm .switchRow input[type="checkbox"] {
+  appearance: none; position: relative; flex: 0 0 36px; width: 36px; height: 22px; margin: 0; padding: 0;
+  border: 1px solid #6b768b; border-radius: 999px; background: var(--selection-background); cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+.switchRow input[type="checkbox"]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink); transition: translate 140ms ease; }
+.switchRow input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.switchRow input[type="checkbox"]:checked::after { translate: 14px 0; background: var(--accent-ink); }
+.switchRow input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
+.switchRow:has(input:disabled) { cursor: not-allowed; }
+.switchRow input[type="checkbox"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.settingsContent .segmentedControl, .segmentedControl { display: flex; gap: var(--space-1); width: fit-content; max-width: 100%; margin: 0; border: 0; }
+.settingsContent .segmentedControl button, .segmentedControl button { flex: 1; min-width: 0; min-height: var(--control-height); padding: var(--space-2) var(--space-4); border: 0; border-radius: var(--control-radius); font-size: var(--text-body); font-weight: var(--weight-label); white-space: nowrap; }
+.settingsContent .segmentedControl button:not(.active) { background: transparent; color: var(--text-secondary); }
+.settingsContent .segmentedControl button:not(.active):hover { background: var(--surface-hover); color: var(--text-primary); }
+.settingsContent { padding: 32px; background: var(--surface-raised); }
+.settingsContent :is(input:not([type="checkbox"]):not([type="range"]):not([type="file"]), select),
+.modalCard :is(input:not([type="checkbox"]):not([type="range"]):not([type="file"]), select) { min-height: var(--control-height); background: var(--surface-control); }
+.settingsSectionPanel, .settingsSubpanel, .channelTypePanel { gap: var(--space-section); padding: var(--space-4); border-radius: var(--card-radius); background: var(--surface-panel); }
+.settingsSectionPanel :is(.notificationPreference, .managedChannel, .settingsMemberRow, .soundManagerRow), .settingsProfileEditor .settingsNameForm input { border-radius: var(--control-radius); }
+.settingsNameForm { gap: var(--space-section); }
+.settingsContent label { gap: var(--space-2); }
+.settingsModal, .modalCard { box-shadow: var(--shadow-dialog); }
+.accountMenuDropdown, .deviceDropdown, .promotionMenu, .notificationMuteMenu, .informationHintOverlay { box-shadow: var(--shadow-popover); }
+.settingsActions > button { padding: var(--space-3) var(--space-4); border-radius: var(--control-radius); }
+.modalCard { gap: var(--space-section); padding: var(--space-5); border-radius: var(--dialog-radius); }
+.modalCard h2, .helpStep h3 { font-size: var(--text-page); font-weight: var(--weight-heading); line-height: var(--leading-heading); }
+.modalCard label { gap: var(--space-2); font-size: var(--text-body); }
+.modalCard .modalActions button { padding: var(--space-2) var(--space-4); border-radius: var(--control-radius); min-height: var(--control-height); }
+.serverTooltip, .helpStep .helpLocation { font-size: var(--text-body); line-height: var(--leading-body); }
+.inlineCheckbox, .settingsContent .inlineCheckbox, .modalCard .inlineCheckbox, .permanentDeleteOption, .helpPreference { min-height: var(--control-height); cursor: pointer; }
+.inlineCheckbox:has(input:disabled), .permanentDeleteOption:has(input:disabled), .friendPickerRow:has(input:disabled) { cursor: not-allowed; }
+.inlineCheckbox:has(input:focus-visible), .permanentDeleteOption:has(input:focus-visible), .friendPickerRow:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--control-radius); }
+@media (max-width: 650px) { .settingsContent { padding: var(--space-5) var(--space-4); } }
+@media (prefers-reduced-motion: reduce) { .switchRow input[type="checkbox"], .switchRow input[type="checkbox"]::after { transition: none; } }

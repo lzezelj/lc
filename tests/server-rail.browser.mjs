@@ -36,7 +36,7 @@ try {
   document.querySelector('#result').textContent = JSON.stringify(result);
   </script>`,
   );
-  for (const size of ["1000,900", "1000,400", "400,400"]) {
+  for (const size of ["1000,900", "1000,420", "400,420", "1000,350"]) {
     const browser = spawnSync(
       process.env.LC_TEST_BROWSER ??
         "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -56,10 +56,18 @@ try {
     assert.ok(match, browser.stderr.slice(-500));
     const dimensions = JSON.parse(match[1]);
     console.log(dimensions);
-    assert.ok(
-      dimensions.normal.scroll <= dimensions.normal.height,
-      `Two server icons must fit at ${dimensions.viewport}`,
-    );
+    // The approved 8px margin above Create server makes the two-server
+    // layout 306px high. Smaller viewports must scroll rather than clip.
+    if (dimensions.viewport[1] >= 306)
+      assert.ok(
+        dimensions.normal.scroll <= dimensions.normal.height,
+        `Two server icons must fit at ${dimensions.viewport}`,
+      );
+    else
+      assert.ok(
+        dimensions.normal.scroll > dimensions.normal.height,
+        "Very short rails retain scrolling",
+      );
     assert.ok(
       dimensions.crowded.scroll > dimensions.crowded.height,
       "Long server lists must remain scrollable",

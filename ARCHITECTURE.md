@@ -92,6 +92,9 @@ The client provider tree also owns account-scoped, in-memory profile/server pict
 resources shared by Avatar and startup preloading; see
 [UI caching](docs/architecture/ui.md#cached-navigation-and-loading) for lifetime,
 authorization and memory limits.
+Shared SwitchControl and SegmentedControl components own equivalent settings
+selection controls; their visual and interaction contracts live in the
+[UI guide](docs/architecture/ui.md#visual-rules-and-consistency).
 
 Next.js provides the React interface and server-side API routes. Its server
 responsibilities include:

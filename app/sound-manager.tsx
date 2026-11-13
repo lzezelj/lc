@@ -1,6 +1,7 @@
 "use client";
 import { SettingsSection } from "./settings-section";
 import { InformationHint } from "./information-hint";
+import { SwitchControl } from "./switch-control";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsModal } from "./settings-modal";
@@ -538,17 +539,15 @@ export function SoundUploadDialog({
                 </div>
               ))}
             </div>
-            <label className="soundPreviewToggle">
-              <input
-                type="checkbox"
-                checked={previewOnStartChange}
-                onChange={(event) => {
-                  setPreviewOnStartChange(event.target.checked);
-                  setPreviewRequest(0);
-                }}
-              />
-              Preview after moving start
-            </label>
+            <SwitchControl
+              className="soundPreviewToggle"
+              label="Preview after moving start"
+              checked={previewOnStartChange}
+              onChange={(checked) => {
+                setPreviewOnStartChange(checked);
+                setPreviewRequest(0);
+              }}
+            />
             {selection?.error && <p role="alert">{selection.error}</p>}
           </fieldset>
         )}

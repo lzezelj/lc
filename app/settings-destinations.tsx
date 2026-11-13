@@ -1,4 +1,5 @@
 "use client";
+import { SegmentedControl } from "./segmented-control";
 
 export function SettingsDestinations({
   category,
@@ -15,23 +16,15 @@ export function SettingsDestinations({
 }) {
   return (
     <div className="settingsDestinations">
-      <div
-        className="friendTabs"
-        role="group"
-        aria-label={`${label} categories`}
-      >
-        {(["server", "direct"] as const).map((kind) => (
-          <button
-            key={kind}
-            type="button"
-            aria-pressed={category === kind}
-            className={category === kind ? "active" : ""}
-            onClick={() => onCategory(kind)}
-          >
-            {kind === "server" ? "Servers" : "People"}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        label={`${label} categories`}
+        value={category}
+        onChange={onCategory}
+        options={[
+          { value: "server", label: "Servers" },
+          { value: "direct", label: "People" },
+        ]}
+      />
       <input
         type="search"
         aria-label={`Search ${label.toLowerCase()} ${category === "server" ? "servers" : "people"}`}

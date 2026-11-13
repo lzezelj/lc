@@ -1,35 +1,68 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  messageSequences,
-  repeatedMessageTimes,
-} from "../app/message-sequences.ts";
+import { messageSequences } from "../app/message-sequences.ts";
+import { formatMessageTimestamp } from "../app/message-timestamp.ts";
 
-test("repeat times collapse only within an author group and the same actual minute", () => {
-  const start = Date.parse("2026-11-12T10:00:01Z");
-  const rows = [
-    message("1", "a", { sentAt: start }),
-    message("2", "a", { sentAt: start + 1000 }),
-    message("3", "a", { sentAt: start + 60000 }),
-    message("4", "b", { sentAt: start + 60000 }),
-  ];
-  const repeated = repeatedMessageTimes(rows);
-  assert.equal(repeated.get("1"), false);
-  assert.equal(repeated.get("2"), true);
-  assert.equal(repeated.get("3"), false);
-  assert.equal(repeated.get("4"), false);
-  assert.equal(repeatedMessageTimes(rows, "2").get("2"), false);
+test("message timestamps use time today, Yesterday at time, or date at time", () => {
+  const now = new Date(2026, 10, 13, 12).getTime();
   assert.equal(
-    repeatedMessageTimes([message("1"), message("2")]).get("2"),
-    false,
+    formatMessageTimestamp(
+      new Date(2026, 10, 13, 8, 5).getTime(),
+      now,
+      "en-GB",
+    ),
+    "08:05",
   );
   assert.equal(
-    repeatedMessageTimes([
-      rows[0],
-      message("2", "a", { sentAt: start + 86400000 }),
-    ]).get("2"),
-    false,
+    formatMessageTimestamp(
+      new Date(2026, 10, 12, 8, 5).getTime(),
+      now,
+      "en-GB",
+    ),
+    "Yesterday at 08:05",
   );
+  assert.equal(
+    formatMessageTimestamp(
+      new Date(2026, 10, 11, 8, 5).getTime(),
+      now,
+      "en-GB",
+    ),
+    "11/11/2026 at 08:05",
+  );
+  assert.equal(formatMessageTimestamp(NaN, now, "en-GB"), "");
+  assert.equal(
+    formatMessageTimestamp(
+      new Date(2026, 10, 13, 18, 5).getTime(),
+      now,
+      "en-US",
+    ),
+    "18:05",
+  );
+  assert.equal(
+    formatMessageTimestamp(
+      new Date(2026, 10, 13, 0, 5).getTime(),
+      now,
+      "en-US",
+    ),
+    "00:05",
+  );
+});
+
+test("Yesterday uses local calendar days across year, month and daylight-saving boundaries", () => {
+  for (const [year, month, day] of [
+    [2027, 0, 1],
+    [2026, 3, 1],
+    [2026, 2, 30],
+  ]) {
+    assert.equal(
+      formatMessageTimestamp(
+        new Date(year, month, day - 1, 23, 59).getTime(),
+        new Date(year, month, day, 0, 1).getTime(),
+        "en-GB",
+      ),
+      "Yesterday at 23:59",
+    );
+  }
 });
 
 const message = (id, authorId = "a", extra = {}) => ({

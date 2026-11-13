@@ -36,25 +36,3 @@ export function messageSequences(
     ]),
   );
 }
-
-export function repeatedMessageTimes(
-  messages: SequenceMessage[],
-  firstUnreadId?: string | null,
-) {
-  const groups = messageSequences(messages, firstUnreadId);
-  return new Map(
-    messages.map((message, index) => {
-      const previous = messages[index - 1];
-      return [
-        message.id,
-        Boolean(
-          groups.get(message.id)?.continuation &&
-          Number.isFinite(message.sentAt) &&
-          Number.isFinite(previous?.sentAt) &&
-          Math.floor(message.sentAt! / 60000) ===
-            Math.floor(previous.sentAt! / 60000),
-        ),
-      ];
-    }),
-  );
-}

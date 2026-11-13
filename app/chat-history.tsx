@@ -1,6 +1,6 @@
 "use client";
 import { LoadingSkeleton } from "./loading-skeleton";
-import { messageSequences, repeatedMessageTimes } from "./message-sequences";
+import { messageSequences } from "./message-sequences";
 
 import {
   Children,
@@ -64,7 +64,6 @@ export function ChatHistory({
   }, [onLatestVisibilityChange]);
   const tones = new Map<string, number>();
   const sequences = messageSequences(messages, firstUnreadId);
-  const repeatedTimes = repeatedMessageTimes(messages, firstUnreadId);
   let tone = 0;
   messages.forEach((message, index) => {
     if (index > 0 && message.authorId !== messages[index - 1].authorId)
@@ -271,7 +270,6 @@ export function ChatHistory({
                   "data-message-tone"?: number;
                   "data-message-continuation"?: boolean;
                   "data-message-continues"?: boolean;
-                  "data-repeated-time"?: boolean;
                 }>(child)
               )
                 return child;
@@ -280,7 +278,6 @@ export function ChatHistory({
                 id && tones.has(id)
                   ? cloneElement(child, {
                       "data-message-tone": tones.get(id),
-                      "data-repeated-time": repeatedTimes.get(id) || undefined,
                       "data-message-continuation":
                         sequences.get(id)?.continuation || undefined,
                       "data-message-continues":

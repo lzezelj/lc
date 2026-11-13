@@ -7199,6 +7199,7 @@ export default function Home() {
                           edited={!!message.editedAt && !message.deleted}
                           editedByAdmin={message.editedByAdmin}
                           time={message.time}
+                          sentAt={message.sentAt}
                           onProfile={() =>
                             setProfileUser({
                               id: message.authorId,
@@ -7591,13 +7592,13 @@ export default function Home() {
                   />
                 </label>
                 <button type="submit">Create server</button>
-                <label>
+                <label className="inlineCheckbox">
                   <input
                     type="checkbox"
                     checked={createAfk}
                     onChange={(event) => setCreateAfk(event.target.checked)}
                   />
-                  Create an AFK voice channel (15 minutes)
+                  <span>Create an AFK voice channel (15 minutes)</span>
                 </label>
               </form>
             </>
@@ -8224,6 +8225,7 @@ export default function Home() {
                     edited={!!message.editedAt && !message.deleted}
                     editedByAdmin={message.editedByAdmin}
                     time={message.time}
+                    sentAt={message.sentAt}
                     onProfile={() =>
                       setProfileUser({
                         id: message.authorId,
@@ -8382,8 +8384,11 @@ export default function Home() {
                   {member.id === session.user.id ? " (You)" : ""}
                 </strong>
                 <small>
-                  {statusLabels[userStatuses[member.id] ?? "offline"]} ·{" "}
-                  {member.role}
+                  {!onlineUserIds.includes(member.id) ||
+                  userStatuses[member.id] === "invisible"
+                    ? "Offline"
+                    : statusLabels[userStatuses[member.id] ?? "online"]}{" "}
+                  · {member.role}
                 </small>
               </span>
             </button>

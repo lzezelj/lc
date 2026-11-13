@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { SwitchControl } from "./switch-control";
 
 export function readMirror() {
   try {
@@ -25,22 +26,17 @@ export function CameraMirrorControl() {
   const mirrored = useCameraMirror();
   return (
     <div className="deviceSelection deviceToggleSettings">
-      <label className="rnnoiseToggle cameraMirrorControl">
-        <input
-          type="checkbox"
-          checked={mirrored}
-          onChange={(event) => {
-            try {
-              localStorage.setItem(
-                "lc.cameraMirror",
-                String(event.target.checked),
-              );
-            } catch {}
-            window.dispatchEvent(new Event("lc-camera-mirror"));
-          }}
-        />
-        <span>Mirror camera</span>
-      </label>
+      <SwitchControl
+        label="Mirror camera"
+        className="rnnoiseToggle cameraMirrorControl"
+        checked={mirrored}
+        onChange={(checked) => {
+          try {
+            localStorage.setItem("lc.cameraMirror", String(checked));
+          } catch {}
+          window.dispatchEvent(new Event("lc-camera-mirror"));
+        }}
+      />
     </div>
   );
 }

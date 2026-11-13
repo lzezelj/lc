@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { InformationHint } from "./information-hint";
+import { SwitchControl } from "./switch-control";
 import {
   readMicrophoneMode,
   saveMicrophoneMode,
@@ -60,17 +61,17 @@ export function EchoCancellationToggle() {
     };
   }, []);
   return (
-    <label className="rnnoiseToggle">
-      <input
-        type="checkbox"
-        checked={mode !== "raw" && enabled}
-        disabled={mode === "raw"}
-        onChange={(event) => saveEchoCancellationEnabled(event.target.checked)}
-      />
-      <span className="settingsFieldLabel">
-        Echo cancellation{" "}
-        <InformationHint text="Reduces speaker sound returning through your microphone. Try disabling it if it clips speech. Unavailable in Raw mode." />
-      </span>
-    </label>
+    <SwitchControl
+      className="rnnoiseToggle"
+      checked={mode !== "raw" && enabled}
+      disabled={mode === "raw"}
+      onChange={saveEchoCancellationEnabled}
+      label={
+        <span className="settingsFieldLabel">
+          Echo cancellation{" "}
+          <InformationHint text="Reduces speaker sound returning through your microphone. Try disabling it if it clips speech. Unavailable in Raw mode." />
+        </span>
+      }
+    />
   );
 }

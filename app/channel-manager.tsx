@@ -4,6 +4,7 @@ import { useState } from "react";
 import { SettingsNameForm } from "./settings-modal";
 import { useDragReorder, ReorderStatus } from "./drag-reorder";
 import { InformationHint } from "./information-hint";
+import { SegmentedControl } from "./segmented-control";
 import type { DropPlacement } from "../lib/list-order";
 
 type ManagedChannel = {
@@ -56,19 +57,15 @@ export function ChannelManager({
     <div className="channelManager">
       <ReorderStatus drag={drag} />
       <div className="settingsDestinations">
-        <div className="friendTabs" role="group" aria-label="Channel types">
-          {(["text", "voice"] as const).map((kind) => (
-            <button
-              key={kind}
-              type="button"
-              aria-pressed={category === kind}
-              className={category === kind ? "active" : ""}
-              onClick={() => setCategory(kind)}
-            >
-              {kind === "text" ? "Text" : "Voice"}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          label="Channel types"
+          value={category}
+          onChange={setCategory}
+          options={[
+            { value: "text", label: "Text" },
+            { value: "voice", label: "Voice" },
+          ]}
+        />
       </div>
       <label>
         Search channels

@@ -24,6 +24,7 @@ import { useConversationDraft } from "./use-conversation-draft.js";
 import { Avatar } from "./avatar.js";
 import { CameraMirrorProcessor } from "./camera-processing.js";
 import { CameraMirrorControl } from "./camera-mirror.js";
+import { EchoCancellationToggle } from "./microphone-processing.js";
 import { StatusAvatar } from "./status-avatar.js";
 import { LocallyMuted } from "./locally-muted.js";
 import { ProfilePictureSettings } from "./profile-picture-settings.js";
@@ -1463,10 +1464,14 @@ window.verifyCameraMirror = async () => {
       '.cameraMirrorControl input[type="checkbox"]',
     );
     check(
-      control && !control.checked,
+      control && !control.checked && control.getAttribute("role") === "switch",
       "Mirror camera uses the shared unchecked on/off control",
     );
-    control.click();
+    check(
+      control.closest("label").getBoundingClientRect().height >= 44,
+      "Switch rows provide a 44px click target",
+    );
+    control.closest("label").click();
     await waitForColor(true);
     check(
       source.getContext("2d").getImageData(24, 24, 1, 1).data[0] === 255,
@@ -1474,6 +1479,46 @@ window.verifyCameraMirror = async () => {
     );
     control.click();
     await waitForColor(false);
+    const oldMode = localStorage.getItem("lc.microphoneMode"),
+      oldEcho = localStorage.getItem("lc.echoCancellation");
+    try {
+      localStorage.setItem("lc.microphoneMode", "raw");
+      localStorage.setItem("lc.echoCancellation", "on");
+      flushSync(() => root.render(h(EchoCancellationToggle)));
+      let echo = host.querySelector('input[role="switch"]');
+      check(
+        echo.disabled && !echo.checked,
+        "Raw mode disables echo cancellation without changing the saved setting",
+      );
+      echo.closest("label").click();
+      check(
+        localStorage.getItem("lc.echoCancellation") === "on",
+        "Clicking a disabled switch row does not persist a change",
+      );
+      localStorage.setItem("lc.microphoneMode", "browser");
+      window.dispatchEvent(new Event("lc-microphone-processing-change"));
+      await wait();
+      echo = host.querySelector('input[role="switch"]');
+      check(
+        !echo.disabled && echo.checked,
+        "Leaving Raw mode restores the saved echo preference",
+      );
+      echo.closest("label").click();
+      await wait();
+      check(
+        localStorage.getItem("lc.echoCancellation") === "off" && !echo.checked,
+        "Echo switch changes apply immediately through the row label",
+      );
+    } finally {
+      for (const [key, value] of [
+        ["lc.microphoneMode", oldMode],
+        ["lc.echoCancellation", oldEcho],
+      ]) {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      }
+      window.dispatchEvent(new Event("lc-microphone-processing-change"));
+    }
     flushSync(() =>
       root.render(
         h(
@@ -8111,6 +8156,28 @@ window.verifyChatHistory = async () => {
   await wait();
   const outgoing = container.querySelector("article.messageOwn");
   const incomingRows = [...container.querySelectorAll("article.messageOther")];
+  const outgoingHeader = outgoing.querySelector(".messageHeader");
+  const ownTime = outgoingHeader.querySelector("time").getBoundingClientRect();
+  const ownName = outgoingHeader
+    .querySelector(".messageAuthorName")
+    .getBoundingClientRect();
+  const ownAvatar = outgoingHeader
+    .querySelector(".userAvatar")
+    .getBoundingClientRect();
+  check(
+    ownTime.right <= ownName.left && ownName.right <= ownAvatar.left,
+    "Sent headers must read time, display name, avatar",
+  );
+  const incomingHeader = incomingRows[0].querySelector(".messageHeader");
+  check(
+    incomingHeader.querySelector(".userAvatar").getBoundingClientRect().right <=
+      incomingHeader.querySelector(".messageAuthorName").getBoundingClientRect()
+        .left &&
+      incomingHeader.querySelector(".messageAuthorName").getBoundingClientRect()
+        .right <=
+        incomingHeader.querySelector("time").getBoundingClientRect().left,
+    "Received headers must read avatar, display name, time",
+  );
   check(
     incomingRows.every(
       (row) => row.dataset.messageTone === incomingRows[0].dataset.messageTone,
@@ -8139,6 +8206,18 @@ window.verifyChatHistory = async () => {
   );
   window.historyTestActions.append("actor");
   await wait();
+  const continuation = container.querySelectorAll("article.messageOwn")[1];
+  const continuationTime = continuation.querySelector("time");
+  check(
+    getComputedStyle(continuationTime).opacity ===
+      (matchMedia("(hover: none)").matches ? "1" : "0"),
+    "Continuation times stay hidden until interaction on hover-capable devices",
+  );
+  continuation.querySelector(".profileLink").focus({ preventScroll: true });
+  check(
+    getComputedStyle(continuationTime).opacity === "1",
+    "Keyboard focus reveals the continuation timestamp",
+  );
   check(
     container.querySelectorAll("article.messageOwn")[1].dataset.messageTone ===
       outgoing.dataset.messageTone,
