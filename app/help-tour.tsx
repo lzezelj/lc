@@ -10,7 +10,7 @@ const stepTargets: HelpTarget[] = [
   {
     selectors: [".workspaceLogo", ".friendSearchForm", ".friendsSidebar"],
     fallbacks: [".panelControls > button:first-child"],
-    hint: "On a narrow screen, Show servers reveals the LC button and server rail.",
+    hint: "On a narrow screen, Show servers reveals the LZR button and server rail.",
   },
   {
     selectors: [
@@ -70,14 +70,14 @@ const stepTargets: HelpTarget[] = [
 
 export const helpSteps = [
   {
-    title: "Welcome to LC",
+    title: "Welcome to LZRelay",
     location: "Your workspace",
-    text: "LC brings server chats, direct messages and voice calls together. This short introduction shows where the main controls live. Use Next to continue, or Skip to leave the tour.",
+    text: "LZRelay brings server chats, direct messages and voice calls together. This short introduction shows where the main controls live. Use Next to continue, or Skip to leave the tour.",
   },
   {
     title: "Messages and friends",
-    location: "LC button → Messages",
-    text: "Click LC at the top of the server rail to open Messages. Message someone who shares a server with you, or continue an existing conversation. Friend requests are optional for messaging; calls require an accepted friendship.",
+    location: "LZR button → Messages",
+    text: "Click LZR at the top of the server rail to open Messages. Message someone who shares a server with you, or continue an existing conversation. Friend requests are optional for messaging; calls require an accepted friendship.",
   },
   {
     title: "Servers and channels",
@@ -112,7 +112,7 @@ export const helpSteps = [
   {
     title: "Attachments and mentions",
     location: "Conversation → attachment button or @",
-    text: "Use the attachment button beside the message box or drag files into it to send images and PDFs in channels and direct messages. Check image previews before sending. Click a sent image to preview it inside LC, or use its download icon to save the file. In server chats, type @ to choose another member or type their handle to mention them.",
+    text: "Use the attachment button beside the message box or drag files into it to send images and PDFs in channels and direct messages. Check image previews before sending. Click a sent image to preview it inside LZRelay, or use its download icon to save the file. In server chats, type @ to choose another member or type their handle to mention them.",
   },
   {
     title: "Unread messages and notifications",
@@ -122,7 +122,7 @@ export const helpSteps = [
   {
     title: "You're ready",
     location: "Help, Licenses, Privacy and Impressum → workspace footer",
-    text: "Choose Help & introduction in the workspace footer to reopen this guide. Licenses includes the full RNNoise and WebAssembly integration notices; legal documents open inside LC without ending your call. Choose below whether this tour should appear automatically next time.",
+    text: "Choose Help & introduction in the workspace footer to reopen this guide. Licenses includes the full RNNoise and WebAssembly integration notices; legal documents open inside LZRelay without ending your call. Choose below whether this tour should appear automatically next time.",
   },
 ];
 
@@ -200,7 +200,7 @@ export function HelpTour({
   const item = helpSteps[step];
   return (
     <SettingsModal
-      title="LC introduction"
+      title="LZRelay introduction"
       className="helpTour"
       movable
       layers={
@@ -241,7 +241,7 @@ export function HelpTour({
           </h3>
           <p>
             You can reopen it anytime with Help & introduction in the workspace
-            footer. Should LC show it again next time?
+            footer. Should LZRelay show it again next time?
           </p>
         </div>
       )}

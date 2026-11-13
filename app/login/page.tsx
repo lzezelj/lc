@@ -7,12 +7,14 @@ export default function LoginPage() {
   return (
     <main className="loginPage">
       <section className="loginCard">
-        <div className="workspaceLogo">LC</div>
+        <div className="workspaceLogo" aria-label="LZRelay">
+          LZR
+        </div>
         <span className="workInProgress">Work in progress</span>
-        <h1>Welcome to LC</h1>
+        <h1>Welcome to LZRelay</h1>
         <p>
-          LC is an active portfolio project and may change while it is being
-          developed.
+          LZRelay is an active portfolio project and may change while it is
+          being developed.
         </p>
         <p>
           Access is restricted to Google accounts allowed by the server owner.

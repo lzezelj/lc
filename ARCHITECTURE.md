@@ -1,6 +1,6 @@
-# LC architecture
+# LZRelay architecture
 
-LC is a self-hosted, invitation-only communication application built as a
+LZRelay is a self-hosted, invitation-only communication application built as a
 portfolio project. It supports persistent text chat, direct two-person WebRTC
 calls, and multi-person calls through a LiveKit selective forwarding unit
 (SFU).
@@ -29,6 +29,9 @@ see [LEARNING_GUIDE.md](LEARNING_GUIDE.md).
 - Keep the database, application ports, and internal service credentials off
   the public network.
 
+The public name is LZRelay; compact brand badges use LZR. Existing `lc` database,
+Compose, browser-storage and operational identifiers are retained for compatibility.
+
 ## High-level topology
 
 ```mermaid
@@ -41,7 +44,7 @@ flowchart TB
   postgres[(PostgreSQL)]
   livekit[LiveKit SFU]
 
-  browser -->|HTTPS: lzezelj.com| cloudflare
+  browser -->|HTTPS: lc.lzezelj.com| cloudflare
   browser -->|WSS: signal.lzezelj.com| cloudflare
   cloudflare -->|HTTPS| caddy
   caddy -->|HTTP on Docker network| app

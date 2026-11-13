@@ -98,7 +98,7 @@ export function AdminDashboard() {
     return (
       <main className="adminDenied">
         <h1>Access denied</h1>
-        <Link href="/">Return to LC</Link>
+        <Link href="/">Return to LZRelay</Link>
       </main>
     );
   const userLink = (row: AdminRow) =>
@@ -114,7 +114,7 @@ export function AdminDashboard() {
           target="_blank"
           rel="noopener noreferrer"
         >
-          LC
+          LZR
         </a>
         <div>
           <h1>Administration</h1>

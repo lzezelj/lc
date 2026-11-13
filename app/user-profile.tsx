@@ -45,7 +45,7 @@ export function UserProfile({
       onClose={onClose}
     >
       <div className="profileBanner" aria-hidden="true">
-        <span>LC</span>
+        <span>LZR</span>
       </div>
       <div className="profileDetails">
         <Avatar name={user.name} image={user.image} className="profileAvatar" />

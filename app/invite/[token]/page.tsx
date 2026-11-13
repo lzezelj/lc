@@ -11,7 +11,7 @@ export default function InvitePage() {
   }, [token]);
   return (
     <main className="loginPage">
-      <p>Opening your LC invitation...</p>
+      <p>Opening your LZRelay invitation...</p>
     </main>
   );
 }

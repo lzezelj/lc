@@ -1,6 +1,6 @@
-# LC project instructions
+# LZRelay project instructions
 
-LC is a private Discord-inspired portfolio project built with Next.js, PostgreSQL, Drizzle, WebRTC, LiveKit, and an authenticated WebSocket signaling service.
+LZRelay is a private Discord-inspired portfolio project built with Next.js, PostgreSQL, Drizzle, WebRTC, LiveKit, and an authenticated WebSocket signaling service.
 
 ## Working style
 

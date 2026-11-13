@@ -5,7 +5,7 @@ import { getLegalDetails } from "../legal-details";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Privacy | LC",
+  title: "Privacy | LZRelay",
 };
 
 export default function PrivacyPage() {
@@ -15,7 +15,7 @@ export default function PrivacyPage() {
     <main className="legalPage">
       <article className="legalDocument">
         <Link className="legalBack" href="/">
-          ← Back to LC
+          ← Back to LZRelay
         </Link>
         <h1>Privacy notice</h1>
         <p className="legalUpdated">Last updated: 26 October 2026</p>
@@ -36,11 +36,11 @@ export default function PrivacyPage() {
         </section>
 
         <section>
-          <h2>2. What LC is</h2>
+          <h2>2. What LZRelay is</h2>
           <p>
-            LC is a private, invitation-only portfolio and demonstration project
-            for text, voice, and video communication. It is not a public social
-            network and is not intended for children.
+            LZRelay is a private, invitation-only portfolio and demonstration
+            project for text, voice, and video communication. It is not a public
+            social network and is not intended for children.
           </p>
         </section>
 
@@ -66,8 +66,8 @@ export default function PrivacyPage() {
             <li>
               <strong>Voice and video data:</strong> microphone, camera, and
               screen-sharing media are processed only when enabled by the user
-              to provide a call. LC does not intentionally record or store call
-              media.
+              to provide a call. LZRelay does not intentionally record or store
+              call media.
             </li>
             <li>
               <strong>Connection and security data:</strong> IP addresses,
@@ -85,7 +85,7 @@ export default function PrivacyPage() {
             connection. The other participant can therefore receive network
             connection information, potentially including an IP address. Group
             calls are routed through the self-hosted LiveKit media server on the
-            LC infrastructure. Signaling data is exchanged to establish and
+            LZRelay infrastructure. Signaling data is exchanged to establish and
             maintain calls. Browser permission is requested before microphone,
             camera, or screen access.
           </p>
@@ -139,12 +139,12 @@ export default function PrivacyPage() {
         <section>
           <h2>7. Cookies and local device storage</h2>
           <p>
-            LC uses authentication/session information and browser storage only
-            where needed to sign users in, protect accounts, maintain the
-            requested service, or remember functional device choices. LC does
-            not use advertising or analytics trackers. These technologies are
-            treated as strictly necessary for the requested service under § 25
-            (2) TDDDG.
+            LZRelay uses authentication/session information and browser storage
+            only where needed to sign users in, protect accounts, maintain the
+            requested service, or remember functional device choices. LZRelay
+            does not use advertising or analytics trackers. These technologies
+            are treated as strictly necessary for the requested service under §
+            25 (2) TDDDG.
           </p>
         </section>
 
@@ -183,8 +183,8 @@ export default function PrivacyPage() {
         <section>
           <h2>10. Automated decisions</h2>
           <p>
-            LC does not use automated decision-making or profiling within the
-            meaning of Article 22 GDPR.
+            LZRelay does not use automated decision-making or profiling within
+            the meaning of Article 22 GDPR.
           </p>
         </section>
 

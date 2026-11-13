@@ -167,7 +167,7 @@ test("actual call notice renders local Answer/Decline controls only in the corre
   );
 });
 
-test("LC badge/title count only direct activity; server mentions stay on their server", () => {
+test("LZRelay badge/title count only direct activity; server mentions stay on their server", () => {
   const unreadDirectMessages = { alice: 4 };
   const base = {
     incomingFriendRequestCount: 2,
@@ -191,12 +191,15 @@ test("LC badge/title count only direct activity; server mentions stay on their s
       vm.runInNewContext(declarations.get("unreadServerIds"), values).size,
       notificationsEnabled ? 1 : 0,
     );
-    const document = { title: "LC" };
+    const document = { title: "LZRelay" };
     const effect = effects.find((source) =>
       source.includes("document.title ="),
     );
     vm.runInNewContext(`(${effect})()`, { ...values, document });
-    assert.equal(document.title, notificationsEnabled ? "(4) LC" : "LC");
+    assert.equal(
+      document.title,
+      notificationsEnabled ? "(4) LZRelay" : "LZRelay",
+    );
   }
   assert.deepEqual(unreadDirectMessages, { alice: 4 });
 });

@@ -5,7 +5,7 @@ import { getLegalDetails } from "../legal-details";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Impressum | LC",
+  title: "Impressum | LZRelay",
 };
 
 export default function ImpressumPage() {
@@ -15,7 +15,7 @@ export default function ImpressumPage() {
     <main className="legalPage">
       <article className="legalDocument">
         <Link className="legalBack" href="/">
-          ← Back to LC
+          ← Back to LZRelay
         </Link>
         <h1>Impressum</h1>
         <p>Information pursuant to § 5 DDG and § 18 MStV.</p>
@@ -44,8 +44,9 @@ export default function ImpressumPage() {
           <h2>Content responsibility</h2>
           <p>
             Responsible for the content of this service: {legal.name}, at the
-            address stated above. LC is a private portfolio and demonstration
-            project and does not provide journalistic-editorial content.
+            address stated above. LZRelay is a private portfolio and
+            demonstration project and does not provide journalistic-editorial
+            content.
           </p>
         </section>
 

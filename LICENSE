@@ -1,0 +1,82 @@
+LZRelay Personal Use License
+Version 1.0 - 13 November 2026
+
+Copyright (c) 2026 Lovro Žeželj
+All rights reserved except as expressly granted below or required by law.
+
+1. Scope
+
+This license applies to the original LZRelay source code, documentation and
+assets to the extent that Lovro Žeželj holds the rights to license them
+(the Software). It covers both unmodified and privately modified versions.
+It does not claim rights in material that is not protected by applicable law.
+
+Third-party software, dependencies, fonts and other separately licensed
+materials remain governed by their respective licenses. Their copyright
+notices and license terms must be preserved. This license does not restrict
+rights granted directly by those third-party licenses. User messages,
+uploads and other user content are not licensed under this document.
+
+2. Permitted personal use
+
+You may, without payment or separate permission:
+
+  a. Use an owner-operated hosted instance for personal communication with
+     friends, subject to the operator granting access.
+  b. Download, inspect, build, install, run and make private backup copies of
+     the Software for your own personal, noncommercial use.
+  c. Self-host an instance exclusively for yourself and your personal friends.
+  d. Modify the Software privately for those permitted uses.
+  e. Deliver the browser client assets needed by your invited friends to use
+     your permitted private instance. Those friends may use and retain the
+     client copies needed for that purpose, but may not redistribute them.
+
+A private instance must be limited to invited personal friends rather than
+offered to the public. Paying your own infrastructure costs does not by itself
+make an otherwise permitted private instance commercial.
+
+3. Uses requiring prior written permission
+
+The following require prior written permission from Lovro Žeželj:
+
+  a. Any commercial or business use, including a business using the Software
+     internally, even without selling access or making a direct profit.
+  b. Selling, renting, licensing or otherwise monetizing the Software or
+     access to an instance, including paid hosting and advertising-supported
+     services.
+  c. Including the Software or portions of it in paid client deliverables or
+     in products or services supplied as part of a business.
+  d. Redistributing the source code, modified versions, builds, packages or
+     container images, including through public forks or download mirrors,
+     except for the limited browser delivery expressly allowed in section 2.
+  e. Operating a publicly accessible instance for people beyond your personal
+     friends, even if access is free.
+
+Permission requests may be sent to lovro.zezelj@gmail.com. Permission must
+expressly identify the use being authorized; silence is not permission.
+
+4. Notices and reserved rights
+
+Keep this license and applicable copyright and third-party notices with your
+copies and private modifications. No right to sublicense the Software is
+granted. No trademark rights are granted, and you must not imply that your
+modified version or hosted instance is endorsed by the project owner.
+
+This is a custom personal-use license, not an open-source license. Public
+source visibility alone does not grant additional usage or redistribution
+rights. Any rights provided independently by mandatory law or applicable
+platform terms remain unaffected.
+
+5. Service, maintenance and mandatory law
+
+This license does not promise hosted access, continuous availability,
+maintenance, updates, support or particular functionality. It does not
+exclude or limit any warranty, remedy or liability that cannot lawfully be
+excluded or limited. Mandatory legal rights remain unaffected.
+
+6. Compliance
+
+The permissions in this license apply only while you comply with its terms.
+If you use the Software outside those permissions, stop the unauthorized
+activity and obtain written permission before continuing it. Nothing in this
+license limits rights or remedies available under applicable law.

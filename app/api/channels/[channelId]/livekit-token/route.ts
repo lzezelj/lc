@@ -109,7 +109,7 @@ export async function POST(
 
   const token = new AccessToken(apiKey, apiSecret, {
     identity: `${session.user.id}:${sessionId}`,
-    name: session.user.name ?? "LC user",
+    name: session.user.name ?? "LZRelay user",
     ttl: "30s",
   });
   const voicePolicies = await readVoicePolicies(channel.serverId);

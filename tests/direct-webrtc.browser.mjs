@@ -165,7 +165,7 @@ if (workspaceLayoutOnly || adminOnly) {
     response.end(
       request.url === "/"
         ? "<!doctype html><title>Workspace layout check</title>"
-        : '<!doctype html><a href="/"><span>Back to LC</span></a>',
+        : '<!doctype html><a href="/"><span>Back to LZRelay</span></a>',
     );
   });
   await new Promise((resolve) => noiseServer.listen(0, "127.0.0.1", resolve));

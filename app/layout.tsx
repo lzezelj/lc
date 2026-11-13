@@ -3,7 +3,7 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "LC",
+  title: "LZRelay",
   description: "A self-hosted real-time chat prototype.",
 };
 

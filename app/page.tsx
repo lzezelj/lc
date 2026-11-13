@@ -1495,10 +1495,10 @@ export default function Home() {
   useEffect(() => {
     document.title =
       notificationsEnabled && unreadMessageCount
-        ? `(${unreadMessageCount}) LC`
-        : "LC";
+        ? `(${unreadMessageCount}) LZRelay`
+        : "LZRelay";
     return () => {
-      document.title = "LC";
+      document.title = "LZRelay";
     };
   }, [unreadMessageCount, notificationsEnabled]);
 
@@ -5165,7 +5165,7 @@ export default function Home() {
     legalDocument === "impressum"
       ? "Impressum"
       : legalDocument === "licenses"
-        ? "Third-party licenses"
+        ? "Licenses"
         : "Privacy notice";
   const legalOverlay = legalDocument && (
     <div
@@ -5654,7 +5654,7 @@ export default function Home() {
             {userSettingsSection === "media" && (
               <SettingsSection
                 title="Voice & video"
-                hint="Choose your devices and test your audio and camera. Grant browser access so LC can show device names and use your saved choices when you join."
+                hint="Choose your devices and test your audio and camera. Grant browser access so LZRelay can show device names and use your saved choices when you join."
               >
                 {mediaSettingsContent}
               </SettingsSection>
@@ -6336,7 +6336,7 @@ export default function Home() {
     return (
       <main className="loginPage appLoadingPage">
         <span className="loadingSpinner" />
-        <span>Loading LC...</span>
+        <span>Loading LZRelay...</span>
       </main>
     );
   }
@@ -6625,7 +6625,7 @@ export default function Home() {
                   "This permanently removes the deleted-message placeholder. Existing replies will remain, without a link to this message. This cannot be undone."
                 ) : (
                   <>
-                    By default, LC erases the content but keeps a{" "}
+                    By default, LZRelay erases the content but keeps a{" "}
                     <em>Deleted message</em> placeholder so existing replies
                     still make sense.
                   </>
@@ -6717,7 +6717,7 @@ export default function Home() {
             aria-current="page"
             onClick={openFriendsHome}
           >
-            LC
+            LZR
             {notificationCount > 0 && (
               <span className="notificationBadge">{notificationCount}</span>
             )}
@@ -7566,7 +7566,7 @@ export default function Home() {
             aria-label="Messages"
             onClick={openFriendsHome}
           >
-            LC
+            LZR
             {notificationCount > 0 && (
               <span className="notificationBadge">{notificationCount}</span>
             )}
@@ -7629,7 +7629,7 @@ export default function Home() {
           aria-label="Messages"
           onClick={openFriendsHome}
         >
-          LC
+          LZR
           {notificationCount > 0 && (
             <span className="notificationBadge">{notificationCount}</span>
           )}
@@ -7698,7 +7698,7 @@ export default function Home() {
         <header className="workspaceName">
           <strong>
             {servers.find((server) => server.id === selectedServerId)?.name ??
-              "LC"}
+              "LZRelay"}
           </strong>
           {isSelectedServerOwner && selectedServerId && (
             <button

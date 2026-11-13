@@ -12,7 +12,7 @@ export default async function AdminPage() {
       <main className="adminDenied">
         <h1>Access denied</h1>
         <p>This dashboard is restricted to the configured application owner.</p>
-        <Link href="/">Return to LC</Link>
+        <Link href="/">Return to LZRelay</Link>
       </main>
     );
   return <AdminDashboard />;

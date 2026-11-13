@@ -18,9 +18,63 @@ and renews origin certificates and routes requests by hostname:
 
 | Hostname | Destination |
 | --- | --- |
-| `lzezelj.com` | Next.js on `app:3000` |
+| `lc.lzezelj.com` | Next.js on `app:3000` |
 | `signal.lzezelj.com` | signaling service on `signaling:3001` |
 | `livekit.lzezelj.com` | LiveKit HTTP/WebSocket endpoint on host port `7880` |
+
+## Planned application hostname change
+
+The current application hostname is `lc.lzezelj.com`. The planned public name
+is `lzrelay.lzezelj.com`; these instructions do not imply a production cutover
+has already happened. The repository and Google display branding can be renamed
+independently of DNS, OAuth callback registration and container configuration.
+
+1. In Cloudflare, add `lzrelay` pointing to the same origin server as `lc`,
+   retaining the existing proxy setting and Full (strict) TLS configuration.
+   Use the configured origin target, not an IP returned for a proxied hostname.
+2. In the existing Google web OAuth client, add the exact authorized redirect
+   URI `https://lzrelay.lzezelj.com/api/auth/callback/google`. Retain the old
+   callback during the transition. If JavaScript origins are configured, add
+   `https://lzrelay.lzezelj.com`; this server-side Auth.js flow does not itself
+   require that origin entry. Update old homepage/privacy links in OAuth branding.
+3. On the server, edit only these values in the existing ignored
+   `.env.production`:
+
+   ```dotenv
+   APP_DOMAIN=lzrelay.lzezelj.com
+   AUTH_URL=https://lzrelay.lzezelj.com
+   ```
+
+4. From `/home/lc/apps/lc`, validate without printing interpolated secrets, then
+   recreate the two containers so they receive the changed runtime environment:
+
+   ```bash
+   sudo docker compose --env-file .env.production -f compose.production.yaml config --quiet
+   sudo docker compose --env-file .env.production -f compose.production.yaml up -d --no-deps --force-recreate --wait --wait-timeout 120 app
+   sudo docker compose --env-file .env.production -f compose.production.yaml up -d --no-deps --force-recreate --wait --wait-timeout 120 caddy
+   ```
+
+Schedule this around active usage: app recreation briefly interrupts the app
+and signaling authorization API. A plain restart or Caddy reload does not inject
+the new Compose environment. These two runtime values alone do not require an
+image rebuild. Deploying source changes, including the license page, does require
+the normal tested image build and deployment.
+
+Keep signaling, LiveKit and TURN hostnames/settings, OAuth credentials,
+`AUTH_SECRET`, database identifiers, Compose project name, volumes and backup
+paths unchanged. In particular, do not run `down -v`. Changing the separate
+`NEXT_PUBLIC_SIGNALING_URL` would require a frontend rebuild.
+
+Verify HTTPS, `/api/health`, Google sign-in, a newly generated demo invitation,
+text delivery and a voice call on the new hostname. Users sign in again and
+grant device permissions on the new origin; browser-local preferences do not
+transfer automatically. Database records and memberships remain unchanged.
+
+The current Caddy template serves only `APP_DOMAIN`; it does not automatically
+redirect the old hostname. To retain old invitation links and bookmarks, keep
+the old DNS record and configure a separate HTTPS redirect preserving path and
+query, either at Cloudflare or in Caddy. Verify it before removing old OAuth
+entries. Avoid redirecting an in-progress OAuth callback during the cutover.
 
 ## Public and private network boundaries
 

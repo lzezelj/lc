@@ -1637,7 +1637,7 @@ test("joining keeps the call grid closed and clicking the joined channel opens i
   );
 });
 
-test("Friends is the initial workspace and LC preserves the selected DM without leaving voice", async () => {
+test("Friends is the initial workspace and LZRelay preserves the selected DM without leaving voice", async () => {
   const page = await readFile(
     new URL("../app/page.tsx", import.meta.url),
     "utf8",

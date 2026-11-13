@@ -32,7 +32,7 @@ export function DesignPlayground() {
   const [numbers, setNumbers] =
     useState<Record<string, number>>(initialNumbers);
   const [enabled, setEnabled] = useState(false);
-  const css = `/* LC design experiment: review before adding to shared styles. */
+  const css = `/* LZRelay design experiment: review before adding to shared styles. */
 :root {
 ${Object.entries(palette)
   .map(([key, value]) => `  --${key}: ${value};`)
@@ -57,7 +57,7 @@ ${Object.entries(palette)
     const url = URL.createObjectURL(new Blob([css], { type: "text/css" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = "lc-design-experiment.css";
+    link.download = "lzrelay-design-experiment.css";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }

@@ -500,7 +500,7 @@ window.verifyWorkspaceLayout = async () => {
       await wait();
       check(
         click.defaultPrevented && !host.querySelector("iframe"),
-        `${documentName}: Back to LC closes the document instead of loading a nested app`,
+        `${documentName}: Back to LZRelay closes the document instead of loading a nested app`,
       );
     }
   } finally {
@@ -4135,7 +4135,7 @@ window.verifyHelpAndSkeletons = async () => {
   target.className = "workspaceLogo";
   target.style.cssText =
     "position:fixed;left:18px;top:80px;width:46px;height:46px;z-index:50";
-  target.textContent = "LC";
+  target.textContent = "LZR";
   document.body.append(target);
   // Isolate geometry checks from controls in the background workspace fixture.
   const otherTargets = [
@@ -4183,7 +4183,7 @@ window.verifyHelpAndSkeletons = async () => {
       document.querySelector(".helpTour[open]") &&
         document
           .querySelector(".helpStep")
-          .textContent.includes("Welcome to LC"),
+          .textContent.includes("Welcome to LZRelay"),
       "The introduction must open automatically for a new account",
     );
     const initialWindow = document
@@ -4227,7 +4227,7 @@ window.verifyHelpAndSkeletons = async () => {
             Number(outline.getAttribute("width")) - (targetBox.width + 10),
           ) < 1,
       ),
-      `Friends step must highlight the actual LC control ${JSON.stringify({ target: targetBox.toJSON(), outlines: outlines.map((item) => ({ x: item.getAttribute("x"), width: item.getAttribute("width") })), active: document.querySelector(".helpTour").getAttribute("data-help-spotlight") })}`,
+      `Friends step must highlight the actual LZRelay control ${JSON.stringify({ target: targetBox.toJSON(), outlines: outlines.map((item) => ({ x: item.getAttribute("x"), width: item.getAttribute("width") })), active: document.querySelector(".helpTour").getAttribute("data-help-spotlight") })}`,
     );
     const canvas = document
       .querySelector(".helpSpotlightCanvas")
@@ -7148,7 +7148,7 @@ function Workspace() {
           : undefined,
       },
     },
-    h("aside", { className: "workspaceRail" }, "LC"),
+    h("aside", { className: "workspaceRail" }, "LZRelay"),
     h(
       "aside",
       { className: "channelSidebar friendsSidebar" },

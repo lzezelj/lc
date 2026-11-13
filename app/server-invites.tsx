@@ -103,7 +103,7 @@ export function ServerInvites({
       hint={
         mode === "friends"
           ? "Your friends are listed alphabetically. Existing members are marked below."
-          : "Search existing LC accounts by name or username. Enter at least three characters. Demo access is managed in demo account settings."
+          : "Search existing LZRelay accounts by name or username. Enter at least three characters. Demo access is managed in demo account settings."
       }
     >
       <label>

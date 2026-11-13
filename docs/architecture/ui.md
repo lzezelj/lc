@@ -130,7 +130,7 @@ does not remount its input after an automatic search, preserving typing focus.
 
 ## Workspace navigation and call footer
 
-Fresh authenticated entry and the Messages button open the contact list. The LC
+Fresh authenticated entry and the Messages button open the contact list. The LZR
 button returns to the selected direct conversation when switching back from a
 server; switching workspaces retains that selection without affecting calls.
 Reloads restore the last Friends tab/conversation or server/text channel from
@@ -291,7 +291,7 @@ retain their 17px corner radius rather than the shared navigation-button radius.
 The whole rail owns vertical scrolling, with a visible thin scrollbar when its
 contents exceed the viewport. The inner server list does not shrink or clip the
 last icon above Create server. Symmetric scrollbar gutters keep icons centered;
-LC and Create server scroll with the rail when needed.
+LZR and Create server scroll with the rail when needed.
 `node tests/server-rail.browser.mjs` checks two-server fit and long-list centering
 at desktop, short and mobile viewport sizes.
 
@@ -329,7 +329,7 @@ microphone previews and expanding settings details scrolls the dialog's content
 pane toward the newly opened section's top, clamped to the available scroll range;
 the workspace behind the modal does not scroll.
 The footer's Help & introduction control reopens an informational,
-step-by-step LC introduction. The guide shares the native modal component and
+step-by-step LZRelay introduction. The guide shares the native modal component and
 lives beside the persistent call layer, so workspace navigation and guidance
 do not remount media or start capture. The guide remembers the original view,
 shows Friends on its Friends step, and switches to an available server for
@@ -415,9 +415,15 @@ diagnostics open beside the connection-info icon and remain within the viewport.
 Device menus render through a shared portal outside footer/call stacking contexts,
 aligned to the sidebar and clamped above their trigger. Pointer events within the
 portal stay inside the open menu; Escape closes it and restores trigger focus.
-Embedded legal documents intercept their same-origin Back to LC link before
+Embedded legal documents intercept their same-origin Back to LZRelay link before
 navigation and close only the overlay, preserving the mounted app and call.
 Directly opened legal pages retain their ordinary return link.
+The static `/licenses` page reads the project's root `LICENSE` alongside the
+existing RNNoise notices at build time. The project license permits private
+personal use and modifications for friends-only instances; commercial use and
+redistribution require written permission. Third-party licenses remain separate.
+The runtime image also includes the root license. Legal overlays continue to
+use the same route without unmounting the workspace or active call.
 The optional `npm run test:webrtc-browser -- --workspace-controls` browser check
 exercises modal focus/stacking, pointer and keyboard resizing, diagnostic placement,
 mobile bounds and persistent call audio while opening and closing settings.
