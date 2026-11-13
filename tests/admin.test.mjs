@@ -207,8 +207,6 @@ test("admin reads bind filters as SQL parameters and bound pages; no account cre
     "servers",
     "members",
     "channels",
-    "conversations",
-    "messages",
     "audit",
   ]) {
     const response = await reads.readAdmin(
@@ -236,7 +234,7 @@ test("admin reads bind filters as SQL parameters and bound pages; no account cre
         new URLSearchParams({ resource: "messages", scope: "direct" }),
       )
     ).status,
-    400,
+    403,
   );
   assert.equal(
     (
@@ -404,62 +402,104 @@ async function mutationFixture({
     );
   return { run, queries, events, audits, rolledBack: () => rolledBack };
 }
-test("admin DM edits preserve author and notify both actual participants only after commit", async () => {
+test("admin message reads, conversation enumeration and mutations are denied before data access", async () => {
+  const reads = await moduleAt("../server/admin-read.ts", {
+    "drizzle-orm": orm,
+    "../db": {
+      db: {
+        execute: () => {
+          throw new Error("Unexpected database access");
+        },
+      },
+    },
+  });
+  for (const resource of ["messages", "conversations"])
+    for (const scope of ["server", "direct"])
+      assert.equal(
+        (
+          await reads.readAdmin(
+            new URLSearchParams({
+              resource,
+              scope,
+              userId: author,
+              serverId: peer,
+            }),
+          )
+        ).status,
+        403,
+      );
   const fixture = await mutationFixture();
-  assert.equal(
-    (await fixture.run("PATCH", { text: "replacement" })).status,
-    200,
-  );
-  assert.deepEqual(
-    fixture.events.map((event) => [event.userId, event.fromUserId]),
-    [
-      [author, peer],
-      [peer, author],
-    ],
-  );
-  assert.ok(fixture.events.every((event) => event.edit.editedByAdmin));
-  assert.equal(fixture.audits[0][0], owner);
-  assert.equal(fixture.audits[0][1], "message.edit");
-  assert.ok(!JSON.stringify(fixture.audits).includes("replacement"));
-  assert.ok(
-    !fixture.queries
-      .find((query) => query.sql.startsWith("UPDATE"))
-      .sql.includes("sender_id="),
-  );
-});
-test("admin deletion distinguishes placeholders and permanent removal and requires confirmation", async () => {
-  for (const permanent of [false, true]) {
-    const fixture = await mutationFixture();
-    assert.equal((await fixture.run("DELETE", { permanent })).status, 200);
-    assert.ok(
-      fixture.queries.some((query) =>
-        permanent
-          ? query.sql.startsWith("DELETE")
-          : query.sql.includes("deleted_at=COALESCE"),
-      ),
-    );
-    assert.ok(fixture.events.every((event) => event.permanent === permanent));
-  }
-  const fixture = await mutationFixture();
-  assert.equal((await fixture.run("DELETE", { confirmed: false })).status, 400);
+  for (const method of ["POST", "PATCH", "DELETE"])
+    for (const scope of ["server", "direct"])
+      assert.equal(
+        (
+          await fixture.run(method, {
+            scope,
+            text: "replacement",
+            permanent: true,
+          })
+        ).status,
+        403,
+      );
   assert.equal(fixture.queries.length, 0);
-});
-test("deleted/call messages cannot be edited; a failed audit rolls back and emits no events", async () => {
-  for (const options of [{ deleted: true }, { kind: "call" }]) {
-    const fixture = await mutationFixture(options);
-    assert.equal(
-      (await fixture.run("PATCH", { text: "replacement" })).status,
-      409,
-    );
-    assert.equal(fixture.events.length, 0);
-  }
-  const fixture = await mutationFixture({ failAudit: true });
-  await assert.rejects(
-    fixture.run("PATCH", { text: "replacement" }),
-    /Audit unavailable/,
-  );
-  assert.ok(fixture.rolledBack());
   assert.equal(fixture.events.length, 0);
+  assert.equal(fixture.audits.length, 0);
+});
+
+test("owner cannot download message attachments through admin files", async () => {
+  const files = await moduleAt("../app/api/admin/files/route.ts", {
+    "drizzle-orm": orm,
+    "../../../../server/owner": {
+      ownerSession: async () => ({ user: { id: owner } }),
+    },
+    "../../../../server/admin-read": { validAdminId: () => true },
+    "../../../../db": {
+      db: {
+        select: () => {
+          throw new Error("Unexpected file read");
+        },
+      },
+    },
+    "../../../../db/schema": {},
+  });
+  for (const suffix of ["", "&kind=attachment", "&kind=direct"])
+    assert.equal(
+      (
+        await files.GET(
+          new Request(
+            `http://localhost/api/admin/files?id=${messageId}${suffix}`,
+          ),
+        )
+      ).status,
+      403,
+    );
+});
+
+test("owner cannot inspect another account's message-management history", async () => {
+  const routes = await moduleAt("../app/api/users/[userId]/messages/route.ts", {
+    "drizzle-orm": orm,
+    "next/server": { NextResponse: Response },
+    "../../../../../auth": {
+      auth: async () => ({ user: { id: owner, role: "owner" } }),
+    },
+    "../../../../../db": {
+      db: {
+        select: () => {
+          throw new Error("Unexpected history read");
+        },
+      },
+    },
+    "../../../../../db/schema": {},
+    "../../../../../server/admin-audit": {},
+  });
+  assert.equal(
+    (
+      await routes.GET(new Request("http://localhost"), {
+        params: Promise.resolve({ userId: author }),
+      })
+    ).status,
+    403,
+  );
 });
 
 test("admin channel deletion notice applies only to the affected active call", async () => {

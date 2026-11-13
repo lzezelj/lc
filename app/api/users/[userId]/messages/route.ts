@@ -34,10 +34,7 @@ export async function GET(
 ) {
   const session = await auth();
   const { userId } = await params;
-  if (
-    !session ||
-    !(await canManageMessages(session.user.id, session.user.role, userId))
-  ) {
+  if (!session || session.user.id !== userId) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

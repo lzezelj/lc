@@ -1,0 +1,10 @@
+[Unit]
+Description=LC database backup daily at 03:00 Europe/Berlin
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/Berlin
+Persistent=true
+Unit=lc-database-backup.service
+
+[Install]
+WantedBy=timers.target

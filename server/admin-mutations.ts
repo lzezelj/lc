@@ -3,10 +3,7 @@ import { db } from "../db";
 import { auditAdmin } from "./admin-audit";
 import { validAdminId } from "./admin-read";
 import { notifyServer } from "./notify-server";
-import { notifyUser } from "./notify-user";
 import { removeChannelMedia } from "./remove-channel-media";
-import { serverMentions, storeMentions } from "./mentions";
-import type { Mention } from "../app/notification-types";
 import { AdminError } from "./admin-error";
 import { mutateAdminServer, deleteAdminUser } from "./admin-entities";
 
@@ -43,8 +40,11 @@ export async function mutateAdmin(request: Request, actorId: string) {
       return await deleteAdminUser(body, actorId);
     if (body.target === "channel")
       return await mutateChannel(body, request.method, actorId);
-    if (body.target === "message" && request.method !== "POST")
-      return await mutateMessage(body, request.method, actorId);
+    if (body.target === "message")
+      return Response.json(
+        { error: "Admin message access is disabled" },
+        { status: 403 },
+      );
     throw new AdminError("Unknown action");
   } catch (error) {
     if (error instanceof AdminError)
@@ -114,132 +114,4 @@ async function mutateChannel(
     );
   await notifyServer(serverId);
   return Response.json(row, { status: method === "POST" ? 201 : 200 });
-}
-
-async function mutateMessage(
-  body: Record<string, unknown>,
-  method: string,
-  actorId: string,
-) {
-  if (
-    !validAdminId(body.id) ||
-    !["server", "direct"].includes(String(body.scope))
-  )
-    throw new AdminError("Invalid message");
-  const direct = body.scope === "direct";
-  const table = direct ? sql`direct_messages` : sql`messages`;
-  const result = await db.transaction(async (tx) => {
-    const found = await tx.execute(
-      direct
-        ? sql`SELECT m.id,m.sender_id AS "authorId",m.recipient_id AS "peerId",m.kind,m.attachments,m.deleted_at AS "deletedAt" FROM direct_messages m WHERE m.id=${body.id} FOR UPDATE`
-        : sql`SELECT m.id,m.author_id AS "authorId",m.channel_id AS "channelId",c.server_id AS "serverId",m.attachments,m.deleted_at AS "deletedAt" FROM messages m JOIN channels c ON c.id=m.channel_id WHERE m.id=${body.id} FOR UPDATE OF m`,
-    );
-    const row = found.rows[0];
-    if (!row) throw new AdminError("Message not found", 404);
-    const text = typeof body.text === "string" ? body.text.trim() : "";
-    let mentions: Mention[] = [];
-    if (method === "PATCH") {
-      if (row.deletedAt || (direct && row.kind !== "message"))
-        throw new AdminError(
-          "Deleted messages and call records cannot be edited",
-          409,
-        );
-      if (
-        text.length > 4000 ||
-        (!text && !(row.attachments as unknown[]).length)
-      )
-        throw new AdminError(
-          "Add text or keep an attachment; maximum 4000 characters",
-        );
-      if (!direct)
-        mentions = await serverMentions(
-          String(row.channelId),
-          text,
-          String(row.authorId),
-        );
-      await tx.execute(
-        sql`UPDATE ${table} SET content=${text},edited_at=now(),edited_by_admin=true ${!direct ? sql`,mentions=${JSON.stringify(mentions)}::jsonb` : sql``} WHERE id=${body.id}`,
-      );
-      // Update mention state without sending a notification attributed to the author.
-      if (!direct) await storeMentions(tx, String(row.id), mentions, true);
-    } else if (body.permanent === true) {
-      await tx.execute(sql`DELETE FROM ${table} WHERE id=${body.id}`);
-    } else {
-      await tx.execute(
-        sql`UPDATE ${table} SET content='',deleted_at=COALESCE(deleted_at,now()),edited_at=now() WHERE id=${body.id}`,
-      );
-    }
-    const saved =
-      method === "PATCH"
-        ? (
-            await tx.execute(
-              sql`SELECT id,content AS text,edited_at AS "editedAt",edited_by_admin AS "editedByAdmin" FROM ${table} WHERE id=${body.id}`,
-            )
-          ).rows[0]
-        : null;
-    await auditAdmin(
-      tx,
-      actorId,
-      method === "PATCH"
-        ? "message.edit"
-        : body.permanent === true
-          ? "message.delete-permanently"
-          : "message.delete",
-      direct ? "direct-message" : "channel-message",
-      String(row.id),
-      {
-        userId: String(row.authorId),
-        ...(!direct
-          ? { serverId: String(row.serverId), channelId: String(row.channelId) }
-          : {}),
-      },
-    );
-    return { row, saved: saved ? { ...saved, mentions } : null };
-  });
-  const { row, saved } = result;
-  if (direct) {
-    await Promise.all(
-      [
-        [row.authorId, row.peerId],
-        [row.peerId, row.authorId],
-      ].map(([recipient, peer]) =>
-        notifyUser(
-          String(recipient),
-          saved
-            ? { type: "direct-message-edited", fromUserId: peer, edit: saved }
-            : {
-                type: "direct-message-deleted",
-                fromUserId: peer,
-                messageId: row.id,
-                permanent: body.permanent === true,
-              },
-        ),
-      ),
-    );
-  } else {
-    const secret =
-      process.env.SIGNALING_INTERNAL_SECRET ?? process.env.AUTH_SECRET;
-    if (secret)
-      await fetch(
-        `${process.env.SIGNALING_INTERNAL_URL ?? "http://127.0.0.1:3001"}/internal/message-${saved ? "edited" : "deleted"}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${secret}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(
-            saved
-              ? { channelId: row.channelId, edit: saved }
-              : {
-                  channelId: row.channelId,
-                  messageId: row.id,
-                  permanent: body.permanent === true,
-                },
-          ),
-          signal: AbortSignal.timeout(5000),
-        },
-      ).catch(() => undefined);
-  }
-  return Response.json({ id: row.id });
 }

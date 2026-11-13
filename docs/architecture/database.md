@@ -27,6 +27,11 @@ model contains:
 Drizzle defines the schema and migrations. A one-shot migration container runs
 after PostgreSQL becomes healthy and before the application starts.
 
+Host-side logical backups, retention, interactive restore-by-date and recovery
+limitations are owned by [infrastructure](infrastructure.md#database-backups-and-restore).
+These dumps include database-held media; environment configuration and cluster
+roles remain separate recovery prerequisites.
+
 ## Feature-owned persistence contracts
 
 Schema and migrations are defined in [db/schema.ts](../../db/schema.ts) and

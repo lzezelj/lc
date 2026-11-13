@@ -20,8 +20,9 @@ the continuous Connecting-to-connected presence handoff.
 
 Admin dashboard coverage runs in `npm.cmd test` (`admin.test.mjs`) and
 `npm.cmd run test:db` (`admin.database.test.mjs`). It checks strict current-owner
-authorization, bounded parameterized reads, moderation identity/event ordering,
-audit rollback, real SQL and cleanup, and active-channel deletion notices.
+authorization, bounded parameterized metadata reads, denial of admin message and
+attachment access, self-only message-management history, audit rollback, real SQL
+and account cleanup, and active-channel deletion notices.
 The admin database test rolls back its fixtures and any provisional migration.
 `node tests/direct-webrtc.browser.mjs --admin` covers the actual dashboard UI on
 desktop/mobile with fixture data, including confirmations and access revocation.
@@ -381,6 +382,10 @@ inside rolled-back transactions. `npm.cmd run test:all` runs the default suite
 and these database checks; it does not include browser modes.
 
 ## GitHub Actions
+
+The core job also runs `bash tests/database-backup.test.sh` on Linux for the
+host-side backup/restore safety paths. See [backup tooling validation](../docs/architecture/infrastructure.md#tooling-validation)
+for mocked-service boundaries and the disposable PostgreSQL integration check.
 
 `.github/workflows/ci.yml` runs three independent jobs on pushes, pull requests
 and manual runs:

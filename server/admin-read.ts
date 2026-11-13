@@ -39,12 +39,11 @@ export async function readAdmin(query: URLSearchParams) {
       statement = sql`SELECT id, name, handle, image, role, disabled_at AS "disabledAt", expires_at AS "expiresAt", created_at AS "createdAt" FROM users WHERE id = ${userId}`;
       break;
     case "servers":
-      // Include former memberships when messages remain, without pretending they are current members.
       statement = sql`SELECT s.id, s.name, s.created_at AS "createdAt", s.created_by AS "ownerId",
         ${userId ? sql`EXISTS(SELECT 1 FROM server_members sm WHERE sm.server_id=s.id AND sm.user_id=${userId})` : sql`false`} AS "isMember"
         FROM servers s WHERE s.name ILIKE ${pattern}
         ${ownerId ? sql`AND s.created_by=${ownerId}` : sql``}
-        ${userId ? sql`AND (EXISTS(SELECT 1 FROM server_members sm WHERE sm.server_id=s.id AND sm.user_id=${userId}) OR EXISTS(SELECT 1 FROM channels c JOIN messages m ON m.channel_id=c.id WHERE c.server_id=s.id AND m.author_id=${userId}))` : sql``}
+        ${userId ? sql`AND EXISTS(SELECT 1 FROM server_members sm WHERE sm.server_id=s.id AND sm.user_id=${userId})` : sql``}
         ORDER BY lower(s.name), s.id`;
       break;
     case "server":
@@ -77,45 +76,14 @@ export async function readAdmin(query: URLSearchParams) {
         );
       statement = sql`SELECT c.id,c.name,c.type,c.server_id AS "serverId" FROM channels c WHERE c.server_id=${serverId} AND c.name ILIKE ${pattern}
         ${query.has("type") ? sql`AND c.type=${query.get("type")}::channel_type` : sql``}
-        ${userId ? sql`AND EXISTS(SELECT 1 FROM messages m WHERE m.channel_id=c.id AND m.author_id=${userId})` : sql``}
         ORDER BY c.position NULLS LAST,c.created_at,c.id`;
       break;
     case "conversations":
-      if (!userId)
-        return Response.json({ error: "Select a user" }, { status: 400 });
-      statement = sql`SELECT DISTINCT u.id,u.name,u.handle,u.image FROM direct_messages m JOIN users u ON u.id=m.recipient_id
-        WHERE m.sender_id=${userId} AND (u.name ILIKE ${pattern} OR u.handle ILIKE ${pattern}) ORDER BY u.name,u.id`;
-      break;
-    case "messages": {
-      const direct = query.get("scope") === "direct";
-      if (direct && !userId)
-        return Response.json({ error: "Select a user" }, { status: 400 });
-      if (!direct && !userId && !serverId && !channelId)
-        return Response.json(
-          { error: "Select a message scope" },
-          { status: 400 },
-        );
-      statement = direct
-        ? sql`SELECT m.id,m.sender_id AS "authorId",u.name AS author,m.recipient_id AS "peerId",p.name AS "peerName",
-            CASE WHEN m.deleted_at IS NULL THEN m.content ELSE 'Deleted message' END AS text,
-            CASE WHEN m.deleted_at IS NULL THEN m.attachments ELSE '[]'::jsonb END AS attachments,
-            m.created_at AS "createdAt",m.edited_at AS "editedAt",m.edited_by_admin AS "editedByAdmin",m.deleted_at AS "deletedAt",m.kind,
-            'direct' AS scope FROM direct_messages m JOIN users u ON u.id=m.sender_id JOIN users p ON p.id=m.recipient_id
-            WHERE m.sender_id=${userId} ${peerId ? sql`AND m.recipient_id=${peerId}` : sql``}
-            AND (m.deleted_at IS NULL AND m.content ILIKE ${pattern} OR ${!search} AND m.deleted_at IS NOT NULL)
-            ORDER BY m.created_at DESC,m.id DESC`
-        : sql`SELECT m.id,m.author_id AS "authorId",u.name AS author,c.id AS "channelId",c.name AS "channelName",s.id AS "serverId",s.name AS "serverName",
-            CASE WHEN m.deleted_at IS NULL THEN m.content ELSE 'Deleted message' END AS text,
-            CASE WHEN m.deleted_at IS NULL THEN m.attachments ELSE '[]'::jsonb END AS attachments,
-            m.reply_to_id AS "replyToId",CASE WHEN r.deleted_at IS NOT NULL THEN 'Deleted message' ELSE r.content END AS "replyText",
-            m.created_at AS "createdAt",m.edited_at AS "editedAt",m.edited_by_admin AS "editedByAdmin",m.deleted_at AS "deletedAt",'message' AS kind,
-            'server' AS scope FROM messages m JOIN users u ON u.id=m.author_id JOIN channels c ON c.id=m.channel_id JOIN servers s ON s.id=c.server_id
-            LEFT JOIN messages r ON r.id=m.reply_to_id
-            WHERE true ${userId ? sql`AND m.author_id=${userId}` : sql``} ${serverId ? sql`AND s.id=${serverId}` : sql``} ${channelId ? sql`AND c.id=${channelId}` : sql``}
-            AND (m.deleted_at IS NULL AND m.content ILIKE ${pattern} OR ${!search} AND m.deleted_at IS NOT NULL)
-            ORDER BY m.created_at DESC,m.id DESC`;
-      break;
-    }
+    case "messages":
+      return Response.json(
+        { error: "Admin message access is disabled" },
+        { status: 403 },
+      );
     case "audit":
       statement = sql`SELECT a.id,a.actor_id AS "actorId",a.action,a.target_type AS "targetType",a.target_id AS "targetId",a.user_id AS "userId",a.server_id AS "serverId",a.channel_id AS "channelId",a.created_at AS "createdAt"
         FROM admin_audit_log a WHERE (a.action ILIKE ${pattern} OR a.target_id::text ILIKE ${pattern}) ORDER BY a.created_at DESC,a.id DESC`;

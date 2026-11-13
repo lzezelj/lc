@@ -1,0 +1,6 @@
+# Host administration scripts must stay executable by Linux Bash after checkout.
+scripts/*.sh text eol=lf
+tests/*.sh text eol=lf
+ops/*.sh text eol=lf
+ops/*.service text eol=lf
+ops/*.timer text eol=lf

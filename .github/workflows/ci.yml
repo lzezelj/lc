@@ -30,6 +30,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Test database backup and restore tooling
+        run: bash tests/database-backup.test.sh
+
       - name: Build application
         run: npm run build
 

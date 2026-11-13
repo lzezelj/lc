@@ -71,9 +71,10 @@ GET `/api/friends` remains the social-graph endpoint for accepted/pending friend
 
 ## Reconnect and history recovery
 
-Owner-only app-wide inspection and moderation use separate APIs; ordinary message
-authorization stays membership/conversation scoped. See [Application administration](admin.md)
-for admin-edit attribution, transactional audit history and moderation notifications.
+Admin APIs do not expose message content, DM partners or message attachments,
+and cannot edit or individually delete messages. Ordinary message access remains
+membership/conversation scoped. Historical admin edits retain attribution. See
+[Application administration](admin.md) for account cleanup and audit history.
 
 Signaling sends protocol ping frames every 30 seconds; browsers answer pong frames
 without JavaScript timers. A connection missing the next heartbeat is terminated

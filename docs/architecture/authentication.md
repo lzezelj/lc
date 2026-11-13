@@ -106,8 +106,11 @@ transaction. The former owner stays as a member. Global account roles are not
 changed, and calls are not disconnected. Server updates refresh role displays
 for connected clients. Concurrent member removal cannot delete a promoted owner.
 
-Users may inspect and delete messages authored by their own account. The owner
-may do the same only for demo accounts that the owner created. Ordinary message
+Users may inspect and delete messages authored by their own account. Message-management
+history reads are self-only, including for the owner. The owner retains audited
+message cleanup for demo accounts they created, without content inspection.
+Admin message browsing and individual message mutations are disabled; see
+[administration](admin.md). Ordinary message
 deletion is a soft deletion: the content is erased while the row remains so
 replies can display a stable `Deleted message` placeholder. This is checked by
 the API; it is not only a UI restriction. The confirmation UI also offers an

@@ -138,7 +138,7 @@ test("ordinary server deletion enforces ownership and cleans media, access and o
   }
 });
 
-test("admin SQL, audit atomicity, global reads, edits and deletion cleanup against PostgreSQL", async () => {
+test("admin privacy denial and account/server/channel administration against PostgreSQL", async () => {
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   const database = drizzle(client, { schema });
@@ -295,13 +295,7 @@ test("admin SQL, audit atomicity, global reads, edits and deletion cleanup again
         }),
         actor,
       );
-    for (const resource of [
-      "profile",
-      "servers",
-      "channels",
-      "messages",
-      "conversations",
-    ]) {
+    for (const resource of ["profile", "servers", "channels"]) {
       const response = await reads.readAdmin(
         new URLSearchParams({
           resource,
@@ -311,69 +305,35 @@ test("admin SQL, audit atomicity, global reads, edits and deletion cleanup again
         }),
       );
       assert.equal(response.status, 200);
-      assert.ok((await response.json()).rows.length > 0, resource);
+      if (resource === "profile" || resource === "channels")
+        assert.ok((await response.json()).rows.length > 0, resource);
     }
-    const direct = await reads.readAdmin(
-      new URLSearchParams({
-        resource: "messages",
-        userId: author,
-        scope: "direct",
-      }),
-    );
-    assert.equal((await direct.json()).rows[0].id, directId);
-    assert.equal(
-      (
-        await run("PATCH", {
-          target: "message",
-          id: messageId,
-          scope: "server",
-          text: "admin replacement",
-        })
-      ).status,
-      200,
-    );
-    let [saved] = await database
+    for (const resource of ["messages", "conversations"]) {
+      const denied = await reads.readAdmin(
+        new URLSearchParams({ resource, userId: author, scope: "direct" }),
+      );
+      assert.equal(denied.status, 403);
+    }
+    for (const scope of ["server", "direct"])
+      for (const method of ["PATCH", "DELETE"])
+        assert.equal(
+          (
+            await run(method, {
+              target: "message",
+              id: scope === "server" ? messageId : directId,
+              scope,
+              text: "forbidden",
+              permanent: true,
+            })
+          ).status,
+          403,
+        );
+    const [saved] = await database
       .select()
       .from(schema.messages)
       .where(orm.eq(schema.messages.id, messageId));
-    assert.equal(saved.authorId, author);
-    assert.equal(saved.editedByAdmin, true);
-    const broken = await moduleAt("../server/admin-mutations.ts", {
-      ...dependencies,
-      "./admin-audit": {
-        auditAdmin: async () => {
-          throw new Error("Audit failed");
-        },
-      },
-    });
-    await assert.rejects(
-      run(
-        "PATCH",
-        {
-          target: "message",
-          id: messageId,
-          scope: "server",
-          text: "must roll back",
-        },
-        broken,
-      ),
-      /Audit failed/,
-    );
-    [saved] = await database
-      .select()
-      .from(schema.messages)
-      .where(orm.eq(schema.messages.id, messageId));
-    assert.equal(saved.content, "admin replacement");
-    assert.equal(
-      (
-        await run("DELETE", {
-          target: "message",
-          id: messageId,
-          scope: "server",
-        })
-      ).status,
-      200,
-    );
+    assert.equal(saved.content, "original");
+    assert.equal(saved.editedByAdmin, false);
     assert.equal(
       (
         await database
@@ -381,46 +341,9 @@ test("admin SQL, audit atomicity, global reads, edits and deletion cleanup again
           .from(schema.messageAttachments)
           .where(orm.eq(schema.messageAttachments.id, attachmentId))
       ).length,
-      0,
+      1,
     );
-    [saved] = await database
-      .select()
-      .from(schema.messages)
-      .where(orm.eq(schema.messages.id, messageId));
-    assert.equal(saved.content, "");
-    assert.ok(saved.deletedAt);
-    assert.equal(
-      (
-        await run("DELETE", {
-          target: "message",
-          id: messageId,
-          scope: "server",
-          permanent: true,
-        })
-      ).status,
-      200,
-    );
-    const [reply] = await database
-      .select()
-      .from(schema.messages)
-      .where(orm.eq(schema.messages.id, replyId));
-    assert.equal(reply.replyToId, null);
-    assert.equal(
-      (
-        await run("PATCH", {
-          target: "message",
-          id: directId,
-          scope: "direct",
-          text: "admin DM",
-        })
-      ).status,
-      200,
-    );
-    assert.equal(
-      events.filter((event) => event[1]?.type === "direct-message-edited")
-        .length,
-      2,
-    );
+    assert.equal(events.length, 0);
     const created = await run("POST", {
       target: "channel",
       serverId,
@@ -452,7 +375,7 @@ test("admin SQL, audit atomicity, global reads, edits and deletion cleanup again
       .select()
       .from(schema.adminAuditLog)
       .where(orm.eq(schema.adminAuditLog.actorId, actor));
-    assert.equal(logs.length, 7);
+    assert.equal(logs.length, 3);
     assert.ok(!JSON.stringify(logs).includes("admin replacement"));
     const ownedServer = randomUUID();
     await database

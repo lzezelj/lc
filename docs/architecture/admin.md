@@ -17,7 +17,7 @@ The guard uses the authenticated account's current database email and the curren
 server-only `OWNER_EMAIL`, trimmed and case-insensitive. Missing/blank configuration
 fails closed. Demo accounts never qualify. Auth.js session refresh also derives
 the effective global role from that email and refreshes session email, so existing
-global-owner message operations and actor quota exemptions follow configuration
+owner administration and actor quota exemptions follow configuration
 changes without requiring another Google sign-in. Stored account roles are not
 rewritten by background session reads. Ordinary membership APIs keep their own
 server-owner/member checks and do not acquire global read privileges.
@@ -39,14 +39,11 @@ the account's selected status, including Invisible; an unavailable signaling
 service is shown as unavailable rather than Offline. Refresh requests a new snapshot.
 
 Users and servers are independently searchable entry points. User server lists
-include current memberships and servers with retained authored messages after a
-membership ends, explicitly distinguished. User/server views list channels where
-that user authored messages. User-wide and server-wide message searches support
-optional channel narrowing. User DMs are a separate section, grouped by recipient,
-and show messages **sent** by that user, including call-history records. Friendship
-or the admin's own membership is not required for these admin-only reads.
-Message rows link back to their author, server and channel and include timestamps,
-reply context, attachments, deletion placeholders and edit attribution.
+show current memberships only; channels expose management metadata without
+message-author filters. The dashboard does not browse messages, DM partners,
+call-history records, reply text or message attachments. `messages` and
+`conversations` admin resources return 403, including for the configured owner.
+Use ordinary workspace APIs with server membership or DM participation for chat.
 
 Search queries are limited to 200 characters and UUID filters are validated.
 Typing searches automatically after the shared 500 ms debounce; explicit Search
@@ -58,11 +55,10 @@ so Refresh is the recovery mechanism. These queries target the existing small
 deployment, with an added author/timeline message index; substring search is not
 a dedicated search engine. No admin content is persisted in browser storage.
 
-Admin file reads independently authorize the owner, then require live,
-unexpired attachment metadata or the selected stored avatar. Deleted-message
-attachments cannot be downloaded. Attachment downloads retain range support,
-no-store/private responses, nosniff and sandbox headers. They use a separate API
-instead of weakening ordinary membership/friendship download authorization.
+Admin file reads authorize the owner and support stored user avatars only via
+`kind=avatar`; every attachment request is denied before querying file/message
+data. Server picture management retains its separate authorized endpoint.
+Ordinary attachment reads continue to require membership or DM participation.
 
 ## Mutations and audit history
 
@@ -70,14 +66,12 @@ All admin UI create/edit/delete operations open a confirmation dialog. Forms sho
 the intended changes and submit through Confirm. New admin mutations require
 bounded JSON, explicit `confirmed: true`, and the shared admin mutation rate limit.
 
-`server/admin-mutations.ts` supports text-message edits, soft/permanent message
-deletion and channel creation/renaming/deletion for text, native voice and group
-voice. Editing rejects deleted messages and call-history records, enforces the
-existing 4,000-character/content-or-attachment rule, preserves author identity and
-sets `edited_by_admin`. Ordinary later author edits reset that flag. Channel mention
-state is rebuilt against the actual author; admin edits do not send a new mention
-alert attributed to that author. Existing history and live updates carry the flag
-and shared message headers display `(edited by admin)`.
+`server/admin-mutations.ts` supports channel management and dispatches server
+and account administration. Individual message editing/deletion via admin is
+disabled (403), regardless of scope or known message ID. Account deletion retains
+its explicit sent-message erasure choice, and legacy demo cleanup remains audited;
+neither grants content inspection. Historical admin-edit flags and audit rows
+remain intact, so previous edits stay attributed. No new migration is needed.
 
 The mutation and its `admin_audit_log` insert commit in one transaction; audit
 failure rolls back the mutation. Entries store UUID actor/target/context identifiers,
@@ -87,11 +81,6 @@ erase the history. The dashboard has a read-only searchable/paginated Admin log;
 there is no audit-edit/delete API or automatic retention job. Existing demo
 mutations and legacy owner operations deleting demo messages also write audit entries.
 Ordinary users' self-service and server-owner actions are not admin-log actions.
-
-Message changes reuse PostgreSQL's attachment/reaction/mention cleanup triggers
-and reply `ON DELETE SET NULL` behavior. Post-commit notifications use the existing
-channel edit/deletion endpoints; DM notifications target both actual participants
-with the opposite participant's ID, never substituting the admin as sender.
 
 Channel mutations lock the parent server before channel changes. Deletion
 cascades its message history, then uses `removeChannelMedia` and `notifyServer`.
@@ -175,11 +164,10 @@ and the channel-message author/timeline index. Apply migrations before running
 the updated application; no deployment/infrastructure changes are included.
 
 `tests/admin.test.mjs` covers current-owner policy, API denial, parameterized
-bounded reads, DM identities, confirmation, edit/deletion rules, audit failure and
-active-channel notices. `tests/admin.database.test.mjs` tests actual PostgreSQL
-queries, atomic audit rollback, author preservation, attachment cleanup, reply
-survival and channel mutation. It rolls back its fixtures and, if needed, the new
-migration. Existing auth, demo, message, channel and signaling suites also apply.
+bounded metadata reads, denial of message/conversation reads and mutations,
+attachment denial even for owners, self-only message-management history, and
+active-channel notices. `tests/admin.database.test.mjs` verifies privacy denials
+leave real messages/attachments unchanged and preserves channel administration.
 The PostgreSQL admin test also covers server CRUD/AFK/ownership/pictures, final-demo
 revocation, user message retention/erasure and blocked owner/owned-server deletion.
 The join-sound database test uses a scoped transaction proxy and checks its fixture
@@ -187,5 +175,5 @@ UUIDs after rollback to prevent route-level transaction commits leaking test dat
 Run formatter, `npm.cmd test`, the relevant PostgreSQL tests and build.
 `node tests/direct-webrtc.browser.mjs --admin` runs muted desktop/mobile tests of
 the actual dashboard components with fixture API/session/router data, including
-confirmation/cancel, pagination, crosslinks, attachment links, admin attribution,
+confirmation/cancel, pagination, metadata crosslinks, absent message browsing,
 layout and session revocation. These do not exercise a deployed LiveKit service.

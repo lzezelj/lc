@@ -13,7 +13,6 @@ import {
   createAdminServer,
   deleteAdminAccount,
 } from "./server-settings";
-import type { MessageAttachment } from "../attachment-types";
 import "./admin.css";
 
 export type AdminRow = {
@@ -35,23 +34,8 @@ export type AdminRow = {
   disabledAt?: string | null;
   isMember?: boolean;
   type?: string;
-  text?: string;
-  author?: string;
-  authorId?: string;
-  scope?: string;
-  kind?: string;
   serverId?: string;
-  serverName?: string;
   channelId?: string;
-  channelName?: string;
-  peerId?: string;
-  peerName?: string;
-  editedAt?: string | null;
-  editedByAdmin?: boolean;
-  deletedAt?: string | null;
-  attachments?: MessageAttachment[];
-  replyToId?: string | null;
-  replyText?: string | null;
   action?: string;
   actorId?: string;
   targetType?: string;
@@ -121,22 +105,6 @@ export function AdminDashboard() {
     navigate("user", { userId: row.id, userName: row.name });
   const serverLink = (row: AdminRow) =>
     navigate("server", { serverId: row.id, serverName: row.name });
-  const messages = (filters: Record<string, string>, label: string) => (
-    <AdminList
-      resource="messages"
-      filters={filters}
-      label={label}
-      revision={revision}
-      render={(row) => (
-        <MessageRow
-          row={row}
-          navigate={navigate}
-          confirm={confirm}
-          refresh={refresh}
-        />
-      )}
-    />
-  );
   return (
     <main className="adminShell">
       <header className="adminHeader">
@@ -150,7 +118,7 @@ export function AdminDashboard() {
         </a>
         <div>
           <h1>Administration</h1>
-          <p>Users, servers and moderation</p>
+          <p>Users, servers and account management</p>
         </div>
         <button type="button" onClick={refresh}>
           Refresh
@@ -237,21 +205,7 @@ export function AdminDashboard() {
                 Delete user
               </button>
             </div>
-            <div className="adminTabs">
-              <button
-                type="button"
-                onClick={() => navigate("user-messages", userValues)}
-              >
-                Search all server messages
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate("direct", userValues)}
-              >
-                Direct messages
-              </button>
-            </div>
-            <h3>Servers and retained message history</h3>
+            <h3>Server memberships</h3>
             <AdminList
               resource="servers"
               filters={{ userId }}
@@ -262,7 +216,7 @@ export function AdminDashboard() {
                   className="adminListButton"
                   type="button"
                   onClick={() =>
-                    navigate("user-server", {
+                    navigate("server", {
                       ...userValues,
                       serverId: row.id,
                       serverName: row.name,
@@ -271,90 +225,11 @@ export function AdminDashboard() {
                 >
                   {row.name}
                   <small>
-                    {row.isMember
-                      ? "Current member"
-                      : "Former member · messages remain"}
+                    {row.isMember ? "Current member" : "Not a member"}
                   </small>
                 </button>
               )}
             />
-          </>
-        )}
-        {view === "user-messages" && (
-          <>
-            <Context
-              title={`${userName} · All server messages`}
-              actions={
-                <button
-                  type="button"
-                  onClick={() => navigate("user", userValues)}
-                >
-                  Go to user
-                </button>
-              }
-            />
-            {messages(
-              { userId, scope: "server" },
-              "Search this user’s messages across all servers",
-            )}
-          </>
-        )}
-        {view === "direct" && (
-          <>
-            <Context
-              title={`${userName} · Direct messages sent`}
-              actions={
-                <button
-                  type="button"
-                  onClick={() => navigate("user", userValues)}
-                >
-                  Go to user
-                </button>
-              }
-            />
-            <p>
-              Messages sent by this user, separated from server channels. Select
-              a recipient or search all recipients.
-            </p>
-            <AdminList
-              resource="conversations"
-              filters={{ userId }}
-              label="Search recipients"
-              revision={revision}
-              render={(row) => (
-                <Identity
-                  row={row}
-                  onClick={() =>
-                    navigate("direct", {
-                      ...userValues,
-                      peerId: row.id,
-                      peerName: row.name,
-                    })
-                  }
-                />
-              )}
-            />
-            {query.get("peerId") && (
-              <div className="adminToolbar">
-                <strong>To {query.get("peerName")}</strong>
-                <button
-                  type="button"
-                  onClick={() => navigate("direct", userValues)}
-                >
-                  All recipients
-                </button>
-              </div>
-            )}
-            {messages(
-              {
-                userId,
-                scope: "direct",
-                ...(query.get("peerId")
-                  ? { peerId: query.get("peerId")! }
-                  : {}),
-              },
-              "Search this user’s direct messages",
-            )}
           </>
         )}
         {view === "server" && (
@@ -394,7 +269,7 @@ export function AdminDashboard() {
                     <Identity
                       row={row}
                       onClick={() =>
-                        navigate("user-server", {
+                        navigate("user", {
                           ...serverValues,
                           userId: row.id,
                           userName: row.name,
@@ -439,62 +314,6 @@ export function AdminDashboard() {
                 />
               </section>
             </div>
-            <h3>All text-channel messages</h3>
-            {messages(
-              { serverId, scope: "server" },
-              "Search messages in this server",
-            )}
-          </>
-        )}
-        {view === "user-server" && (
-          <>
-            <Context
-              title={`${userName} · ${serverName}`}
-              actions={
-                <>
-                  <button
-                    type="button"
-                    onClick={() => navigate("user", userValues)}
-                  >
-                    Go to user
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigate("server", serverValues)}
-                  >
-                    Go to server
-                  </button>
-                </>
-              }
-            />
-            <h3>Channels with messages from this user</h3>
-            <AdminList
-              resource="channels"
-              filters={{ userId, serverId }}
-              label="Search this user’s channels"
-              revision={revision}
-              render={(row) => (
-                <button
-                  className="adminListButton"
-                  type="button"
-                  onClick={() =>
-                    navigate("channel", {
-                      ...userValues,
-                      ...serverValues,
-                      channelId: row.id,
-                      channelName: row.name,
-                      channelType: row.type ?? "text",
-                    })
-                  }
-                >
-                  {row.name}
-                </button>
-              )}
-            />
-            {messages(
-              { userId, serverId, scope: "server" },
-              "Search this user’s messages in this server",
-            )}
           </>
         )}
         {view === "channel" && (
@@ -538,21 +357,6 @@ export function AdminDashboard() {
                 router.replace(`/admin?${params}`, { scroll: false });
               }}
             />
-            {query.get("channelType")?.startsWith("voice") ? (
-              <p>Voice channels have no stored chat messages.</p>
-            ) : (
-              messages(
-                {
-                  serverId,
-                  channelId,
-                  scope: "server",
-                  ...(userId ? { userId } : {}),
-                },
-                userId
-                  ? "Search this user’s messages in this channel"
-                  : "Search messages in this channel",
-              )
-            )}
           </>
         )}
         {view === "demos" && (
@@ -1008,167 +812,5 @@ function ChannelActions({
         Delete
       </button>
     </div>
-  );
-}
-function MessageRow({
-  row,
-  navigate,
-  confirm,
-  refresh,
-}: {
-  row: AdminRow;
-  navigate: Navigate;
-  confirm: (action: PendingAction) => void;
-  refresh: () => void;
-}) {
-  const body = { target: "message", id: row.id, scope: row.scope };
-  return (
-    <article className="adminMessage">
-      <header>
-        <button
-          type="button"
-          className="profileLink"
-          onClick={() =>
-            navigate("user", { userId: row.authorId!, userName: row.author! })
-          }
-        >
-          {row.author}
-        </button>
-        <time>{date(row.createdAt)}</time>
-        {row.editedAt && (
-          <small>{row.editedByAdmin ? "Edited by admin" : "Edited"}</small>
-        )}
-      </header>
-      <div className="adminMessageContext">
-        {row.scope === "server" ? (
-          <>
-            <button
-              type="button"
-              onClick={() =>
-                navigate("server", {
-                  serverId: row.serverId!,
-                  serverName: row.serverName!,
-                })
-              }
-            >
-              {row.serverName}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                navigate("channel", {
-                  serverId: row.serverId!,
-                  serverName: row.serverName!,
-                  channelId: row.channelId!,
-                  channelName: row.channelName!,
-                })
-              }
-            >
-              #{row.channelName}
-            </button>
-          </>
-        ) : (
-          <span>Direct message to {row.peerName}</span>
-        )}
-      </div>
-      {row.replyToId && (
-        <blockquote>Reply: {row.replyText || "Attachment"}</blockquote>
-      )}
-      <p className="adminMessageText">
-        {row.deletedAt
-          ? "Deleted message"
-          : row.kind === "call"
-            ? "Call record"
-            : row.text}
-      </p>
-      {row.attachments?.map((file) => (
-        <div key={file.id}>
-          {file.expired ? (
-            <span>{file.name} · expired</span>
-          ) : (
-            <a
-              href={`/api/admin/files?id=${file.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {file.name} · {(file.size / 1024).toFixed(1)} KB
-            </a>
-          )}
-        </div>
-      ))}
-      <div className="adminToolbar">
-        {!row.deletedAt && row.kind !== "call" && (
-          <button
-            type="button"
-            onClick={() => {
-              let text = row.text ?? "";
-              confirm({
-                title: "Edit message",
-                description:
-                  "This preserves the original author and labels the message as edited by admin.",
-                fields: (
-                  <label className="adminForm">
-                    Message
-                    <textarea
-                      rows={5}
-                      maxLength={4000}
-                      defaultValue={text}
-                      onChange={(event) => {
-                        text = event.target.value;
-                      }}
-                    />
-                  </label>
-                ),
-                run: async () => {
-                  await adminRequest("/api/admin", "PATCH", { ...body, text });
-                  refresh();
-                },
-              });
-            }}
-          >
-            Edit
-          </button>
-        )}
-        {!row.deletedAt && (
-          <button
-            type="button"
-            className="danger"
-            onClick={() =>
-              confirm({
-                title: "Delete message",
-                description:
-                  "Erase this message’s content and attachments, leaving a deleted-message placeholder?",
-                run: async () => {
-                  await adminRequest("/api/admin", "DELETE", body);
-                  refresh();
-                },
-              })
-            }
-          >
-            Delete
-          </button>
-        )}
-        <button
-          type="button"
-          className="danger"
-          onClick={() =>
-            confirm({
-              title: "Permanently delete message",
-              description:
-                "Remove this message permanently? Replies survive without a reference to this message. This cannot be undone.",
-              run: async () => {
-                await adminRequest("/api/admin", "DELETE", {
-                  ...body,
-                  permanent: true,
-                });
-                refresh();
-              },
-            })
-          }
-        >
-          Permanently delete
-        </button>
-      </div>
-    </article>
   );
 }

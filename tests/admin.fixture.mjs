@@ -224,68 +224,20 @@ window.verifyAdminDashboard = async () => {
   );
   await click("Cancel", document.querySelector("dialog"));
   check(mutations.length === 0, "Cancelled user deletion mutated data");
-  [...host.querySelectorAll(".adminListButton")]
-    .find((button) => button.textContent.includes("Portfolio"))
-    .click();
-  await until(
-    () => host.textContent.includes("Channels with messages"),
-    "User/server path missing",
-  );
-  await click("general");
-  await until(
-    () => host.querySelector(".adminMessage"),
-    "Channel messages missing",
-  );
   check(
-    requests.some(
-      (query) =>
-        query.get("resource") === "messages" &&
-        query.get("userId") === userId &&
-        query.get("channelId") === channelId,
+    !host.textContent.includes("Direct messages") &&
+      !host.textContent.includes("Search all server messages"),
+    "Message browsing controls remain",
+  );
+  for (const view of ["direct", "user-messages", "user-server"]) {
+    await navigate(view, { userId, userName: "Alice", serverId });
+    check(!host.querySelector(".adminMessage"), "Legacy view exposed messages");
+  }
+  check(
+    !requests.some((query) =>
+      ["messages", "conversations"].includes(query.get("resource")),
     ),
-    "User/channel filters lost",
-  );
-  check(
-    host.textContent.includes("Deleted message"),
-    "Deleted placeholders missing",
-  );
-  check(
-    host.querySelector('a[href^="/api/admin/files"]'),
-    "Admin attachment link missing",
-  );
-  await click("Edit");
-  await until(
-    () => document.querySelector("dialog[open]"),
-    "Edit confirmation missing",
-  );
-  check(mutations.length === 0, "Edit mutated before confirmation");
-  await click("Cancel", document.querySelector("dialog"));
-  check(mutations.length === 0, "Cancel mutated data");
-  await click("Edit");
-  const textarea = document.querySelector("dialog textarea");
-  type(textarea, "Admin correction");
-  await click("Confirm", document.querySelector("dialog"));
-  await until(
-    () => host.textContent.includes("Edited by admin"),
-    "Admin edit attribution missing",
-  );
-  check(
-    mutations[0].confirmed === true &&
-      mutations[0].id === messageId &&
-      mutations[0].text === "Admin correction",
-    "Confirmed mutation target lost",
-  );
-  await navigate("direct", { userId, userName: "Alice" });
-  await until(
-    () => host.textContent.includes("Direct messages sent"),
-    "DM section missing",
-  );
-  check(
-    requests.some(
-      (query) =>
-        query.get("scope") === "direct" && query.get("userId") === userId,
-    ),
-    "DM search scope missing",
+    "Admin requested message data",
   );
   await click("Servers");
   await until(
@@ -474,7 +426,7 @@ window.verifyAdminDashboard = async () => {
     servers: true,
     serverSettings: true,
     userDeletion: true,
-    scopedMessages: true,
+    privateMessagesUnavailable: true,
     confirmations: true,
     demos: true,
     audit: true,

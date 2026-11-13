@@ -67,7 +67,7 @@ the high-volume media path uses LiveKit's dedicated RTC ports.
 | Task or question | Read |
 | --- | --- |
 | Login, roles, sessions, demo credentials, account deletion | [Authentication and authorization](docs/architecture/authentication.md) |
-| Owner dashboard, app-wide inspection, moderation and admin log | [Application administration](docs/architecture/admin.md) |
+| Owner dashboard, account/server administration and admin log | [Application administration](docs/architecture/admin.md) |
 | Schema, migrations and persistence ownership | [Database and persistence](docs/architecture/database.md) |
 | Chat, drafts, edits, search, attachments, reactions and history | [Messaging and conversation history](docs/architecture/messaging.md) |
 | Signaling, direct/group call flow, handoff and reconnects | [Voice sessions and transports](docs/architecture/voice-and-media.md) |
@@ -77,6 +77,7 @@ the high-volume media path uses LiveKit's dedicated RTC ports.
 | Unread/read state, mentions, notification sounds and typing | [Notifications and activity](docs/architecture/notifications.md) |
 | Sound upload/storage, playback, join sounds and quotas | [Server soundboards and join sounds](docs/architecture/soundboards.md) |
 | Networking, deployment, secrets, rate limits, failures and scaling | [Infrastructure, deployment and operations](docs/architecture/infrastructure.md) |
+| Scheduled PostgreSQL backups, restore by date and recovery | [Database backups and restore](docs/architecture/infrastructure.md#database-backups-and-restore) |
 
 Each topic owns its detailed behavior, data flow, limitations and validation notes.
 Follow its related links when a change crosses a boundary; reading every topic is
@@ -101,7 +102,7 @@ responsibilities include:
 
 - Auth.js authentication and session validation.
 - Owner, server-owner, and server-membership authorization.
-- Current-configured-owner dashboard and admin APIs, with transactional moderation audit history.
+- Current-configured-owner account/server dashboard and admin APIs, with transactional audit history and no admin message browsing.
 - Owner-authorized renaming of servers, channels, and managed demo users, plus
   authenticated self-service username changes.
 - Drizzle queries and transactions.

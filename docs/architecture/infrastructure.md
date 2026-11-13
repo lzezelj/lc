@@ -135,13 +135,163 @@ Current visibility comes from:
 The [owner dashboard](admin.md) includes a persistent admin action log. There is
 no centralized operational log store, distributed tracing or alerting service.
 
+## Database backups and restore
+
+Host-side [database-backup.sh](../../scripts/database-backup.sh) provides daily
+compressed PostgreSQL 17 custom-format dumps and an interactive live restore.
+It uses the production Compose configuration without sourcing/printing secrets.
+Defaults are checkout `/apps/lc`, database/user `lc`, and private backup directory
+`/home/lc/lc-backups`. `LC_PROJECT_DIR`/`LC_BACKUP_DIR` may override paths for
+manual use and isolated tests; the supplied service/function use the defaults.
+Do not point these production commands at a development database.
+
+Repository tooling is prepared; installation on the host is a separate explicit
+step. The owner reported a roughly 38 MB database, a 30 MB manual archive and
+successful reads of a separately restored database on 2026-11-13. This does not
+establish that the timer is installed or that production was rolled back.
+
+### Installation and daily operation
+
+After transferring the reviewed files to `/apps/lc`, run as the `lc` host user
+from that directory. No application deployment/rebuild is needed for these
+host-side scripts. GNU Bash/coreutils, util-linux `flock`, systemd and a current
+Docker Compose plugin are required. The job runs as root so no unattended sudo
+password or change to Docker group membership is needed. Files are private
+(directory 0700, new archives 0600); the shell restore function uses sudo.
+
+```bash
+cd /apps/lc
+bash -n scripts/database-backup.sh
+sudo install -m 644 ops/lc-database-backup.service ops/lc-database-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start lc-database-backup.service
+```
+
+Check that this first job succeeded before enabling the timer:
+
+```bash
+sudo systemctl status lc-database-backup.service --no-pager
+sudo journalctl -u lc-database-backup.service -n 30 --no-pager
+sudo systemctl enable --now lc-database-backup.timer
+sudo systemctl list-timers lc-database-backup.timer --all
+```
+
+The timer runs at **03:00 Europe/Berlin**, including timezone/DST rules, with
+`Persistent=true` to catch a missed run after the host returns. The oneshot service
+being inactive after a successful run is normal; inspect its result and journal.
+If an invocation exceeds 30 minutes systemd terminates it and records a failure.
+No external failure alert or off-server copy is configured by these files.
+
+Final daily archives use UTC filenames `lc-<timestamp>Z.dump`. Dump output is first
+written into a private `.pending-*` directory, copied into PostgreSQL's container
+for `pg_restore --list`, then atomically published. The list check validates the
+archive directory; it is not a substitute for periodic full restore tests.
+Exec commands disable stdin/TTY attachment to avoid the silent Compose hang seen
+on this host. Partial files from interrupted manual commands are not restore
+candidates and are not automatically deleted by this tooling.
+
+Only after a successful new backup, matching daily archives older than 14 days
+(elapsed time, based on file mtime, with minute rounding) are removed. This is
+not a limit of 14 files: multiple backups on one day are retained until they age
+out. Failed jobs do not rotate archives. Rescue archives (`before-restore-*`) are
+excluded and require manual review/removal. The shared `flock` rejects concurrent
+backup/restore operations. Free-space preflight reserves 1 GiB plus estimated
+copy space; restore additionally budgets against archive size. Compression and
+concurrent growth mean these estimates cannot guarantee against disk exhaustion.
+
+### Restore by date
+
+Enable the shell function once in the `lc` user's Bash configuration (without
+sudo; this is that user's configuration):
+
+```bash
+grep -qxF 'source /apps/lc/ops/lc-backup-shell.sh' "$HOME/.bashrc" || printf '\nsource /apps/lc/ops/lc-backup-shell.sh\n' >> "$HOME/.bashrc"
+source /apps/lc/ops/lc-backup-shell.sh
+```
+
+Then use `restore "2026-11-13"`. A function rather than a simple alias forwards
+the date argument safely. Dates mean **Europe/Berlin calendar dates**; filenames
+show UTC. Matching archives are listed with sizes. Several matches require a
+numbered choice, followed by the exact typed confirmation `RESTORE YYYY-MM-DD`.
+Invalid dates, noninteractive use, symlinks and `.partial` archives are rejected.
+The function does not grant message inspection through the web application.
+
+Restore intentionally changes production data only after that confirmation:
+
+1. Check space and fully restore the archive into a new isolated staging database
+   using `pg_restore --single-transaction` (fail atomically on errors).
+2. Stop `app`, `signaling` and `livekit`; the website is unavailable and group
+   calls disconnect. Existing direct peer media is not guaranteed to stop merely
+   because signaling stops. Use a planned maintenance window with no active calls,
+   deployments, migrations, external SQL writers or restarts of the stopped services.
+3. Save a validated `before-restore-*` rescue dump after stopping app writers.
+4. Block connections to the current `lc`, terminate remaining database sessions,
+   then transactionally rename it to `lc_before_<operation>` and staging to `lc`.
+   The previous database stays present with connections disabled.
+5. Explicitly run the deployed image's migration service with `--no-deps`, then
+   start LiveKit/signaling/app and wait up to 120 seconds for service health.
+   `docker compose start` alone would not rerun migrations. Use an image at least
+   as new as the archive's schema; forward migration does not downgrade schemas.
+6. Check website health, login, representative history and uploaded media. No
+   credentials or message content are printed by the tooling.
+
+The backup is a historical snapshot: later accounts/messages/access changes can
+disappear and revoked permissions can return. It is not end-to-end encryption.
+Server `.env.production`, deployment configuration and PostgreSQL cluster roles
+are separate recovery prerequisites; `pg_dump` does not recreate those.
+
+### Failures, rollback and cleanup
+
+Before downtime, failures clean up the generated staging database and leave live
+services untouched. Once shutdown begins, failure cleanup attempts to stop all
+three services (including a partially successful restart), reports any stop
+failure and prints the recovery database name if switching was attempted. Do not blindly
+restart against an old or partly migrated schema. Database/migration failures
+must be investigated; inspect the systemd journal or command output without
+publishing private data. No automatic rollback guesses which state to preserve.
+
+If switching never happened but connection admission was disabled, the live
+database may still be named `lc` with `datallowconn=false`. Inspect names/flags
+from the `postgres` maintenance database before re-enabling connections. If
+switching succeeded, retain the failed/restored `lc` and rename the printed
+`lc_before_*` database back to `lc` during maintenance, then set
+`ALLOW_CONNECTIONS true` on that database and check schema/image compatibility
+before starting services. These recovery steps are deliberate operator actions;
+do not drop either database before deciding which state is authoritative.
+
+After a successful restore and verification, manually remove the exact retained
+`lc_before_*` database using `dropdb -U lc <printed-name>`, and review old
+`before-restore-*` archives. Never use `lc` as the cleanup target. Retained
+databases/rescue files consume disk until reviewed. Normal exit/signals clean up
+only generated pending/container archive paths; a host crash/SIGKILL can leave
+staging databases or temporary files requiring manual inspection.
+
+Local archives share the host's failure boundary. Hetzner server backups remain
+enabled; a separate encrypted off-server database copy and external failure alerts
+are still future work. Monitor disk usage as media grows; the first 30 MB archive
+is a measurement, not a size limit.
+
+### Tooling validation
+
+`bash tests/database-backup.test.sh` exercises failed exports/validation, disk and
+lock refusal, safe retention, date/terminal checks, cancellation, staging/rescue
+failure, migration/restart failure and operation ordering using mocked Docker. Its
+interactive checks need Linux util-linux `script`; CI runs these on Ubuntu.
+`bash tests/database-backup.integration.sh` requires a non-root Linux user and
+PostgreSQL 17 tools. It creates its own temporary cluster, verifies real export,
+staging restore, database renaming, media bytes and retained rollback state; it
+does not use `DATABASE_URL` or production. Application stop/start/migration calls
+are mocked there, so actual host service integration still needs installation
+verification. The default app/database suites and production build also apply.
+
 ## Current limitations and trade-offs
 
 - The CAX11 and all services on it are a single point of failure.
 - CI validates tests, database migrations and the production image build;
   deployment remains manual with no automated approval or rollback pipeline.
-- PostgreSQL is a single instance with no replica or independent logical backup
-  workflow.
+- PostgreSQL is a single instance with no replica. Host backup/restore tooling is
+  provided above; timer activation, off-server copies and external failure alerts
+  require host/operator setup and are not established by repository changes.
 - The signaling service stores rooms in process memory and cannot be scaled
   horizontally without shared state or a message broker such as Redis.
 - LiveKit is a single node and has no Redis-backed multi-node routing.
